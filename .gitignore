@@ -1,0 +1,32 @@
+# Local agent context and personal conversation history
+/.agents/
+/.codex/
+/memory/
+/MEMORY.md
+/SOUL.md
+/USER.md
+
+# Credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+.obsidian/
+
+# Personal knowledge, learning records, and local caches
+/data/private/
+/data/local/
+/local/
+/.cache/
+
+# Build and development artifacts
+node_modules/
+dist/
+coverage/
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Living Memory · 可视化方向预览</title>
+  <style>
+    :root { --bg:#080D19; --panel:#111A2B; --panel-2:#162238; --line:#2A3850; --text:#E8EDF8; --muted:#AAB7CE; --faint:#6D7B94; --white:#fff; --unknown:#91A0B7; --independent:#66D5B5; --confirm:#E9BC68; --reinforce:#E98A92; --accent:#9AB8FF; }
+    * { box-sizing:border-box; }
+    html { background:var(--bg); }
+    body { margin:0; min-width:320px; color:var(--text); background:var(--bg); font:14px/1.55 system-ui,-apple-system,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+    button,input { font:inherit; }
+    button { border:0; color:inherit; cursor:pointer; }
+    button:focus-visible,input:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+    .app { max-width:1640px; margin:auto; padding:28px clamp(16px,3vw,46px) 42px; }
+    .topbar { display:flex; justify-content:space-between; gap:28px; align-items:flex-end; padding-bottom:24px; border-bottom:1px solid var(--line); }
+    .kicker,.eyebrow { margin:0 0 7px; color:var(--accent); font-size:11px; letter-spacing:.14em; text-transform:uppercase; }
+    h1,h2,h3,p { margin-top:0; }
+    h1 { max-width:700px; margin-bottom:9px; font-size:clamp(25px,3vw,42px); line-height:1.14; letter-spacing:-.035em; font-weight:680; }
+    .lede { max-width:720px; margin-bottom:0; color:var(--muted); font-size:15px; }
+    .top-meta { display:grid; gap:10px; justify-items:end; text-align:right; }
+    .specimen,.status-badge { display:inline-flex; align-items:center; gap:7px; width:max-content; border:1px solid #3c506f; border-radius:999px; padding:6px 10px; color:#dfe8fa; background:#142138; font-size:12px; }
+    .specimen::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 12px #9ab8ff99; }
+    .top-meta p { max-width:280px; margin:0; color:var(--muted); font-size:12px; }
+    .control-strip { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; padding:17px 0; }
+    .control-group,.vibe-switch { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+    .control-label { margin-right:3px; color:var(--muted); font-size:12px; }
+    .tool-button,.vibe-button { min-height:34px; border:1px solid var(--line); border-radius:7px; padding:7px 11px; background:#0d1626; color:var(--muted); transition:border-color .18s ease,color .18s ease,background .18s ease; }
+    .tool-button:hover,.vibe-button:hover { border-color:#607aa9; color:var(--text); }
+    .vibe-button[aria-pressed="true"] { border-color:#91adf1; color:var(--text); background:#1b2a48; box-shadow:inset 0 -2px 0 #9ab8ff; }
+    .tool-button[aria-pressed="true"] { border-color:#65c9ad; color:var(--text); }
+    .workspace { display:grid; grid-template-columns:minmax(220px,.62fr) minmax(600px,1.75fr) minmax(275px,.78fr); gap:15px; align-items:start; }
+    .panel { border:1px solid var(--line); border-radius:12px; background:var(--panel); box-shadow:0 13px 35px #0000001f; }
+    .side-panel,.detail-panel { padding:18px; }
+    .panel-heading { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:14px; }
+    .panel-heading h2,.detail-panel h2 { margin:0; font-size:16px; letter-spacing:-.01em; }
+    .panel-note { margin:0; color:var(--faint); font-size:11px; }
+    .search-wrap { display:flex; gap:7px; margin-bottom:9px; }
+    .search-wrap input { width:100%; min-width:0; border:1px solid var(--line); border-radius:7px; padding:8px 10px; color:var(--text); background:#0b1423; }
+    .clear-button { flex:0 0 auto; border:1px solid var(--line); border-radius:7px; padding:0 9px; color:var(--muted); background:#0b1423; }
+    .search-hint,.result-count { color:var(--faint); font-size:11px; }
+    .search-hint { margin:0 0 15px; }
+    .state-legend { display:grid; gap:8px; padding:14px 0 17px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+    .legend-row { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; }
+    .state-dot,.node-index-dot { width:9px; height:9px; flex:0 0 9px; border-radius:50%; background:var(--unknown); }
+    .legend-row[data-state="unknown"] .state-dot,.node-index-dot[data-state="unknown"] { border:1.5px solid var(--unknown); background:transparent; }
+    [data-state="independent"] .state-dot,[data-state="independent"].state-dot,[data-state="independent"].node-index-dot { background:var(--independent); }
+    [data-state="confirm"] .state-dot,[data-state="confirm"].state-dot,[data-state="confirm"].node-index-dot { background:var(--confirm); }
+    [data-state="reinforce"] .state-dot,[data-state="reinforce"].state-dot,[data-state="reinforce"].node-index-dot { background:var(--reinforce); }
+    .node-index { margin-top:15px; }
+    .node-list { display:grid; gap:3px; max-height:508px; overflow:auto; margin-top:7px; padding-right:2px; }
+    .node-index-item { display:flex; align-items:center; gap:8px; width:100%; border-radius:6px; padding:7px 8px; text-align:left; background:transparent; color:var(--muted); }
+    .node-index-item:hover,.node-index-item[aria-current="true"] { color:var(--text); background:#1a2942; }
+    .node-index-item[aria-current="true"] { box-shadow:inset 2px 0 var(--accent); }
+    .node-index-domain { margin-left:auto; color:var(--faint); font-size:10px; }
+    .graph-panel { min-width:0; overflow:hidden; }
+    .graph-heading { display:flex; justify-content:space-between; align-items:center; gap:14px; padding:18px 20px 0; }
+    .graph-heading h2 { margin:0; font-size:16px; }
+    .path-status { min-height:20px; color:var(--confirm); font-size:11px; text-align:right; }
+    .graph-scroll { overflow:auto; padding:4px 16px 0; }
+    .graph { display:block; width:960px; max-width:100%; height:auto; overflow:visible; transition:transform .42s ease,filter .42s ease; }
+    .graph-bg { fill:#0b1423; stroke:#202e46; stroke-width:1; }
+    .cluster-label { fill:#667793; font-size:11px; letter-spacing:.08em; }
+    .edge { stroke:#3b4e6e; stroke-width:1.35; opacity:.65; transition:stroke .2s ease,opacity .2s ease,stroke-width .2s ease; }
+    .edge.is-active { stroke:#c0d1f6; stroke-width:2.5; opacity:1; }
+    .edge.is-path { stroke:#E9BC68; stroke-width:2.7; opacity:1; }
+    .node { cursor:pointer; outline:none; transition:opacity .2s ease; }
+    .node-dot { stroke:#0b1423; stroke-width:3; transition:filter .2s ease,transform .2s ease; transform-box:fill-box; transform-origin:center; }
+    .node-ring { fill:none; stroke:transparent; stroke-width:2; }
+    .node-label { fill:var(--text); font-size:13px; paint-order:stroke; stroke:#0b1423; stroke-width:5px; stroke-linejoin:round; }
+    .node-sub { fill:#8594ac; font-size:10px; paint-order:stroke; stroke:#0b1423; stroke-width:3px; }
+    .node[data-state="unknown"] { color:var(--unknown); }
+    .node[data-state="independent"] { color:var(--independent); }
+    .node[data-state="confirm"] { color:var(--confirm); }
+    .node[data-state="reinforce"] { color:var(--reinforce); }
+    .node[data-state="unknown"] .node-dot { fill:#0b1423; stroke:var(--unknown); stroke-width:2.5; }
+    .node[data-state="independent"] .node-dot { fill:var(--independent); }
+    .node[data-state="confirm"] .node-dot { fill:var(--confirm); }
+    .node[data-state="reinforce"] .node-dot { fill:var(--reinforce); }
+    .node:focus-visible .node-ring { stroke:var(--accent); stroke-width:3; }
+    .node.is-selected .node-ring { stroke:var(--white); stroke-width:3; }
+    .node.is-neighbor .node-dot { filter:drop-shadow(0 0 7px currentColor); }
+    .node.is-dim { opacity:.22; }
+    .node.is-search-dim { opacity:.18; }
+    .node.is-path:not(.is-selected) .node-ring { stroke:var(--confirm); stroke-width:3; }
+    .node.is-path:not(.is-selected) .node-dot { filter:drop-shadow(0 0 9px currentColor); }
+    .graph-caption { display:flex; justify-content:space-between; gap:15px; border-top:1px solid var(--line); padding:13px 20px 16px; color:var(--muted); font-size:11px; }
+    .graph-caption span:last-child { color:var(--faint); text-align:right; }
+    .detail-panel { min-height:620px; }
+    .detail-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:14px; }
+    .detail-header h2 { max-width:170px; }
+    .status-badge { padding:5px 9px; border-color:#52627b; color:var(--text); background:#1b263b; font-size:11px; }
+    .status-badge[data-state="unknown"] { border-color:#59677f; color:var(--unknown); }
+    .status-badge[data-state="independent"] { border-color:#3f9c84; color:var(--independent); }
+    .status-badge[data-state="confirm"] { border-color:#aa8747; color:var(--confirm); }
+    .status-badge[data-state="reinforce"] { border-color:#a8616c; color:var(--reinforce); }
+    .detail-summary { margin-bottom:18px; color:var(--muted); }
+    .detail-block { border-top:1px solid var(--line); padding:15px 0; }
+    .detail-block h3 { margin-bottom:7px; color:var(--faint); font-size:11px; letter-spacing:.08em; text-transform:uppercase; }
+    .detail-block p { margin-bottom:0; color:var(--text); font-size:13px; }
+    .relation-list { display:grid; gap:5px; margin:0; padding:0; list-style:none; }
+    .relation-list button { display:flex; align-items:center; gap:7px; width:100%; border-radius:6px; padding:6px 7px; text-align:left; color:var(--muted); background:#0d1727; }
+    .relation-list button:hover { color:var(--text); background:#1a2942; }
+    .relation-kind { margin-left:auto; color:var(--faint); font-size:10px; }
+    .demo-note { color:var(--muted)!important; }
+    [data-vibe="space"] .graph-bg { fill:#0a1325; }
+    [data-vibe="space"] .graph-panel { border-color:#40577c; box-shadow:0 0 34px #294a7a38,0 13px 35px #00000027; }
+    [data-vibe="space"] .graph-scroll { perspective:1100px; background:radial-gradient(circle at 52% 44%,#213a6526,transparent 58%); }
+    [data-vibe="space"] .graph { transform:perspective(1100px) rotateX(1.5deg) rotateY(-1deg); transform-origin:center; filter:drop-shadow(0 18px 22px #0000004a); }
+    [data-vibe="space"] .node-dot { filter:drop-shadow(0 0 8px currentColor); }
+    [data-vibe="space"] .node.is-selected .node-dot { filter:drop-shadow(0 0 14px currentColor); transform:scale(1.18); }
+    [data-vibe="space"] .node.is-neighbor .node-dot { filter:drop-shadow(0 0 11px currentColor); transform:scale(1.08); }
+    [data-vibe="reader"] .graph-panel { background:#101a2a; }
+    [data-vibe="reader"] .node-label { font-size:14px; }
+    [data-vibe="reader"] .node-sub { fill:#aab7ce; }
+    .motion-off * { transition-duration:0.001ms!important; animation-duration:0.001ms!important; animation-iteration-count:1!important; }
+    @media (prefers-reduced-motion:reduce) { .app:not(.motion-override) * { transition-duration:0.001ms!important; animation-duration:0.001ms!important; animation-iteration-count:1!important; } }
+    @media (max-width:1500px) { .workspace { grid-template-columns:240px minmax(0,1fr); } .detail-panel { grid-column:1/-1; min-height:auto; } }
+    @media (max-width:760px) { .app { padding:20px 13px 30px; } .topbar { display:block; } .top-meta { justify-items:start; margin-top:17px; text-align:left; } .control-strip { align-items:flex-start; } .workspace { display:grid; grid-template-columns:1fr; } .detail-panel { grid-column:auto; } .graph { width:960px; max-width:none; } .graph-heading,.graph-caption { display:block; } .path-status { margin-top:7px; text-align:left; } .graph-caption span { display:block; } .graph-caption span+span { margin-top:6px; text-align:left; } }
+  </style>
+</head>
+<body>
+  <div class="app" id="app" data-vibe="space">
+    <header class="topbar">
+      <div>
+        <p class="kicker">Living Memory / visual direction</p>
+        <h1>把知识关系放在可阅读的深色星图里</h1>
+        <p class="lede">一个面向选型讨论的有界预览：桌面 3D 空间方向已确认；此页只比较空间感、颜色和选择反馈的固定 2D 示意，真实镜头与遮挡留待引擎原型。</p>
+      </div>
+      <div class="top-meta">
+        <span class="specimen">示例数据 · 不反映个人记忆</span>
+        <p>布局、关系和状态依据均为演示内容，不会读取或写入学习记录。</p>
+      </div>
+    </header>
+
+    <section class="control-strip" aria-label="预览控制">
+      <div class="control-group">
+        <span class="control-label">气质</span>
+        <div class="vibe-switch" role="group" aria-label="切换视觉气质">
+          <button class="vibe-button" type="button" data-vibe-choice="atlas" aria-pressed="false">克制星图</button>
+          <button class="vibe-button" type="button" data-vibe-choice="space" aria-pressed="true">空间光效</button>
+          <button class="vibe-button" type="button" data-vibe-choice="reader" aria-pressed="false">信息阅读</button>
+        </div>
+      </div>
+      <div class="control-group">
+        <button class="tool-button" id="motion-toggle" type="button" aria-pressed="true">动画：开启</button>
+        <button class="tool-button" id="path-button" type="button">演示查询路径</button>
+        <button class="tool-button" id="reset-button" type="button">重置</button>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <aside class="panel side-panel" aria-labelledby="index-title">
+        <div class="panel-heading"><h2 id="index-title">概念索引</h2><span class="panel-note" id="result-count">18 个</span></div>
+        <div class="search-wrap">
+          <input id="search" type="search" autocomplete="off" placeholder="搜索概念或领域" aria-label="搜索概念或领域">
+          <button class="clear-button" id="clear-search" type="button" aria-label="清空搜索">清空</button>
+        </div>
+        <p class="search-hint">输入后过滤；按 Enter 定位第一个结果，方向键可浏览。</p>
+        <div class="state-legend" aria-label="状态图例">
+          <div class="legend-row" data-state="unknown"><span class="state-dot"></span><span>未知</span></div>
+          <div class="legend-row" data-state="independent"><span class="state-dot"></span><span>独立回忆证据</span></div>
+          <div class="legend-row" data-state="confirm"><span class="state-dot"></span><span>待再确认</span></div>
+          <div class="legend-row" data-state="reinforce"><span class="state-dot"></span><span>需巩固</span></div>
+        </div>
+        <div class="node-index">
+          <span class="eyebrow">可点击节点列表</span>
+          <div class="node-list" id="node-list" aria-label="概念节点列表"></div>
+        </div>
+      </aside>
+
+      <section class="panel graph-panel" aria-labelledby="graph-title">
+        <div class="graph-heading"><h2 id="graph-title">局部关系视图</h2><span class="path-status" id="path-status" aria-live="polite">点击节点查看邻居与状态依据</span></div>
+        <div class="graph-scroll">
+          <svg class="graph" viewBox="0 0 960 620" role="img" aria-labelledby="svg-title svg-desc">
+            <title id="svg-title">个人知识图谱演示关系</title>
+            <desc id="svg-desc">固定布局的十八个中文概念节点。节点颜色只代表演示状态，点击后以白色环标示当前节点，并突出相邻节点。</desc>
+            <defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 Z" fill="#506381"></path></marker></defs>
+            <rect class="graph-bg" x="0" y="0" width="960" height="620" rx="9"></rect>
+            <text class="cluster-label" x="50" y="43">记忆与提取</text><text class="cluster-label" x="563" y="43">形式化与建模</text>
+            <g class="edges" aria-hidden="true">
+              <line class="edge" data-from="problem" data-to="recall" x1="490" y1="82" x2="260" y2="150" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="problem" data-to="transfer" x1="490" y1="82" x2="340" y2="260" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="problem" data-to="boolean" x1="490" y1="82" x2="630" y2="165" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="problem" data-to="attention" x1="490" y1="82" x2="450" y2="170" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="problem" data-to="decision" x1="490" y1="82" x2="800" y2="130" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="recall" data-to="spacing" x1="260" y1="150" x2="100" y2="265" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="recall" data-to="cues" x1="260" y1="150" x2="180" y2="410" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="recall" data-to="forgetting" x1="260" y1="150" x2="430" y2="550" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="spacing" data-to="dual" x1="100" y1="265" x2="285" y2="545" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="transfer" data-to="vectors" x1="340" y1="260" x2="455" y2="305" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="transfer" data-to="generalization" x1="340" y1="260" x2="650" y2="75" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="boolean" data-to="decision" x1="630" y1="165" x2="800" y2="130" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="boolean" data-to="state" x1="630" y1="165" x2="655" y2="315" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="decision" data-to="state" x1="800" y1="130" x2="655" y2="315" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="state" data-to="constraints" x1="655" y1="315" x2="850" y2="425" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="vectors" data-to="probability" x1="455" y1="305" x2="580" y2="425" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="vectors" data-to="attention" x1="455" y1="305" x2="450" y2="170" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="probability" data-to="bayes" x1="580" y1="425" x2="700" y2="540" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="attention" data-to="generalization" x1="450" y1="170" x2="650" y2="75" marker-end="url(#arrow)"></line>
+              <line class="edge" data-from="forgetting" data-to="cues" x1="430" y1="550" x2="180" y2="410" marker-end="url(#arrow)"></line>
+            </g>
+            <g class="nodes">
+              <g class="node" data-node-id="problem" data-state="independent" tabindex="0" role="button" aria-label="问题表征，独立回忆证据"><title>问题表征 · 独立回忆证据</title><circle class="node-ring" cx="490" cy="82" r="22"></circle><circle class="node-dot" cx="490" cy="82" r="10"></circle><text class="node-label" x="490" y="59" text-anchor="middle">问题表征</text><text class="node-sub" x="490" y="111" text-anchor="middle">检索入口</text></g>
+              <g class="node" data-node-id="recall" data-state="independent" tabindex="0" role="button" aria-label="主动提取，独立回忆证据"><title>主动提取 · 独立回忆证据</title><circle class="node-ring" cx="260" cy="150" r="20"></circle><circle class="node-dot" cx="260" cy="150" r="9"></circle><text class="node-label" x="260" y="127" text-anchor="middle">主动提取</text><text class="node-sub" x="260" y="177" text-anchor="middle">训练动作</text></g>
+              <g class="node" data-node-id="spacing" data-state="confirm" tabindex="0" role="button" aria-label="间隔重复，待再确认"><title>间隔重复 · 待再确认</title><circle class="node-ring" cx="100" cy="265" r="19"></circle><circle class="node-dot" cx="100" cy="265" r="9"></circle><text class="node-label" x="100" y="242" text-anchor="middle">间隔重复</text><text class="node-sub" x="100" y="292" text-anchor="middle">节奏</text></g>
+              <g class="node" data-node-id="transfer" data-state="reinforce" tabindex="0" role="button" aria-label="迁移，需巩固"><title>迁移 · 需巩固</title><circle class="node-ring" cx="340" cy="260" r="20"></circle><circle class="node-dot" cx="340" cy="260" r="9"></circle><text class="node-label" x="340" y="237" text-anchor="middle">迁移</text><text class="node-sub" x="340" y="287" text-anchor="middle">调用结果</text></g>
+              <g class="node" data-node-id="cues" data-state="unknown" tabindex="0" role="button" aria-label="情境线索，未知"><title>情境线索 · 未知</title><circle class="node-ring" cx="180" cy="410" r="19"></circle><circle class="node-dot" cx="180" cy="410" r="9"></circle><text class="node-label" x="180" y="387" text-anchor="middle">情境线索</text><text class="node-sub" x="180" y="437" text-anchor="middle">提取线索</text></g>
+              <g class="node" data-node-id="cognitive" data-state="unknown" tabindex="0" role="button" aria-label="认知负荷，未知"><title>认知负荷 · 未知</title><circle class="node-ring" cx="90" cy="535" r="19"></circle><circle class="node-dot" cx="90" cy="535" r="9"></circle><text class="node-label" x="90" y="512" text-anchor="middle">认知负荷</text><text class="node-sub" x="90" y="562" text-anchor="middle">边界</text></g>
+              <g class="node" data-node-id="dual" data-state="confirm" tabindex="0" role="button" aria-label="双强度理论，待再确认"><title>双强度理论 · 待再确认</title><circle class="node-ring" cx="285" cy="545" r="20"></circle><circle class="node-dot" cx="285" cy="545" r="9"></circle><text class="node-label" x="285" y="522" text-anchor="middle">双强度理论</text><text class="node-sub" x="285" y="572" text-anchor="middle">理论</text></g>
+              <g class="node" data-node-id="forgetting" data-state="independent" tabindex="0" role="button" aria-label="遗忘，独立回忆证据"><title>遗忘 · 独立回忆证据</title><circle class="node-ring" cx="430" cy="550" r="19"></circle><circle class="node-dot" cx="430" cy="550" r="9"></circle><text class="node-label" x="430" y="527" text-anchor="middle">遗忘</text><text class="node-sub" x="430" y="577" text-anchor="middle">机制</text></g>
+              <g class="node" data-node-id="boolean" data-state="confirm" tabindex="0" role="button" aria-label="布尔逻辑，待再确认"><title>布尔逻辑 · 待再确认</title><circle class="node-ring" cx="630" cy="165" r="19"></circle><circle class="node-dot" cx="630" cy="165" r="9"></circle><text class="node-label" x="630" y="142" text-anchor="middle">布尔逻辑</text><text class="node-sub" x="630" y="192" text-anchor="middle">形式化</text></g>
+              <g class="node" data-node-id="decision" data-state="unknown" tabindex="0" role="button" aria-label="决策表，未知"><title>决策表 · 未知</title><circle class="node-ring" cx="800" cy="130" r="19"></circle><circle class="node-dot" cx="800" cy="130" r="9"></circle><text class="node-label" x="800" y="107" text-anchor="middle">决策表</text><text class="node-sub" x="800" y="157" text-anchor="middle">结构</text></g>
+              <g class="node" data-node-id="dag" data-state="independent" tabindex="0" role="button" aria-label="DAG，有向无环图，独立回忆证据"><title>DAG（有向无环图） · 独立回忆证据</title><circle class="node-ring" cx="820" cy="275" r="19"></circle><circle class="node-dot" cx="820" cy="275" r="9"></circle><text class="node-label" x="820" y="252" text-anchor="middle">DAG</text><text class="node-sub" x="820" y="302" text-anchor="middle">关系结构</text></g>
+              <g class="node" data-node-id="state" data-state="reinforce" tabindex="0" role="button" aria-label="状态机，需巩固"><title>状态机 · 需巩固</title><circle class="node-ring" cx="655" cy="315" r="20"></circle><circle class="node-dot" cx="655" cy="315" r="9"></circle><text class="node-label" x="655" y="292" text-anchor="middle">状态机</text><text class="node-sub" x="655" y="342" text-anchor="middle">行为路径</text></g>
+              <g class="node" data-node-id="constraints" data-state="unknown" tabindex="0" role="button" aria-label="约束求解，未知"><title>约束求解 · 未知</title><circle class="node-ring" cx="850" cy="425" r="20"></circle><circle class="node-dot" cx="850" cy="425" r="9"></circle><text class="node-label" x="850" y="402" text-anchor="middle">约束求解</text><text class="node-sub" x="850" y="452" text-anchor="middle">边界检查</text></g>
+              <g class="node" data-node-id="probability" data-state="confirm" tabindex="0" role="button" aria-label="概率分布，待再确认"><title>概率分布 · 待再确认</title><circle class="node-ring" cx="580" cy="425" r="19"></circle><circle class="node-dot" cx="580" cy="425" r="9"></circle><text class="node-label" x="580" y="402" text-anchor="middle">概率分布</text><text class="node-sub" x="580" y="452" text-anchor="middle">不确定性</text></g>
+              <g class="node" data-node-id="bayes" data-state="reinforce" tabindex="0" role="button" aria-label="贝叶斯更新，需巩固"><title>贝叶斯更新 · 需巩固</title><circle class="node-ring" cx="700" cy="540" r="20"></circle><circle class="node-dot" cx="700" cy="540" r="9"></circle><text class="node-label" x="700" y="517" text-anchor="middle">贝叶斯更新</text><text class="node-sub" x="700" y="567" text-anchor="middle">证据修正</text></g>
+              <g class="node" data-node-id="vectors" data-state="independent" tabindex="0" role="button" aria-label="向量空间，独立回忆证据"><title>向量空间 · 独立回忆证据</title><circle class="node-ring" cx="455" cy="305" r="19"></circle><circle class="node-dot" cx="455" cy="305" r="9"></circle><text class="node-label" x="455" y="282" text-anchor="middle">向量空间</text><text class="node-sub" x="455" y="332" text-anchor="middle">表示</text></g>
+              <g class="node" data-node-id="attention" data-state="unknown" tabindex="0" role="button" aria-label="注意力机制，未知"><title>注意力机制 · 未知</title><circle class="node-ring" cx="450" cy="170" r="19"></circle><circle class="node-dot" cx="450" cy="170" r="9"></circle><text class="node-label" x="450" y="147" text-anchor="middle">注意力机制</text><text class="node-sub" x="450" y="197" text-anchor="middle">选择线索</text></g>
+              <g class="node" data-node-id="generalization" data-state="confirm" tabindex="0" role="button" aria-label="泛化，待再确认"><title>泛化 · 待再确认</title><circle class="node-ring" cx="650" cy="75" r="19"></circle><circle class="node-dot" cx="650" cy="75" r="9"></circle><text class="node-label" x="650" y="52" text-anchor="middle">泛化</text><text class="node-sub" x="650" y="102" text-anchor="middle">迁移边界</text></g>
+            </g>
+          </svg>
+        </div>
+        <div class="graph-caption"><span>空间感示意 · 固定 2D 布局 · 关系用于演示阅读路径</span><span>选中节点：白色环　|　节点填色：四种状态</span></div>
+      </section>
+
+      <aside class="panel detail-panel" aria-labelledby="detail-title">
+        <div class="detail-header"><h2 id="detail-title">问题表征</h2><span class="status-badge" id="detail-status" data-state="independent">独立回忆证据</span></div>
+        <p class="detail-summary" id="detail-summary">把模糊的工作需要转换成可检索的概念入口，帮助后续判断哪些知识值得调用。</p>
+        <div class="detail-block"><h3>状态依据</h3><p id="detail-evidence">示例依据：能脱离提示说出定义，并将它连到一个工作场景；仅用于展示信息层级。</p></div>
+        <div class="detail-block"><h3>相邻关系</h3><ul class="relation-list" id="relation-list"></ul></div>
+        <div class="detail-block"><h3>预览边界</h3><p class="demo-note">状态只保留“未知、独立回忆证据、待再确认、需巩固”四种内容。没有概率、曲线或未经校准的记忆强度。</p></div>
+        <p id="live-region" class="panel-note" aria-live="polite"></p>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    const stateLabels = { unknown: "未知", independent: "独立回忆证据", confirm: "待再确认", reinforce: "需巩固" };
+    const nodes = [
+      { id:"problem", label:"问题表征", domain:"检索入口", state:"independent", summary:"把模糊的工作需要转换成可检索的概念入口，帮助后续判断哪些知识值得调用。", evidence:"示例依据：能脱离提示说出定义，并将它连到一个工作场景；仅用于展示信息层级。" },
+      { id:"recall", label:"主动提取", domain:"训练动作", state:"independent", summary:"先尝试从记忆中取出答案，再查看材料，保留一次可观察的提取过程。", evidence:"示例依据：节点配有一次独立回答的演示记录；真实系统需由使用者补充证据。" },
+      { id:"spacing", label:"间隔重复", domain:"节奏", state:"confirm", summary:"让同一概念在分开的时间点再次被调用，观察保持与再学习之间的差别。", evidence:"示例依据：安排了多次间隔的演示入口，但尚缺延迟后的核验记录。" },
+      { id:"transfer", label:"迁移", domain:"调用结果", state:"reinforce", summary:"把概念带入新的问题情境，关注能否识别适用条件，而不只复述定义。", evidence:"示例依据：能说出名称，但在新场景中选择概念的边界仍需再次提取。" },
+      { id:"cues", label:"情境线索", domain:"提取线索", state:"unknown", summary:"记录什么问题、任务或表述能够把相关知识带到当前注意范围。", evidence:"示例依据：尚未提供可核验的回忆或应用记录，先保留为未知。" },
+      { id:"cognitive", label:"认知负荷", domain:"边界", state:"unknown", summary:"关注任务本身、表达方式和无关复杂度如何共同影响当下的调用过程。", evidence:"示例依据：只有概念关系，没有独立回忆或应用证据。" },
+      { id:"dual", label:"双强度理论", domain:"理论", state:"confirm", summary:"用提取强度与存储强度的区分，提醒我们不要把一次想不起等同于知识消失。", evidence:"示例依据：已有阅读来源的入口，但理论边界还需要再次确认。" },
+      { id:"forgetting", label:"遗忘", domain:"机制", state:"independent", summary:"把“忘记”作为需要进一步区分的现象，连接保持、提取线索和再学习。", evidence:"示例依据：能独立解释遗忘与提取失败的区别；仍不代表真实记忆状态已被测量。" },
+      { id:"boolean", label:"布尔逻辑", domain:"形式化", state:"confirm", summary:"用真值条件表达清晰的范围判断与组合规则，适合做概念唤回的形式化锚点。", evidence:"示例依据：能指出名称和一个组合关系，但细节需再确认。" },
+      { id:"decision", label:"决策表", domain:"结构", state:"unknown", summary:"将条件与行动并排呈现，用于查看规则覆盖是否完整，避免只凭直觉跳转。", evidence:"示例依据：暂未有独立回忆或实际应用记录。" },
+      { id:"dag", label:"DAG", domain:"关系结构", state:"independent", summary:"用有向无环结构表达依赖与先后关系，是阅读复杂知识关系的一种候选视角。", evidence:"示例依据：能独立说出有向无环结构及一个依赖关系例子。" },
+      { id:"state", label:"状态机", domain:"行为路径", state:"reinforce", summary:"把状态、事件和转移放在同一结构中，帮助描述一个流程如何随输入变化。", evidence:"示例依据：能辨认状态与转移，但还需要巩固适用边界和反例。" },
+      { id:"constraints", label:"约束求解", domain:"边界检查", state:"unknown", summary:"把必须满足的条件显式列出，再判断候选方案是否可行。", evidence:"示例依据：只有关系示意，没有可核验的回忆或应用记录。" },
+      { id:"probability", label:"概率分布", domain:"不确定性", state:"confirm", summary:"描述不确定结果的可能性结构，为证据更新和风险表达提供基础语言。", evidence:"示例依据：理解了术语入口，但分布、参数与解释仍待再次确认。" },
+      { id:"bayes", label:"贝叶斯更新", domain:"证据修正", state:"reinforce", summary:"根据新证据修正对假设的判断，强调先验、似然和后验之间的关系。", evidence:"示例依据：能复述更新方向，但公式与适用前提需要巩固。" },
+      { id:"vectors", label:"向量空间", domain:"表示", state:"independent", summary:"把对象放入可运算的表示空间，连接相似度、方向和线性组合等概念。", evidence:"示例依据：能独立说明向量表示和一个内积相关例子。" },
+      { id:"attention", label:"注意力机制", domain:"选择线索", state:"unknown", summary:"在多个输入线索中分配选择性权重，作为理解“关注哪里”的候选概念。", evidence:"示例依据：目前只有概念关系，尚未建立独立回忆证据。" },
+      { id:"generalization", label:"泛化", domain:"迁移边界", state:"confirm", summary:"观察从已见样本到新情境的表现，区分记住材料和能够适应变化。", evidence:"示例依据：能说明大意，但需要再次确认与过拟合、迁移的边界。" }
+    ];
+    const edges = [
+      ["problem","recall","入口"],["problem","transfer","转化"],["problem","boolean","形式化"],["problem","attention","选择"],["problem","decision","结构"],["recall","spacing","安排"],["recall","cues","线索"],["recall","forgetting","现象"],["spacing","dual","理论"],["transfer","vectors","表示"],["transfer","generalization","边界"],["boolean","decision","规则"],["boolean","state","条件"],["decision","state","流程"],["state","constraints","约束"],["vectors","probability","不确定性"],["vectors","attention","表示"],["probability","bayes","更新"],["attention","generalization","选择"],["forgetting","cues","取回"]
+    ].map(([from,to,label]) => ({ from, to, label }));
+    const nodeMap = Object.fromEntries(nodes.map(node => [node.id, node]));
+    const app = document.getElementById("app");
+    const search = document.getElementById("search");
+    const nodeList = document.getElementById("node-list");
+    const resultCount = document.getElementById("result-count");
+    const detailTitle = document.getElementById("detail-title");
+    const detailStatus = document.getElementById("detail-status");
+    const detailSummary = document.getElementById("detail-summary");
+    const detailEvidence = document.getElementById("detail-evidence");
+    const relationList = document.getElementById("relation-list");
+    const liveRegion = document.getElementById("live-region");
+    const pathStatus = document.getElementById("path-status");
+    const pathButton = document.getElementById("path-button");
+    const svgNodes = [...document.querySelectorAll(".node")];
+    const svgEdges = [...document.querySelectorAll(".edge")];
+    let selectedId = "problem";
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let motionEnabled = !reducedMotion.matches;
+    let motionOverride = false;
+    let pathToken = 0;
+    const demoPath = ["problem","recall","spacing","dual"];
+
+    function neighborsOf(id) { return edges.filter(edge => edge.from === id || edge.to === id).map(edge => edge.from === id ? edge.to : edge.from); }
+    function makeIndexButton(node) {
+      const button = document.createElement("button"); button.type = "button"; button.className = "node-index-item"; button.dataset.nodeId = node.id; button.setAttribute("aria-current", node.id === selectedId ? "true" : "false"); button.setAttribute("aria-label", `${node.label}，${stateLabels[node.state]}`);
+      const dot = document.createElement("span"); dot.className = "node-index-dot"; dot.dataset.state = node.state; dot.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span"); label.textContent = node.label;
+      const domain = document.createElement("span"); domain.className = "node-index-domain"; domain.textContent = node.domain;
+      button.append(dot,label,domain); return button;
+    }
+    function renderIndex(query = "") {
+      const term = query.trim().toLowerCase();
+      const visible = nodes.filter(node => !term || `${node.label}${node.domain}`.toLowerCase().includes(term));
+      nodeList.textContent = ""; visible.forEach(node => nodeList.append(makeIndexButton(node)));
+      resultCount.textContent = term ? `${visible.length} / ${nodes.length} 个` : `${nodes.length} 个`;
+      svgNodes.forEach(element => { const node = nodeMap[element.dataset.nodeId]; const match = !term || `${node.label}${node.domain}`.toLowerCase().includes(term); element.classList.toggle("is-search-dim", !match); });
+    }
+    function relationButton(other, label) {
+      const li = document.createElement("li"); const button = document.createElement("button"); button.type = "button"; button.dataset.nodeId = other.id; button.setAttribute("aria-label", `跳转到${other.label}，关系：${label}`);
+      const dot = document.createElement("span"); dot.className = "node-index-dot"; dot.dataset.state = other.state; dot.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span"); name.textContent = other.label;
+      const kind = document.createElement("span"); kind.className = "relation-kind"; kind.textContent = label;
+      button.append(dot,name,kind); li.append(button); return li;
+    }
+    function selectNode(id, announce = true) {
+      const node = nodeMap[id]; if (!node) return; selectedId = id; const neighbors = new Set(neighborsOf(id));
+      svgNodes.forEach(element => { const isSelected = element.dataset.nodeId === id; element.classList.toggle("is-selected", isSelected); element.classList.toggle("is-neighbor", !isSelected && neighbors.has(element.dataset.nodeId)); element.classList.toggle("is-dim", !isSelected && !neighbors.has(element.dataset.nodeId)); });
+      svgEdges.forEach(edge => edge.classList.toggle("is-active", edge.dataset.from === id || edge.dataset.to === id));
+      document.querySelectorAll(".node-index-item").forEach(button => button.setAttribute("aria-current", button.dataset.nodeId === id ? "true" : "false"));
+      detailTitle.textContent = node.label; detailStatus.textContent = stateLabels[node.state]; detailStatus.dataset.state = node.state; detailSummary.textContent = node.summary; detailEvidence.textContent = node.evidence;
+      relationList.textContent = "";
+      edges.filter(edge => edge.from === id || edge.to === id).forEach(edge => { const otherId = edge.from === id ? edge.to : edge.from; relationList.append(relationButton(nodeMap[otherId], edge.label)); });
+      if (!relationList.children.length) { const empty = document.createElement("li"); empty.textContent = "暂无相邻关系"; empty.className = "panel-note"; relationList.append(empty); }
+      if (announce) { svgNodes.find(element => element.dataset.nodeId === id)?.scrollIntoView({ block:"nearest", inline:"nearest" }); liveRegion.textContent = `已定位：${node.label}，${stateLabels[node.state]}。`; }
+    }
+    function clearPath() { pathToken += 1; svgNodes.forEach(node => node.classList.remove("is-path")); svgEdges.forEach(edge => edge.classList.remove("is-path")); pathButton.disabled = false; }
+    function runPath() {
+      clearPath(); const token = pathToken;
+      if (!motionEnabled) { demoPath.forEach(id => document.querySelector(`.node[data-node-id="${id}"]`).classList.add("is-path")); for (let i = 0; i < demoPath.length - 1; i += 1) document.querySelector(`.edge[data-from="${demoPath[i]}"][data-to="${demoPath[i + 1]}"]`)?.classList.add("is-path"); pathStatus.textContent = "路径已标记（动画已关闭）"; return; }
+      pathButton.disabled = true; pathStatus.textContent = "路径播放中 · 状态颜色保持不变";
+      demoPath.forEach((id,index) => window.setTimeout(() => { if (token !== pathToken) return; document.querySelector(`.node[data-node-id="${id}"]`).classList.add("is-path"); if (index) document.querySelector(`.edge[data-from="${demoPath[index - 1]}"][data-to="${id}"]`)?.classList.add("is-path"); if (index === demoPath.length - 1) { pathButton.disabled = false; pathStatus.textContent = "演示路径完成 · 问题表征 → 主动提取 → 间隔重复 → 双强度理论"; } }, index * 430));
+    }
+    function applyMotion() { const button = document.getElementById("motion-toggle"); app.classList.toggle("motion-off", !motionEnabled); app.classList.toggle("motion-override", motionOverride); button.textContent = motionEnabled ? "动画：开启" : "动画：关闭"; button.setAttribute("aria-pressed", String(motionEnabled)); }
+    reducedMotion.addEventListener("change", event => { if (event.matches) { motionEnabled = false; motionOverride = false; clearPath(); pathStatus.textContent = "系统偏好已关闭动画"; } else if (!motionOverride) { motionEnabled = true; pathStatus.textContent = "系统偏好已恢复动画"; } applyMotion(); });
+    document.querySelectorAll("[data-vibe-choice]").forEach(button => button.addEventListener("click", () => { app.dataset.vibe = button.dataset.vibeChoice; document.querySelectorAll("[data-vibe-choice]").forEach(item => item.setAttribute("aria-pressed", String(item === button))); }));
+    document.getElementById("motion-toggle").addEventListener("click", () => { motionEnabled = !motionEnabled; motionOverride = reducedMotion.matches; clearPath(); applyMotion(); pathStatus.textContent = motionEnabled ? "动画已开启" : "动画已关闭，查询路径将静态标记"; });
+    pathButton.addEventListener("click", runPath);
+    document.getElementById("reset-button").addEventListener("click", () => { search.value = ""; renderIndex(); app.dataset.vibe = "space"; document.querySelectorAll("[data-vibe-choice]").forEach(item => item.setAttribute("aria-pressed", String(item.dataset.vibeChoice === "space"))); clearPath(); pathStatus.textContent = "点击节点查看邻居与状态依据"; selectNode("problem"); });
+    document.getElementById("clear-search").addEventListener("click", () => { search.value = ""; renderIndex(); search.focus(); });
+    search.addEventListener("input", () => renderIndex(search.value));
+    search.addEventListener("keydown", event => { if (event.key === "Enter") { const first = nodes.find(node => `${node.label}${node.domain}`.toLowerCase().includes(search.value.trim().toLowerCase())); if (first) selectNode(first.id); } if (event.key === "Escape") { search.value = ""; renderIndex(); } });
+    nodeList.addEventListener("click", event => { const button = event.target.closest("button[data-node-id]"); if (button) selectNode(button.dataset.nodeId); });
+    nodeList.addEventListener("keydown", event => { const items = [...nodeList.querySelectorAll("button[data-node-id]")]; if (!items.length || !["ArrowDown","ArrowUp","Home","End"].includes(event.key)) return; const current = items.indexOf(document.activeElement); const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : event.key === "ArrowDown" ? (current + 1) % items.length : (current - 1 + items.length) % items.length; event.preventDefault(); items[next].focus(); });
+    relationList.addEventListener("click", event => { const button = event.target.closest("button[data-node-id]"); if (button) selectNode(button.dataset.nodeId); });
+    svgNodes.forEach(element => { element.addEventListener("click", () => selectNode(element.dataset.nodeId)); element.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(element.dataset.nodeId); } }); });
+    renderIndex(); selectNode(selectedId, false); applyMotion();
+  </script>
+</body>
+</html>
