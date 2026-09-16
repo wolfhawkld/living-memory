@@ -91,6 +91,25 @@ function expectGraphBackground(pixel: { r: number; g: number; b: number; a: numb
   expect(Math.abs(pixel.b - 24)).toBeLessThanOrEqual(5);
 }
 
+test('demo glow toggle keeps the graph background and canvas visible', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '查看真实记录', exact: true })).toBeVisible();
+  await expect(page.locator('.demo-panel')).toBeVisible();
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-layout-ready', 'true');
+
+  const glowButton = page.getByRole('button', { name: '发光效果', exact: true });
+  await expect(glowButton).toHaveAttribute('aria-pressed', 'true');
+  expectGraphBackground(await graphBackgroundPixel(page));
+  await glowButton.click();
+  await expect(glowButton).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('.graph-canvas')).toBeVisible();
+  expectGraphBackground(await graphBackgroundPixel(page));
+  await glowButton.click();
+  await expect(glowButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.graph-canvas')).toBeVisible();
+  expectGraphBackground(await graphBackgroundPixel(page));
+});
+
 test('demo mode shows the seeded time stages and persists its source-scoped preview', async ({ page, request }) => {
   const realBefore = await exported(request);
   const sourceResponse = await request.get('/api/session');
@@ -107,17 +126,6 @@ test('demo mode shows the seeded time stages and persists its source-scoped prev
   expect(panelText).toMatch(/较久未重温\s*6|6\s*较久未重温/);
   expect(panelText).toMatch(/尚未评估\s*2|2\s*尚未评估/);
   await expect(page.locator('.graph-canvas')).toHaveAttribute('data-layout-ready', 'true');
-  const glowButton = page.getByRole('button', { name: '发光效果', exact: true });
-  await expect(glowButton).toHaveAttribute('aria-pressed', 'true');
-  expectGraphBackground(await graphBackgroundPixel(page));
-  await glowButton.click();
-  await expect(glowButton).toHaveAttribute('aria-pressed', 'false');
-  await expect(page.locator('.graph-canvas')).toBeVisible();
-  expectGraphBackground(await graphBackgroundPixel(page));
-  await glowButton.click();
-  await expect(glowButton).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('.graph-canvas')).toBeVisible();
-  expectGraphBackground(await graphBackgroundPixel(page));
   await page.screenshot({ path: 'test-results/p0-demo-colors.png', fullPage: true });
   await expect(demoPanel.locator('details summary')).toHaveText('查看初始模拟数值');
   await demoPanel.locator('details summary').click();

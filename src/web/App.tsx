@@ -168,6 +168,7 @@ export default function App() {
   const [demoRecord, setDemoRecord] = useState<DemoRecord | null>(null);
   const [demoSaved, setDemoSaved] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [focusRevision, setFocusRevision] = useState(0);
   const [search, setSearch] = useState('');
   const [simDays, setSimDays] = useState(0);
   const [twoDimensional, setTwoDimensional] = useState(false);
@@ -385,6 +386,7 @@ export default function App() {
       setAttempt(null);
     }
     setSelectedId(conceptId);
+    setFocusRevision((revision) => revision + 1);
   }, [attempt]);
 
   const reloadRealSnapshot = useCallback(async () => {
@@ -713,7 +715,7 @@ export default function App() {
           {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={displaySnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={displaySnapshot.concepts} states={displaySnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={displaySnapshot} layout={layout} selectedId={selectedId} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            {listMode ? <GraphFallbackList concepts={displaySnapshot.concepts} states={displaySnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={displaySnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} onSelect={selectConcept} onLayoutChange={saveLayout} />}
             <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
             <div className="graph-hint">{snapshot.links.length} 条关系 · 亮线连接选中概念 · 悬停看关系</div>
           </div>

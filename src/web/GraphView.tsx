@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { Concept, GraphLink, Layout, MemoryState, Snapshot } from '../shared/types';
+import { calculateNodeFocus } from './graph-focus';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -13,6 +14,7 @@ export interface GraphViewProps {
   paused?: boolean;
   twoDimensional: boolean;
   glowEnabled?: boolean;
+  focusRevision?: number;
   onSelect: (conceptId: string) => void;
   onLayoutChange: (layout: Layout) => void;
 }
@@ -363,27 +365,11 @@ function canUseWebGL(): boolean {
   }
 }
 
-function focusNode(graph: GraphInstance, node: GraphNode, nodes: GraphNode[], transitionMs: number): void {
-  const positioned = nodes.filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y) && Number.isFinite(item.z));
-  const count = positioned.length || 1;
-  const center = positioned.reduce((sum, item) => ({
-    x: sum.x + (item.x ?? 0) / count,
-    y: sum.y + (item.y ?? 0) / count,
-    z: sum.z + (item.z ?? 0) / count,
-  }), { x: 0, y: 0, z: 0 });
-  const radius = positioned.reduce((largest, item) => Math.max(largest,
-    Math.hypot((item.x ?? 0) - center.x, (item.y ?? 0) - center.y, (item.z ?? 0) - center.z)), 0);
+function focusNode(graph: GraphInstance, node: GraphNode, twoDimensional: boolean, transitionMs: number): void {
   const target = { x: node.x ?? 0, y: node.y ?? 0, z: node.z ?? 0 };
-  const direction = { x: target.x - center.x, y: target.y - center.y, z: target.z - center.z };
-  if (Math.hypot(direction.x, direction.y, direction.z) < 1) direction.z = 1;
-  const length = Math.hypot(direction.x, direction.y, direction.z);
-  // Stay outside the node cloud rather than flying inside a dense neighborhood.
-  const distance = Math.max(240, radius * 1.4);
-  graph.cameraPosition({
-    x: target.x + direction.x / length * distance,
-    y: target.y + direction.y / length * distance,
-    z: target.z + direction.z / length * distance,
-  }, target, transitionMs);
+  const camera = graph.cameraPosition() as { x: number; y: number; z: number };
+  const focus = calculateNodeFocus(camera, target, nodeSize(node), twoDimensional);
+  graph.cameraPosition(focus.position, focus.target, transitionMs);
 }
 
 export function GraphView({
@@ -394,6 +380,7 @@ export function GraphView({
   paused = false,
   twoDimensional,
   glowEnabled = true,
+  focusRevision = 0,
   onSelect,
   onLayoutChange,
 }: GraphViewProps) {
@@ -411,6 +398,9 @@ export function GraphView({
   const pausedRef = useRef(paused);
   const animationPausedRef = useRef(false);
   const dimensionsInitializedRef = useRef(false);
+  const graphReadyRef = useRef(false);
+  const focusRequestedRef = useRef(false);
+  const twoDimensionalRef = useRef(twoDimensional);
   const [graphError, setGraphError] = useState<string | null>(null);
 
   selectedIdRef.current = selectedId;
@@ -418,6 +408,7 @@ export function GraphView({
   onLayoutChangeRef.current = onLayoutChange;
   simulatedRef.current = simulated;
   glowEnabledRef.current = glowEnabled;
+  twoDimensionalRef.current = twoDimensional;
   pausedRef.current = paused;
 
   const graphData = useMemo(() => {
@@ -469,6 +460,8 @@ export function GraphView({
       // Each ForceGraph instance needs its own initialization guard. React development
       // effect replay can construct, destroy, and construct the instance on one fiber.
       dimensionsInitializedRef.current = false;
+      graphReadyRef.current = false;
+      focusRequestedRef.current = false;
       animationPausedRef.current = false;
       const graph = new ForceGraph3D(host) as unknown as GraphInstance;
       let initialFitDone = false;
@@ -521,7 +514,6 @@ export function GraphView({
         .linkHoverPrecision(6)
         .onNodeClick((node) => {
           onSelectRef.current(node.id);
-          focusNode(graph, node, nodesRef.current, transitionMs);
         })
         .onNodeDragEnd((node) => {
           node.fx = node.x;
@@ -533,7 +525,10 @@ export function GraphView({
           if (graphRef.current !== graph) return;
           if (!initialFitDone) {
             initialFitDone = true;
-            graph.zoomToFit(transitionMs, 80);
+            graphReadyRef.current = true;
+            const requestedNode = focusRequestedRef.current ? nodesRef.current.find((node) => node.id === selectedIdRef.current) : undefined;
+            if (requestedNode) focusNode(graph, requestedNode, twoDimensionalRef.current, transitionMs);
+            else graph.zoomToFit(transitionMs, 80);
             host.dataset.layoutReady = 'true';
           }
           scheduleLayoutSave();
@@ -715,13 +710,15 @@ export function GraphView({
 
   useEffect(() => {
     const graph = graphRef.current;
-    if (!graph || !selectedId) return;
+    if (!graph || !selectedId || focusRevision === 0) return;
+    focusRequestedRef.current = true;
+    if (!graphReadyRef.current) return;
     const node = nodesRef.current.find((item) => item.id === selectedId);
     if (!node) return;
-    focusNode(graph, node, nodesRef.current,
+    focusNode(graph, node, twoDimensionalRef.current,
       window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 550,
     );
-  }, [selectedId]);
+  }, [focusRevision, selectedId]);
 
   const edgeCount = snapshot.links.length;
   const selectedEdgeCount = selectedLinkCount(snapshot.links, selectedId);
