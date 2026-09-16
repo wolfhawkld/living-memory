@@ -4,7 +4,7 @@ Living Memory 当前处于研究、设计与原型准备阶段。仓库提供设
 
 ## 开始前
 
-1. 阅读 [README](README.md) 与[阶段进展总结](docs/progress-summary.md)，了解已确认方向与待决策事项。
+1. 阅读 [README](README.md)、[首版需求](docs/requirements/v0.1.md)与[开发任务](docs/planning/development-tasks-v0.1.md)，了解已确认方向、范围、依赖与验收标准。
 2. 阅读[个人记忆强化流程](docs/design/personal-memory-workflow.md)，明确内容保持、场景调用以及提示条件的区别。
 3. 涉及界面时参考[视觉规范](docs/design/visualization-spec.md)和[技术选型](docs/research/visualization-options.md)；涉及知识/语音通道时参考[事件设计](docs/design/event-triggers-and-voice.md)。
 
@@ -12,11 +12,11 @@ Living Memory 当前处于研究、设计与原型准备阶段。仓库提供设
 
 ## 任务与代码评审
 
-开发前共同确定首版任务、依赖、负责人和可检查的验收标准。使用 GitHub Issues 跟踪确定后的任务；当前不会把所有设计候选自动变成开发承诺。
+完整首版已拆成 LM-001～LM-018，当前均未实施。最新顺序是先按[时间驱动原型](docs/design/time-first-prototype.md)的五步收敛实现，完整任务作为后续路线。开发前认领相应范围、确认实际规模和依赖；用 GitHub Issues 跟踪认领后的工作，关联对应验收，不将完整版本的全部要求压入 P0。
 
 每项任务使用独立分支，通过 Pull Request 合入 `main`。PR 说明实际改变、关联任务、验证结果与尚未覆盖的限制；涉及视觉交互时提供截图或操作记录。检查应与改动相关，文档或简单样式调整不必增加无意义的测试。
 
-架构或任务范围发生变化时，同步更新对应设计记录，注明决定依据。图谱技术已确定为 `3d-force-graph` + Three.js；Obsidian 宿主、React、存储和复习模型仍需按设计记录推进决策。
+架构或任务范围发生变化时，同步更新对应设计记录，注明决定依据。用户已确认独立 Web 先行、Obsidian 后续接入，图谱技术为 `3d-force-graph` + Three.js。React、本地服务、SQLite 与初始再访规则是[技术设计](docs/design/technical-design-v0.1.md)的工程提案；记忆语义先用行为轨迹核对，不能由视图或通道各自实现另一套规则。
 
 ## 数据与研究约定
 
