@@ -1,10 +1,11 @@
 import { expect, test, type Page, type APIRequestContext } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { createDemoRecord, type DemoRecord } from '../../src/core/demo-snapshot';
 import type { ExportData, Snapshot } from '../../src/shared/types';
 
 type DemoExport = {
   kind: 'living-memory-demo';
-  record: Record<string, unknown>;
+  record: DemoRecord;
   preview: {
     offsetDays: number;
     asOf: string;
@@ -61,6 +62,35 @@ async function expectTimeIndicator(page: Page, value: string) {
   await expect(page.locator('.right-panel .time-indicator strong')).toHaveText(value);
 }
 
+async function graphBackgroundPixel(page: Page) {
+  const screenshot = await page.locator('.graph-canvas').screenshot();
+  return page.evaluate(async ({ base64, x, y }: { base64: string; x: number; y: number }) => {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const next = new Image();
+      next.onload = () => resolve(next);
+      next.onerror = () => reject(new Error('无法解码图谱截图。'));
+      next.src = `data:image/png;base64,${base64}`;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext('2d');
+    if (!context || image.naturalWidth <= x || image.naturalHeight <= y) {
+      throw new Error('图谱截图尺寸不足，无法采样背景。');
+    }
+    context.drawImage(image, 0, 0);
+    const data = context.getImageData(x, y, 1, 1).data;
+    return { r: data[0], g: data[1], b: data[2], a: data[3] };
+  }, { base64: screenshot.toString('base64'), x: 10, y: 10 });
+}
+
+function expectGraphBackground(pixel: { r: number; g: number; b: number; a: number }) {
+  expect(pixel.a).toBe(255);
+  expect(Math.abs(pixel.r - 7)).toBeLessThanOrEqual(5);
+  expect(Math.abs(pixel.g - 12)).toBeLessThanOrEqual(5);
+  expect(Math.abs(pixel.b - 24)).toBeLessThanOrEqual(5);
+}
+
 test('demo mode shows the seeded time stages and persists its source-scoped preview', async ({ page, request }) => {
   const realBefore = await exported(request);
   const sourceResponse = await request.get('/api/session');
@@ -77,6 +107,17 @@ test('demo mode shows the seeded time stages and persists its source-scoped prev
   expect(panelText).toMatch(/较久未重温\s*6|6\s*较久未重温/);
   expect(panelText).toMatch(/尚未评估\s*2|2\s*尚未评估/);
   await expect(page.locator('.graph-canvas')).toHaveAttribute('data-layout-ready', 'true');
+  const glowButton = page.getByRole('button', { name: '发光效果', exact: true });
+  await expect(glowButton).toHaveAttribute('aria-pressed', 'true');
+  expectGraphBackground(await graphBackgroundPixel(page));
+  await glowButton.click();
+  await expect(glowButton).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('.graph-canvas')).toBeVisible();
+  expectGraphBackground(await graphBackgroundPixel(page));
+  await glowButton.click();
+  await expect(glowButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.graph-canvas')).toBeVisible();
+  expectGraphBackground(await graphBackgroundPixel(page));
   await page.screenshot({ path: 'test-results/p0-demo-colors.png', fullPage: true });
   await expect(demoPanel.locator('details summary')).toHaveText('查看初始模拟数值');
   await demoPanel.locator('details summary').click();
@@ -198,6 +239,72 @@ test('demo export stays isolated and graph relations remain visible through time
   await expect(page.locator('.right-panel .time-indicator')).toContainText('未知');
   await enterDemoMode(page);
   await expect(page.getByRole('slider', { name: '模拟时间，单位天' })).toHaveValue('7');
+});
+
+test('an older partial demo record is extended once and remains isolated from real records', async ({ page, request }) => {
+  const realBefore = await exported(request);
+  const sourceResponse = await request.get('/api/session');
+  expect(sourceResponse.ok()).toBeTruthy();
+  const sourceId = (await sourceResponse.json() as { sourceId: string }).sourceId;
+  const sourceSnapshot = await snapshot(request);
+  expect(sourceSnapshot.concepts).toHaveLength(16);
+
+  const baseAsOf = '2026-09-01T00:00:00.000Z';
+  const generatedAt = '2026-09-02T03:04:05.000Z';
+  const completeRecord = createDemoRecord(sourceSnapshot, sourceId, baseAsOf);
+  const oldAssignments = completeRecord.assignments.slice(0, 8);
+  const oldUnknown = oldAssignments.find((assignment) => assignment.elapsedDays === null);
+  expect(oldUnknown).toBeDefined();
+  const partialRecord: DemoRecord = {
+    ...completeRecord,
+    generatedAt,
+    baseAsOf,
+    assignments: oldAssignments,
+  };
+  const recordKey = `living-memory.demo-record.v1.${sourceId}`;
+
+  await page.addInitScript(({ record, sourceId, recordKey }) => {
+    if (window.localStorage.getItem(recordKey)) return;
+    window.localStorage.setItem(recordKey, JSON.stringify(record));
+    window.localStorage.setItem(`living-memory.demo-enabled.v1.${sourceId}`, 'true');
+    window.localStorage.setItem(`living-memory.demo-offset.v1.${sourceId}`, '7');
+  }, { record: partialRecord, sourceId, recordKey });
+
+  await page.goto('/');
+  await expect(page.locator('.demo-panel')).toBeVisible();
+  await expect(page.getByRole('slider', { name: '模拟时间，单位天' })).toHaveValue('7');
+  const loaded = await demoDownload(page);
+  expect(loaded.preview.offsetDays).toBe(7);
+  expect(loaded.record.sourceId).toBe(sourceId);
+  expect(loaded.record.generatedAt).toBe(generatedAt);
+  expect(loaded.record.baseAsOf).toBe(baseAsOf);
+  expect(loaded.record.assignments.slice(0, oldAssignments.length)).toEqual(oldAssignments);
+  expect(loaded.record.assignments).toHaveLength(16);
+  expect(loaded.record.assignments.map((assignment) => assignment.conceptId).sort()).toEqual(
+    sourceSnapshot.concepts.map((concept) => concept.id).sort(),
+  );
+  expect(loaded.record.assignments.some((assignment) => assignment.conceptId === oldUnknown!.conceptId && assignment.elapsedDays === null)).toBe(true);
+  expect(loaded.preview.states[oldUnknown!.conceptId]).toEqual(expect.objectContaining({
+    status: 'unknown',
+    decay: null,
+    elapsedDays: null,
+  }));
+
+  await page.reload();
+  await expect(page.locator('.demo-panel')).toBeVisible();
+  await expect(page.getByRole('slider', { name: '模拟时间，单位天' })).toHaveValue('7');
+  const reloaded = await demoDownload(page);
+  expect(reloaded.record).toEqual(loaded.record);
+  expect(reloaded.preview.offsetDays).toBe(7);
+  expect(reloaded.preview.asOf).toBe(loaded.preview.asOf);
+
+  // Let any normal layout debounce settle while the graph is still read-only demo mode.
+  await page.waitForTimeout(1_500);
+  const realAfter = await exported(request);
+  expect(realAfter.anchors).toEqual(realBefore.anchors);
+  expect(realAfter.observations).toEqual(realBefore.observations);
+  expect(realAfter.config).toEqual(realBefore.config);
+  expect(realAfter.layout).toEqual(realBefore.layout);
 });
 
 test('real WebGL, lookup, review, simulated time and reload form one persistent workflow', async ({ page, request }) => {

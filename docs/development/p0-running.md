@@ -16,6 +16,8 @@ npm start
 
 首次打开进入明确标注的“示例状态”，用虚构时间间隔展示不同颜色。可展开初始数值、拖动时间轴、导出模拟记录；点击“查看真实记录”开始真实学习操作。详细数值、记录位置与连线说明见[时间颜色与连线](time-colors-and-links.md)。
 
+图谱默认启用发光效果，可用顶部“发光效果”开关关闭。长节点文字自动折行，超出显示行数时省略；悬停节点或查看右侧详情可读完整名称。
+
 开发时使用 `npm run dev`，打开 `http://127.0.0.1:5173`；前端代理 API 到本地服务。启动新模式前关闭旧实例，避免端口冲突。
 
 ## 接入自己的 progressive-kg
@@ -23,7 +25,7 @@ npm start
 知识源由启动环境指定，原知识库只读。以下示例假定两个项目相邻；按实际位置修改路径：
 
 ```bash
-LM_KG_ROOT="../progressive-kg" LM_KG_INCLUDE="Cognition/Math" LM_KG_LIMIT=20 npm start
+LM_KG_ROOT="../progressive-kg" LM_KG_INCLUDE="Cognition/Math" LM_KG_LIMIT=100 npm start
 ```
 
 PowerShell 可以先设置环境变量，再启动：
@@ -31,7 +33,7 @@ PowerShell 可以先设置环境变量，再启动：
 ```powershell
 $env:LM_KG_ROOT = "C:\path\to\progressive-kg"
 $env:LM_KG_INCLUDE = "Cognition/Math"
-$env:LM_KG_LIMIT = "20"
+$env:LM_KG_LIMIT = "100"
 npm start
 ```
 
@@ -42,6 +44,8 @@ npm start
 | `LM_KG_LIMIT` | 20 | 最多展示的概念数，原型上限 300 |
 | `LM_DATA_DIR` | `data/local` | 私人学习库目录，默认已被 Git 忽略 |
 | `LM_PORT` | 4317 | 本地服务端口 |
+
+当前数学目录的完整展示使用上面的 `LM_KG_LIMIT=100`：本轮共 87 个概念、386 条范围内关系。该值是加载上限，并非节点数量；目录超过 100 个概念时仍会截断，可按需调整到最多 300。切换加载范围需要重启服务并刷新页面。浏览器会为新载入概念补充分档模拟值，保留旧概念的模拟值、时间起点和偏移；真实学习历史不因扩大范围而重建。
 
 浏览器和服务可以位于 Windows/WSL 的不同侧，但由服务读取其能访问的路径；浏览器不直接扫描本机目录。若本机不能通过回环地址跨环境访问，先把服务和浏览器放到能互通的运行环境；此原型不自动开放到局域网。
 

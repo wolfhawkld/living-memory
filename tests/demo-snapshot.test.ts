@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   DEMO_HALF_LIFE_DAYS,
   createDemoRecord,
+  extendDemoRecord,
   isDemoRecord,
   projectDemoSnapshot,
   type DemoRecord,
@@ -66,6 +67,35 @@ const snapshot: Snapshot = {
   observationsCount: 9,
 };
 
+const demoStages: readonly (number | null)[] = [0, 3, 7, 10, 14, 21, 28, null];
+
+function makeDemoSnapshot(count: number): Snapshot {
+  const generatedConcepts: Concept[] = Array.from({ length: count }, (_, index) => ({
+    id: `math:${String(index).padStart(3, '0')}`,
+    title: `Concept ${index}`,
+    aliases: [],
+    domain: 'math',
+    summary: `summary ${index}`,
+    body: `body ${index}`,
+    source: { path: `${index}.md`, revision: `rev-${index}` },
+  }));
+  return {
+    ...snapshot,
+    concepts: generatedConcepts,
+    links: [],
+    source: { ...snapshot.source, conceptCount: count },
+    states: Object.fromEntries(generatedConcepts.map((concept) => [concept.id, {
+      conceptId: concept.id,
+      status: 'unknown' as const,
+      decay: null,
+      elapsedDays: null,
+      anchor: null,
+      reason: null,
+      asOf: snapshot.asOf,
+    }])),
+  };
+}
+
 test('createDemoRecord assigns stable elapsed-day stages by sorted concept ID', () => {
   const record = createDemoRecord(snapshot, 'source:test');
   assert.equal(record.version, 1);
@@ -92,6 +122,77 @@ test('assignment cycle includes every initial color stage and then unknown', () 
   const manySnapshot = { ...snapshot, concepts: manyConcepts };
   const record = createDemoRecord(manySnapshot, 'source:test');
   assert.deepEqual(record.assignments.map((item) => item.elapsedDays), [0, 3, 7, 10, 14, 21, 28, null, 0]);
+});
+
+test('extendDemoRecord expands 20 concepts to 87 with append-only stable stages', () => {
+  const initialSnapshot = makeDemoSnapshot(20);
+  const expandedSnapshot = makeDemoSnapshot(87);
+  expandedSnapshot.concepts.reverse();
+  const changedExistingConcept = expandedSnapshot.concepts.find((concept) => concept.id === 'math:000');
+  assert.ok(changedExistingConcept);
+  changedExistingConcept.source.revision = 'rev-0-changed';
+  const initial = createDemoRecord(initialSnapshot, 'source:test', '2026-01-01T00:00:00Z');
+  const initialBefore = structuredClone(initial);
+
+  const extended = extendDemoRecord(expandedSnapshot, initial);
+
+  assert.deepEqual(initial, initialBefore);
+  assert.equal(extended.assignments.length, 87);
+  assert.deepEqual(extended.assignments.slice(0, 20), initial.assignments);
+  assert.deepEqual(
+    extended.assignments.slice(20).map(({ conceptId, sourceRevision, elapsedDays }) => [
+      conceptId,
+      sourceRevision,
+      elapsedDays,
+    ]),
+    Array.from({ length: 67 }, (_, offset) => {
+      const index = offset + 20;
+      return [`math:${String(index).padStart(3, '0')}`, `rev-${index}`, demoStages[index % demoStages.length]];
+    }),
+  );
+  assert.equal(extended.assignments[0].sourceRevision, 'rev-0');
+  assert.equal(extended.generatedAt, initial.generatedAt);
+  assert.equal(extended.baseAsOf, initial.baseAsOf);
+  assert.equal(extended.sourceId, initial.sourceId);
+  assert.equal(extended.modelVersion, initial.modelVersion);
+  assert.equal(extended.halfLifeDays, initial.halfLifeDays);
+  assert.equal(extended.assignments[7].elapsedDays, null);
+});
+
+test('extendDemoRecord is idempotent, preserves removed assignments, and keeps true unknowns', () => {
+  const initialSnapshot = makeDemoSnapshot(20);
+  const expandedSnapshot = makeDemoSnapshot(87);
+  const initial = createDemoRecord(initialSnapshot, 'source:test');
+  const shrunkenSnapshot: Snapshot = {
+    ...initialSnapshot,
+    concepts: [initialSnapshot.concepts[19], initialSnapshot.concepts[3]],
+  };
+  const afterShrink = extendDemoRecord(shrunkenSnapshot, initial);
+  const afterExpand = extendDemoRecord(expandedSnapshot, afterShrink);
+  const directExpand = extendDemoRecord(expandedSnapshot, initial);
+
+  assert.deepEqual(afterShrink, initial);
+  assert.deepEqual(afterExpand, directExpand);
+  assert.deepEqual(extendDemoRecord(expandedSnapshot, afterExpand), afterExpand);
+
+  const projectedWithOldRecord = projectDemoSnapshot(expandedSnapshot, initial);
+  assert.equal(projectedWithOldRecord.states['math:020'].status, 'unknown');
+  assert.equal(projectedWithOldRecord.states['math:020'].anchor, null);
+  assert.match(projectedWithOldRecord.states['math:020'].reason ?? '', /模拟起点/);
+});
+
+test('extendDemoRecord keeps old revisions so changed concepts remain pending', () => {
+  const initialSnapshot = makeDemoSnapshot(20);
+  const expandedSnapshot = makeDemoSnapshot(21);
+  expandedSnapshot.concepts[0].source.revision = 'rev-0-changed';
+  const initial = createDemoRecord(initialSnapshot, 'source:test');
+  const extended = extendDemoRecord(expandedSnapshot, initial);
+  const projected = projectDemoSnapshot(expandedSnapshot, extended);
+
+  assert.equal(extended.assignments[0].sourceRevision, 'rev-0');
+  assert.equal(extended.assignments[20].sourceRevision, 'rev-20');
+  assert.equal(projected.states['math:000'].status, 'pending');
+  assert.equal(projected.states['math:020'].status, 'stale');
 });
 
 test('projectDemoSnapshot uses synthetic anchors, fixed H=7, and preserves graph data', () => {
@@ -193,6 +294,10 @@ test('demo record validation rejects invalid dates, elapsed days, duplicate IDs,
   assert.throws(() => projectDemoSnapshot(snapshot, record, Number.NaN), /有限/);
   assert.throws(() => projectDemoSnapshot(snapshot, record, Number.POSITIVE_INFINITY), /有限/);
   assert.throws(() => projectDemoSnapshot(snapshot, invalid((copy) => { copy.baseAsOf = 'not-a-date'; })), /格式无效/);
+  assert.throws(
+    () => extendDemoRecord(snapshot, invalid((copy) => { copy.assignments[0].conceptId = ''; })),
+    /格式无效/,
+  );
 });
 
 test('create and project do not modify their inputs', () => {

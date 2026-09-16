@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph3D from '3d-force-graph';
 import * as THREE from 'three';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { Concept, GraphLink, Layout, MemoryState, Snapshot } from '../shared/types';
 
 export interface GraphViewProps {
@@ -10,8 +12,14 @@ export interface GraphViewProps {
   simulated: boolean;
   paused?: boolean;
   twoDimensional: boolean;
+  glowEnabled?: boolean;
   onSelect: (conceptId: string) => void;
   onLayoutChange: (layout: Layout) => void;
+}
+
+interface PostProcessingComposer {
+  addPass: (pass: UnrealBloomPass | OutputPass) => void;
+  removePass: (pass: UnrealBloomPass | OutputPass) => void;
 }
 
 interface GraphNode extends Concept {
@@ -38,6 +46,7 @@ interface GraphInstance {
   linkDirectionalArrowColor: (value: string | ((link: GraphLink) => string)) => GraphInstance;
   linkDirectionalArrowRelPos: (value: number) => GraphInstance;
   linkHoverPrecision: (value: number) => GraphInstance;
+  postProcessingComposer: () => PostProcessingComposer;
   backgroundColor: (value: string) => GraphInstance;
   showNavInfo: (value: boolean) => GraphInstance;
   enableNodeDrag: (value: boolean) => GraphInstance;
@@ -78,6 +87,21 @@ const STATUS_COLORS: Record<MemoryState['status'], string> = {
 const LINK_COLOR = '#668caf';
 const LINK_MUTED_COLOR = '#2b4563';
 const LINK_SELECTED_COLOR = '#b5edff';
+
+const LABEL_WIDTH_PX = 512;
+const LABEL_MAX_WIDTH_PX = 456;
+const LABEL_FONT = '600 26px "Microsoft YaHei", "PingFang SC", sans-serif';
+const LABEL_LINE_HEIGHT_PX = 30;
+const LABEL_PADDING_Y_PX = 21;
+const LABEL_BASE_HEIGHT_PX = 72;
+const LABEL_MAX_LINES = 3;
+const LABEL_WORLD_WIDTH = 85;
+const LABEL_WORLD_HEIGHT_PER_BASE = 12;
+
+interface LabelLayout {
+  texture: THREE.Texture;
+  heightPx: number;
+}
 
 function hashPosition(id: string): { x: number; y: number; z: number } {
   let hash = 2166136261;
@@ -141,17 +165,18 @@ function cloneLinks(links: GraphLink[]): GraphLink[] {
   }));
 }
 
-function glowTexture(color: string): THREE.Texture {
+function glowTexture(): THREE.Texture {
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 128;
   const context = canvas.getContext('2d');
   if (context) {
     const gradient = context.createRadialGradient(64, 64, 2, 64, 64, 64);
-    gradient.addColorStop(0, `${color}ee`);
-    gradient.addColorStop(0.16, `${color}88`);
-    gradient.addColorStop(0.48, `${color}2e`);
-    gradient.addColorStop(1, `${color}00`);
+    // Tint only the material so a later time-state change cannot retain the old hue.
+    gradient.addColorStop(0, '#ffffffee');
+    gradient.addColorStop(0.16, '#ffffff88');
+    gradient.addColorStop(0.48, '#ffffff2e');
+    gradient.addColorStop(1, '#ffffff00');
     context.fillStyle = gradient;
     context.fillRect(0, 0, 128, 128);
   }
@@ -160,26 +185,87 @@ function glowTexture(color: string): THREE.Texture {
   return texture;
 }
 
-function labelTexture(text: string, color: string): THREE.Texture {
+function labelUnits(text: string): string[] {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  return normalized.match(/[A-Za-z0-9]+(?:[._/'-][A-Za-z0-9]+)*|./gu) ?? (normalized ? [normalized] : ['']);
+}
+
+function fitLabelEllipsis(value: string, measure: (text: string) => number, maxWidth: number): string {
+  const ellipsis = '…';
+  let result = value.trimEnd();
+  while (result && measure(`${result}${ellipsis}`) > maxWidth) {
+    result = Array.from(result).slice(0, -1).join('');
+  }
+  return result ? `${result}${ellipsis}` : ellipsis;
+}
+
+function wrapLabelLines(text: string, measure: (text: string) => number, maxWidth = LABEL_MAX_WIDTH_PX): string[] {
+  const lines: string[] = [];
+  let current = '';
+  const pushCurrent = () => {
+    const line = current.trim();
+    if (line) lines.push(line);
+    current = '';
+  };
+
+  for (const unit of labelUnits(text)) {
+    if (/\s/.test(unit)) {
+      if (current && !current.endsWith(' ')) current += ' ';
+      continue;
+    }
+    const candidate = `${current}${unit}`;
+    if (measure(candidate) <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+    pushCurrent();
+    if (measure(unit) <= maxWidth) {
+      current = unit;
+      continue;
+    }
+    for (const character of Array.from(unit)) {
+      const characterCandidate = `${current}${character}`;
+      if (current && measure(characterCandidate) > maxWidth) pushCurrent();
+      current += character;
+    }
+  }
+  pushCurrent();
+  return lines.length > 0 ? lines : [''];
+}
+
+function createLabelLayout(text: string, color: string): LabelLayout {
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 72;
+  canvas.width = LABEL_WIDTH_PX;
   const context = canvas.getContext('2d');
+  const measure = (value: string) => context ? context.measureText(value).width : Array.from(value).length * 26;
+  if (context) context.font = LABEL_FONT;
+  const wrapped = wrapLabelLines(text, measure);
+  const truncated = wrapped.length > LABEL_MAX_LINES
+    ? [...wrapped.slice(0, LABEL_MAX_LINES - 1), fitLabelEllipsis(wrapped[LABEL_MAX_LINES - 1], measure, LABEL_MAX_WIDTH_PX)]
+    : wrapped;
+  const heightPx = LABEL_PADDING_Y_PX * 2 + truncated.length * LABEL_LINE_HEIGHT_PX;
+  canvas.height = heightPx;
   if (context) {
-    context.font = '600 26px "Microsoft YaHei", "PingFang SC", sans-serif';
+    context.font = LABEL_FONT;
     context.textAlign = 'center';
     context.textBaseline = 'middle';
     context.shadowColor = '#030810';
     context.shadowBlur = 9;
     context.fillStyle = '#030810';
-    context.fillText(text, 256, 36);
+    for (const [index, line] of truncated.entries()) {
+      const y = LABEL_PADDING_Y_PX + LABEL_LINE_HEIGHT_PX * (index + 0.5);
+      context.fillText(line, LABEL_WIDTH_PX / 2, y);
+    }
     context.shadowBlur = 0;
     context.fillStyle = color === STATUS_COLORS.unknown ? '#a5b4cc' : '#dce9fb';
-    context.fillText(text, 256, 36);
+    for (const [index, line] of truncated.entries()) {
+      const y = LABEL_PADDING_Y_PX + LABEL_LINE_HEIGHT_PX * (index + 0.5);
+      context.fillText(line, LABEL_WIDTH_PX / 2, y);
+    }
   }
   const texture = new THREE.CanvasTexture(canvas);
   texture.needsUpdate = true;
-  return texture;
+  return { texture, heightPx };
 }
 
 function nodeSize(node: GraphNode): number {
@@ -189,7 +275,7 @@ function nodeSize(node: GraphNode): number {
   return 4.7;
 }
 
-function updateNodeVisual(node: GraphNode): void {
+function updateNodeVisual(node: GraphNode, glowEnabled = true): void {
   const group = node.__mesh;
   if (!group) return;
   const color = STATUS_COLORS[node.state.status];
@@ -207,11 +293,20 @@ function updateNodeVisual(node: GraphNode): void {
   ringMaterial.opacity = node.state.status === 'unknown' ? 0.58 : 0.22;
   const haloMaterial = visual.halo.material as THREE.SpriteMaterial;
   haloMaterial.color.set(color);
-  haloMaterial.opacity = node.state.status === 'unknown' ? 0.16 : 0.42;
+  haloMaterial.opacity = glowEnabled ? (node.state.status === 'unknown' ? 0.24 : 0.58) : 0;
+  visual.halo.visible = glowEnabled;
   const size = nodeSize(node);
   visual.sphere.scale.setScalar(size / 5);
   visual.ring.scale.setScalar(size / 5);
-  visual.halo.scale.set(size * 4.6, size * 4.6, 1);
+  visual.halo.scale.set(size * 5.8, size * 5.8, 1);
+  visual.label.position.y = size + 7 + (visual.label.scale.y - LABEL_WORLD_HEIGHT_PER_BASE) / 2;
+}
+
+function applyLabelLayout(label: THREE.Sprite, layout: LabelLayout, size: number): void {
+  const worldHeight = LABEL_WORLD_HEIGHT_PER_BASE * layout.heightPx / LABEL_BASE_HEIGHT_PX;
+  label.scale.set(LABEL_WORLD_WIDTH, worldHeight, 1);
+  // Keep the bottom of a multi-line label at the same height as the old one-line label.
+  label.position.set(0, size + 7 + (worldHeight - LABEL_WORLD_HEIGHT_PER_BASE) / 2, 0);
 }
 
 function updateNodeLabel(node: GraphNode): void {
@@ -221,12 +316,13 @@ function updateNodeLabel(node: GraphNode): void {
   if (!visual) return;
   const material = visual.label.material as THREE.SpriteMaterial;
   material.map?.dispose();
-  material.map = labelTexture(node.title, STATUS_COLORS[node.state.status]);
+  const layout = createLabelLayout(node.title, STATUS_COLORS[node.state.status]);
+  material.map = layout.texture;
   material.needsUpdate = true;
-  visual.label.scale.set(85, 12, 1);
+  applyLabelLayout(visual.label, layout, nodeSize(node));
 }
 
-function buildNodeVisual(node: GraphNode): THREE.Group {
+function buildNodeVisual(node: GraphNode, glowEnabled = true): THREE.Group {
   const color = STATUS_COLORS[node.state.status];
   const size = nodeSize(node);
   const group = new THREE.Group();
@@ -241,21 +337,20 @@ function buildNodeVisual(node: GraphNode): THREE.Group {
   ring.rotation.x = Math.PI / 2;
   const halo = new THREE.Sprite(
     new THREE.SpriteMaterial({
-      map: glowTexture(color),
+      map: glowTexture(),
       transparent: true,
-      opacity: 0.42,
+      opacity: 0.58,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     }),
   );
-  halo.scale.set(size * 4.6, size * 4.6, 1);
-  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTexture(node.title, color), transparent: true, depthWrite: false, opacity: 0.92 }));
-  label.position.set(0, size + 7, 0);
-  label.scale.set(85, 12, 1);
+  const labelLayout = createLabelLayout(node.title, color);
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelLayout.texture, transparent: true, depthWrite: false, opacity: 0.92 }));
+  applyLabelLayout(label, labelLayout, size);
   group.add(halo, ring, sphere, label);
   group.userData.lmVisual = { sphere, halo, ring, label };
   node.__mesh = group;
-  updateNodeVisual(node);
+  updateNodeVisual(node, glowEnabled);
   return group;
 }
 
@@ -268,6 +363,29 @@ function canUseWebGL(): boolean {
   }
 }
 
+function focusNode(graph: GraphInstance, node: GraphNode, nodes: GraphNode[], transitionMs: number): void {
+  const positioned = nodes.filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y) && Number.isFinite(item.z));
+  const count = positioned.length || 1;
+  const center = positioned.reduce((sum, item) => ({
+    x: sum.x + (item.x ?? 0) / count,
+    y: sum.y + (item.y ?? 0) / count,
+    z: sum.z + (item.z ?? 0) / count,
+  }), { x: 0, y: 0, z: 0 });
+  const radius = positioned.reduce((largest, item) => Math.max(largest,
+    Math.hypot((item.x ?? 0) - center.x, (item.y ?? 0) - center.y, (item.z ?? 0) - center.z)), 0);
+  const target = { x: node.x ?? 0, y: node.y ?? 0, z: node.z ?? 0 };
+  const direction = { x: target.x - center.x, y: target.y - center.y, z: target.z - center.z };
+  if (Math.hypot(direction.x, direction.y, direction.z) < 1) direction.z = 1;
+  const length = Math.hypot(direction.x, direction.y, direction.z);
+  // Stay outside the node cloud rather than flying inside a dense neighborhood.
+  const distance = Math.max(240, radius * 1.4);
+  graph.cameraPosition({
+    x: target.x + direction.x / length * distance,
+    y: target.y + direction.y / length * distance,
+    z: target.z + direction.z / length * distance,
+  }, target, transitionMs);
+}
+
 export function GraphView({
   snapshot,
   layout,
@@ -275,17 +393,21 @@ export function GraphView({
   simulated,
   paused = false,
   twoDimensional,
+  glowEnabled = true,
   onSelect,
   onLayoutChange,
 }: GraphViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<GraphInstance | null>(null);
+  const bloomPassRef = useRef<UnrealBloomPass | null>(null);
+  const outputPassRef = useRef<OutputPass | null>(null);
   const nodesRef = useRef<GraphNode[]>([]);
   const layoutTimerRef = useRef<number | null>(null);
   const selectedIdRef = useRef(selectedId);
   const onSelectRef = useRef(onSelect);
   const onLayoutChangeRef = useRef(onLayoutChange);
   const simulatedRef = useRef(simulated);
+  const glowEnabledRef = useRef(glowEnabled);
   const pausedRef = useRef(paused);
   const animationPausedRef = useRef(false);
   const dimensionsInitializedRef = useRef(false);
@@ -295,6 +417,7 @@ export function GraphView({
   onSelectRef.current = onSelect;
   onLayoutChangeRef.current = onLayoutChange;
   simulatedRef.current = simulated;
+  glowEnabledRef.current = glowEnabled;
   pausedRef.current = paused;
 
   const graphData = useMemo(() => {
@@ -352,6 +475,10 @@ export function GraphView({
       const transitionMs = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 550;
       graphRef.current = graph;
       nodesRef.current = graphData.nodes;
+      // A scene background clears in the current render target's color space.
+      // Relying only on renderer.clearColor can reuse the prior screen-space
+      // clear value when the composer's RenderPass switches to a linear buffer.
+      graph.scene().background = new THREE.Color('#070c18');
       graph
         .backgroundColor('#070c18')
         .showNavInfo(false)
@@ -361,13 +488,13 @@ export function GraphView({
         .warmupTicks(0)
         .d3AlphaDecay(0.045)
         .numDimensions(twoDimensional ? 2 : 3)
-        .nodeThreeObject(buildNodeVisual)
+        .nodeThreeObject((node) => buildNodeVisual(node, glowEnabledRef.current))
         .nodeThreeObjectExtend(false)
-        .nodeLabel((node) => `<strong>${escapeHtml(node.title)}</strong><br/><span>${escapeHtml(node.domain)}</span>`)
+        .nodeLabel((node) => `<strong style="display:inline-block;max-width:280px;white-space:normal;overflow-wrap:anywhere;line-height:1.3">${escapeHtml(node.title)}</strong><br/><span style="display:inline-block;max-width:280px;white-space:normal;overflow-wrap:anywhere;line-height:1.3">${escapeHtml(node.domain)}</span>`)
         .linkLabel((link) => {
           const type = link.type?.trim() || '相关';
           const description = link.description?.trim();
-          return `<strong>关系：${escapeHtml(type)}</strong>${description ? `<br/><span>${escapeHtml(description)}</span>` : ''}`;
+          return `<span style="display:inline-block;max-width:300px;white-space:normal;overflow-wrap:anywhere;line-height:1.35"><strong>关系：${escapeHtml(type)}</strong>${description ? `<br/><span>${escapeHtml(description)}</span>` : ''}</span>`;
         })
         .linkColor((link) => {
           const selected = selectedIdRef.current;
@@ -394,16 +521,7 @@ export function GraphView({
         .linkHoverPrecision(6)
         .onNodeClick((node) => {
           onSelectRef.current(node.id);
-          const x = node.x ?? 0;
-          const y = node.y ?? 0;
-          const z = node.z ?? 0;
-          const magnitude = Math.sqrt(x * x + y * y + z * z) || 1;
-          const distance = 80;
-          graph.cameraPosition(
-            { x: x + (x / magnitude) * distance, y: y + (y / magnitude) * distance, z: z + (z / magnitude) * distance },
-            { x, y, z },
-            transitionMs,
-          );
+          focusNode(graph, node, nodesRef.current, transitionMs);
         })
         .onNodeDragEnd((node) => {
           node.fx = node.x;
@@ -420,6 +538,38 @@ export function GraphView({
           }
           scheduleLayoutSave();
         });
+
+      // The halo sprites carry most of the glow. This low-strength bloom pass adds
+      // a restrained light spread without making dense relationship edges luminous.
+      let bloomPass: UnrealBloomPass | null = null;
+      let outputPass: OutputPass | null = null;
+      try {
+        bloomPass = new UnrealBloomPass(
+          new THREE.Vector2(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight)),
+          0.32,
+          0.35,
+          0.95,
+        );
+        // The built-in composer only has RenderPass. Keep the final color-space
+        // conversion after Bloom so the dark background retains its original color.
+        outputPass = new OutputPass();
+        bloomPass.enabled = glowEnabledRef.current;
+        outputPass.enabled = glowEnabledRef.current;
+        graph.postProcessingComposer().addPass(bloomPass);
+        graph.postProcessingComposer().addPass(outputPass);
+        bloomPassRef.current = bloomPass;
+        outputPassRef.current = outputPass;
+      } catch {
+        // Browsers without a compatible post-processing path still keep the sprite glow.
+        if (bloomPass) graph.postProcessingComposer().removePass(bloomPass);
+        if (outputPass) graph.postProcessingComposer().removePass(outputPass);
+        bloomPass?.dispose();
+        outputPass?.dispose();
+        bloomPass = null;
+        outputPass = null;
+        bloomPassRef.current = null;
+        outputPassRef.current = null;
+      }
 
       const ambient = new THREE.AmbientLight('#b6cbff', 0.7);
       const point = new THREE.PointLight('#65a9ff', 1.6, 500);
@@ -453,6 +603,16 @@ export function GraphView({
         graph.pauseAnimation?.();
         animationPausedRef.current = true;
         graphRef.current = null;
+        if (bloomPass) {
+          graph.postProcessingComposer().removePass(bloomPass);
+          bloomPass.dispose();
+          if (bloomPassRef.current === bloomPass) bloomPassRef.current = null;
+        }
+        if (outputPass) {
+          graph.postProcessingComposer().removePass(outputPass);
+          outputPass.dispose();
+          if (outputPassRef.current === outputPass) outputPassRef.current = null;
+        }
         graph._destructor?.();
         for (const node of nodesRef.current) {
           node.__mesh?.traverse((object) => {
@@ -479,6 +639,15 @@ export function GraphView({
   }, []);
 
   useEffect(() => {
+    const graph = graphRef.current;
+    const bloomPass = bloomPassRef.current;
+    if (bloomPass) bloomPass.enabled = glowEnabled;
+    if (outputPassRef.current) outputPassRef.current.enabled = glowEnabled;
+    for (const node of nodesRef.current) updateNodeVisual(node, glowEnabled);
+    graph?.refresh?.();
+  }, [glowEnabled]);
+
+  useEffect(() => {
     nodesRef.current = graphData.nodes;
     const graph = graphRef.current;
     if (!graph) return;
@@ -502,7 +671,7 @@ export function GraphView({
         incoming.fy = existing.fy;
         incoming.fz = existing.fz;
         incoming.__mesh = existing.__mesh;
-        updateNodeVisual(existing);
+        updateNodeVisual(existing, glowEnabledRef.current);
         if (titleChanged) updateNodeLabel(existing);
       }
     }
@@ -549,13 +718,7 @@ export function GraphView({
     if (!graph || !selectedId) return;
     const node = nodesRef.current.find((item) => item.id === selectedId);
     if (!node) return;
-    const x = node.x ?? 0;
-    const y = node.y ?? 0;
-    const z = node.z ?? 0;
-    const magnitude = Math.sqrt(x * x + y * y + z * z) || 1;
-    graph.cameraPosition(
-      { x: x + (x / magnitude) * 80, y: y + (y / magnitude) * 80, z: z + (z / magnitude) * 80 },
-      { x, y, z },
+    focusNode(graph, node, nodesRef.current,
       window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 550,
     );
   }, [selectedId]);

@@ -200,7 +200,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 
 .detail-head { padding: 29px 24px 21px; border-bottom: 1px solid var(--line); }
 .detail-domain { color: var(--accent); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
-.detail-head h2 { margin-top: 8px; font-size: 23px; line-height: 1.2; }
+.detail-head h2 { margin-top: 8px; font-size: 23px; line-height: 1.2; overflow-wrap: anywhere; }
 .alias-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 11px; }
 .alias-row span { padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--subtle); font-size: 9px; }
 .detail-state { justify-content: space-between; align-items: flex-end; padding: 19px 24px 10px; }
@@ -250,7 +250,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .content-details { margin-top: 10px; border: 1px solid var(--line); border-radius: 6px; background: rgba(18, 31, 51, .42); }
 .content-details summary { padding: 9px 10px; color: #a9bbd6; cursor: pointer; font-size: 10px; }
 .content-details summary::marker { color: var(--accent); }
-.content-details p, .source-body { margin: 0; padding: 0 10px 11px; color: #a0b1cb; font-size: 11px; line-height: 1.7; white-space: pre-wrap; }
+.content-details p, .source-body { margin: 0; padding: 0 10px 11px; color: #a0b1cb; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .source-body { max-height: 280px; overflow: auto; }
 .empty-panel { display: flex; min-height: 180px; flex-direction: column; align-items: center; justify-content: center; padding: 24px; color: var(--muted); text-align: center; }
 .empty-panel strong { margin-top: 8px; color: var(--text); font-size: 13px; }

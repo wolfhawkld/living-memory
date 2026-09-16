@@ -18,7 +18,7 @@ import {
   type PendingWrite,
 } from './api';
 import { GraphFallbackList, GraphView, STATUS_COLORS } from './GraphView';
-import { createDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
+import { createDemoRecord, extendDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
 import { DemoPanel } from './DemoPanel';
 import './styles.css';
 
@@ -171,6 +171,7 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [simDays, setSimDays] = useState(0);
   const [twoDimensional, setTwoDimensional] = useState(false);
+  const [glowEnabled, setGlowEnabled] = useState(true);
   const [listMode, setListMode] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -232,7 +233,7 @@ export default function App() {
       let initialDemo = createDemoRecord(nextSnapshot, currentSource);
       try {
         const storedDemo: unknown = JSON.parse(window.localStorage.getItem(`living-memory.demo-record.v1.${currentSource}`) ?? 'null');
-        if (isDemoRecord(storedDemo, currentSource)) initialDemo = storedDemo;
+        if (isDemoRecord(storedDemo, currentSource)) initialDemo = extendDemoRecord(nextSnapshot, storedDemo);
         window.localStorage.setItem(`living-memory.demo-record.v1.${currentSource}`, JSON.stringify(initialDemo));
         setDemoSaved(true);
         const enabled = window.localStorage.getItem(`living-memory.demo-enabled.v1.${currentSource}`) !== 'false';
@@ -708,11 +709,11 @@ export default function App() {
         </aside>
 
         <section className="graph-panel">
-          <div className="graph-toolbar"><div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div><div className="graph-tools"><button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button><button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button></div></div>
+          <div className="graph-toolbar"><div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div><div className="graph-tools"><button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button><button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button><button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button></div></div>
           {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={displaySnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={displaySnapshot.concepts} states={displaySnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={displaySnapshot} layout={layout} selectedId={selectedId} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            {listMode ? <GraphFallbackList concepts={displaySnapshot.concepts} states={displaySnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={displaySnapshot} layout={layout} selectedId={selectedId} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} onSelect={selectConcept} onLayoutChange={saveLayout} />}
             <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
             <div className="graph-hint">{snapshot.links.length} 条关系 · 亮线连接选中概念 · 悬停看关系</div>
           </div>

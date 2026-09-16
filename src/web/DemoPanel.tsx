@@ -44,7 +44,7 @@ export function DemoPanel({ record, snapshot, saved, labels, onSelect }: Props) 
             </tr>;
           })}</tbody>
         </table></div>
-        <p className="demo-record-note">{saved ? '初始模拟值已保存在此浏览器' : '初始模拟值仅在本页保留，可导出保存'} · 基准 {new Date(record.baseAsOf).toLocaleString('zh-CN')}。新加入且未分配的概念保持未知。</p>
+        <p className="demo-record-note">{saved ? '初始模拟值已保存在此浏览器' : '初始模拟值仅在本页保留，可导出保存'} · 基准 {new Date(record.baseAsOf).toLocaleString('zh-CN')}。扩大范围后刷新会补充新概念的示例值。</p>
       </details>
     </div>
   );

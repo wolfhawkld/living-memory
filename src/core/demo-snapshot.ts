@@ -183,6 +183,38 @@ export function createDemoRecord(
 }
 
 /**
+ * Extend an existing synthetic record with assignments for concepts that are
+ * not in it yet. Existing assignments stay byte-for-byte equivalent in their
+ * original order, including assignments for concepts absent from the current
+ * snapshot. New concepts are appended in stable ID order and continue the
+ * deterministic elapsed-day cycle from the existing assignment count.
+ */
+export function extendDemoRecord(
+  snapshot: Snapshot,
+  record: DemoRecord,
+): DemoRecord {
+  requireValidSnapshot(snapshot);
+  const validatedRecord = requireDemoRecord(record);
+  const existingConceptIds = new Set(
+    validatedRecord.assignments.map((assignment) => assignment.conceptId),
+  );
+  const newConcepts = [...snapshot.concepts]
+    .filter((concept) => !existingConceptIds.has(concept.id))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const assignmentStart = validatedRecord.assignments.length;
+  const newAssignments = newConcepts.map((concept, index): DemoAssignment => ({
+    conceptId: concept.id,
+    sourceRevision: concept.source.revision,
+    elapsedDays: DEMO_ELAPSED_DAYS[(assignmentStart + index) % DEMO_ELAPSED_DAYS.length] ?? null,
+  }));
+
+  return {
+    ...validatedRecord,
+    assignments: [...validatedRecord.assignments, ...newAssignments],
+  };
+}
+
+/**
  * Check whether a value is a complete demo record for one source namespace.
  * This is intentionally a type guard so local-storage values can be rejected
  * before they enter the projection path.
