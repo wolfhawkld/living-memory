@@ -4,6 +4,8 @@
 
 状态：未来验收规格，尚未运行测试；下列指标和条件用于首次开发验收，不能视为已实现、已验证或实测结果。
 
+范围更新：下列 AC-01～AC-23 对应完整 v0.1；当前先实施 [P0 时间驱动原型](../design/time-first-prototype.md)，按该文第 7 节的最小条件验收。P0 只让时间驱动状态，回忆观察暂不参与计算，不要求提前通过多维目标、复杂评分或语音用例。
+
 本规格面向独立 Web 原型首版；后续宿主适配不作为本轮测试环境要求。它承接[个人记忆强化系统流程 v0.1](../design/personal-memory-workflow.md)、[日常事件触发、按需状态计算与语音通道](../design/event-triggers-and-voice.md)和[progressive-kg：首批材料与使用场景](../research/progressive-kg-context.md)。每项只规定可观察的 Given/When/Then 结果，不预设实现架构。
 
 ## 事件、投影与查询
