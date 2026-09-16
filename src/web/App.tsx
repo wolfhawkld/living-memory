@@ -18,6 +18,8 @@ import {
   type PendingWrite,
 } from './api';
 import { GraphFallbackList, GraphView, STATUS_COLORS } from './GraphView';
+import { createDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
+import { DemoPanel } from './DemoPanel';
 import './styles.css';
 
 const DAY_MS = 86_400_000;
@@ -48,6 +50,13 @@ type RecallAttempt = {
 
 function newEventId(): string {
   return typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `lm-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function readDemoOffset(sourceId: string): number {
+  try {
+    const value = Number(window.localStorage.getItem(`living-memory.demo-offset.v1.${sourceId}`) ?? '0');
+    return Number.isInteger(value) && value >= 0 && value <= 30 ? value : 0;
+  } catch { return 0; }
 }
 
 function formatDate(value: string | null | undefined, includeTime = false): string {
@@ -155,6 +164,9 @@ export default function App() {
   const [layout, setLayout] = useState<Layout>({});
   const [writeToken, setWriteToken] = useState('');
   const [sourceId, setSourceId] = useState('');
+  const [demoEnabled, setDemoEnabled] = useState(true);
+  const [demoRecord, setDemoRecord] = useState<DemoRecord | null>(null);
+  const [demoSaved, setDemoSaved] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [simDays, setSimDays] = useState(0);
@@ -178,11 +190,13 @@ export default function App() {
   const snapshotRequestRef = useRef(0);
   const simulationBaseRef = useRef(Date.now());
   const reviewEventRef = useRef<{ conceptId: string; kind: 'review' | 'estimated'; occurredAt: string; eventId: string } | null>(null);
+  const writeLockedRef = useRef(true);
 
   const realNow = new Date();
   const simulated = simDays > 0;
-  const writeLocked = simulated || simulationLoading;
-  const asOf = simulated ? new Date(simulationBaseRef.current + simDays * DAY_MS).toISOString() : undefined;
+  const writeLocked = demoEnabled || simulated || simulationLoading;
+  writeLockedRef.current = writeLocked;
+  const asOf = simulated && !demoEnabled ? new Date(simulationBaseRef.current + simDays * DAY_MS).toISOString() : undefined;
 
   const refreshPendingState = useCallback(() => setPendingWrites(getPendingWrites(sourceId)), [sourceId]);
 
@@ -214,6 +228,20 @@ export default function App() {
       setLayout(nextLayout);
       setHalfLifeDraft(String(nextSnapshot.config.halfLifeDays));
       setSelectedId(nextSnapshot.concepts[0]?.id ?? null);
+      const currentSource = session.sourceId ?? 'legacy-unscoped';
+      let initialDemo = createDemoRecord(nextSnapshot, currentSource);
+      try {
+        const storedDemo: unknown = JSON.parse(window.localStorage.getItem(`living-memory.demo-record.v1.${currentSource}`) ?? 'null');
+        if (isDemoRecord(storedDemo, currentSource)) initialDemo = storedDemo;
+        window.localStorage.setItem(`living-memory.demo-record.v1.${currentSource}`, JSON.stringify(initialDemo));
+        setDemoSaved(true);
+        const enabled = window.localStorage.getItem(`living-memory.demo-enabled.v1.${currentSource}`) !== 'false';
+        setDemoEnabled(enabled);
+        setSimDays(enabled ? readDemoOffset(currentSource) : 0);
+      } catch {
+        setDemoSaved(false);
+      }
+      setDemoRecord(initialDemo);
       try {
         const storedViewed = window.sessionStorage.getItem('living-memory.source-viewed.v0');
         if (storedViewed) {
@@ -252,12 +280,16 @@ export default function App() {
   useEffect(() => {
     if (!writeToken) return undefined;
     const timer = window.setInterval(() => {
-      if (!document.hidden && !simulated && !attempt) void loadSnapshot();
+      if (!document.hidden && !demoEnabled && !simulated && !attempt) void loadSnapshot();
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [attempt, loadSnapshot, simulated, writeToken]);
+  }, [attempt, demoEnabled, loadSnapshot, simulated, writeToken]);
 
   useEffect(() => {
+    if (demoEnabled) {
+      setSimulationLoading(false);
+      return undefined;
+    }
     if (!writeToken || !snapshot) return undefined;
     let cancelled = false;
     setSimulationLoading(true);
@@ -269,7 +301,14 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [asOf, loadSnapshot, showNotice, simDays, writeToken]);
+  }, [asOf, demoEnabled, loadSnapshot, showNotice, simDays, writeToken]);
+
+  useEffect(() => {
+    if (writeLocked && layoutWriteTimer.current !== null) {
+      window.clearTimeout(layoutWriteTimer.current);
+      layoutWriteTimer.current = null;
+    }
+  }, [writeLocked]);
 
   useEffect(() => {
     if (writeLocked || !writeToken || !sourceId || pendingWrites.length === 0) return undefined;
@@ -295,6 +334,7 @@ export default function App() {
 
   const pendingConceptIds = useMemo(() => new Set(pendingWrites.map((item) => item.conceptId).filter((id): id is string => Boolean(id))), [pendingWrites]);
   const displaySnapshot = useMemo(() => {
+    if (snapshot && demoEnabled && demoRecord) return projectDemoSnapshot(snapshot, demoRecord, simDays);
     if (!snapshot || pendingConceptIds.size === 0) return snapshot;
     const states = { ...snapshot.states };
     for (const conceptId of pendingConceptIds) {
@@ -302,7 +342,7 @@ export default function App() {
       if (current) states[conceptId] = { ...current, status: 'pending', reason: '本地记录等待同步' };
     }
     return { ...snapshot, states };
-  }, [pendingConceptIds, snapshot]);
+  }, [demoEnabled, demoRecord, pendingConceptIds, simDays, snapshot]);
 
   const selectedConcept = useMemo(() => snapshot?.concepts.find((concept) => concept.id === selectedId) ?? null, [selectedId, snapshot]);
   const selectedState = useMemo(() => {
@@ -521,10 +561,11 @@ export default function App() {
   }, [attempt, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, writeLocked, writeToken, writeWithRetry]);
 
   const saveLayout = useCallback((next: Layout) => {
+    if (writeLockedRef.current || !writeToken) return;
     setLayout(next);
-    if (writeLocked || !writeToken) return;
     if (layoutWriteTimer.current !== null) window.clearTimeout(layoutWriteTimer.current);
     layoutWriteTimer.current = window.setTimeout(() => {
+      if (writeLockedRef.current) return;
       const payload = next;
       void writeWithRetry({ path: '/layout', method: 'PUT', payload, eventId: null, conceptId: null, label: '保存图谱布局', send: () => api.putLayout(payload, writeToken) });
     }, 1_200);
@@ -568,6 +609,38 @@ export default function App() {
   const setSimulatedDays = (value: number) => {
     if (attempt) return;
     setSimDays(value);
+    if (demoEnabled) {
+      try {
+        window.localStorage.setItem(`living-memory.demo-offset.v1.${sourceId}`, String(value));
+      } catch { /* The initial record remains exportable even without storage. */ }
+    }
+  };
+
+  const changeDemoMode = (enabled: boolean) => {
+    if (attempt) return;
+    writeLockedRef.current = true;
+    setSimulationLoading(!enabled);
+    setSimDays(enabled ? readDemoOffset(sourceId) : 0);
+    simulationBaseRef.current = Date.now();
+    setConfigOpen(false);
+    setReviewDialogOpen(false);
+    setDemoEnabled(enabled);
+    try {
+      window.localStorage.setItem(`living-memory.demo-enabled.v1.${sourceId}`, String(enabled));
+    } catch { /* The mode can still change for this page. */ }
+  };
+
+  const exportDemo = () => {
+    if (!demoRecord || !displaySnapshot) return;
+    const data = { kind: 'living-memory-demo', record: demoRecord, preview: { offsetDays: simDays, asOf: displaySnapshot.asOf, states: displaySnapshot.states } };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `living-memory-demo-${demoRecord.baseAsOf.slice(0, 10)}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
   };
 
   if (loading) {
@@ -598,12 +671,12 @@ export default function App() {
         <div className="topbar-center">
           <span className={`source-pill source-${snapshot.source.mode}`}><span className="source-pulse" />{snapshot.source.mode === 'demo' ? 'Demo 知识库' : '本地知识库'}</span>
           <span className="topbar-separator">/</span>
-          <span className="graph-count">{snapshot.source.conceptCount} 个概念 · {snapshot.links.length} 条关系</span>
+          <span className="graph-count">显示 {snapshot.concepts.length} / {snapshot.source.conceptCount} 个概念 · {snapshot.links.length} 条范围内关系</span>
         </div>
         <div className="topbar-actions">
           <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={refreshing || writeLocked || Boolean(attempt)} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
-          <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={busyAction === 'export'} aria-label="导出学习数据">⇩<span>导出</span></button>
-          <button type="button" className={`config-button${configOpen ? ' is-open' : ''}`} onClick={() => setConfigOpen((open) => !open)} disabled={Boolean(attempt) || writeLocked}>H = {snapshot.config.halfLifeDays} 天 <span>⌄</span></button>
+          <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={demoEnabled || busyAction === 'export'} aria-label="导出学习数据">⇩<span>导出</span></button>
+          <button type="button" className={`config-button${configOpen ? ' is-open' : ''}`} onClick={() => setConfigOpen((open) => !open)} disabled={Boolean(attempt) || writeLocked}>H = {displaySnapshot.config.halfLifeDays} 天 <span>⌄</span></button>
           {configOpen ? (
             <div className="config-popover">
               <div className="popover-kicker">时间模型 · {snapshot.config.modelVersion}</div>
@@ -615,6 +688,10 @@ export default function App() {
         </div>
       </header>
 
+      <div className={`mode-bar${demoEnabled ? ' is-demo' : ''}`}>
+        <div><strong>{demoEnabled ? '示例状态 · 非真实记忆' : '真实学习记录'}</strong><span>{demoEnabled ? '虚构重温间隔，拖动时间轴查看颜色变化' : '由你确认的学习与重温记录计算'}</span></div>
+        <div className="mode-actions">{demoEnabled ? <button type="button" onClick={exportDemo}>导出模拟记录</button> : null}<button type="button" onClick={() => changeDemoMode(!demoEnabled)} disabled={Boolean(attempt) || busyAction !== null}>{demoEnabled ? '查看真实记录' : '查看示例状态'}</button></div>
+      </div>
       <main className={`workspace${attempt ? ' workspace-recall-hidden' : ''}`} aria-hidden={attempt ? true : undefined} inert={attempt ? true : undefined}>
         <aside className="left-panel">
           <div className="panel-heading"><div><span className="eyebrow">知识空间</span><h1>概念索引</h1></div><span className="count-chip">{filteredConcepts.length}</span></div>
@@ -632,21 +709,24 @@ export default function App() {
 
         <section className="graph-panel">
           <div className="graph-toolbar"><div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div><div className="graph-tools"><button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button><button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button></div></div>
+          {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={displaySnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
-            {listMode ? <GraphFallbackList concepts={displaySnapshot.concepts} states={displaySnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView snapshot={displaySnapshot} layout={layout} selectedId={selectedId} simulated={simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} onSelect={selectConcept} onLayoutChange={saveLayout} />}
-            <div className="graph-legend"><span className="legend-title">记忆时间状态</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
-            <div className="graph-hint">拖动旋转 · 滚轮缩放 · 点击概念聚焦</div>
+            {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
+            {listMode ? <GraphFallbackList concepts={displaySnapshot.concepts} states={displaySnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={displaySnapshot} layout={layout} selectedId={selectedId} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
+            <div className="graph-hint">{snapshot.links.length} 条关系 · 亮线连接选中概念 · 悬停看关系</div>
           </div>
-          <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间回看</span><strong>{simulated ? `+${simDays} 天` : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt)} /><div className="range-labels"><span>现在</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimDays(0)}>恢复实时</button> : null}</div>
+          <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间预览</span><strong>{simulated ? `+${simDays} 天` : demoEnabled ? '初始模拟值' : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt)} /><div className="range-labels"><span>{demoEnabled ? '模拟起点' : '现在'}</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimulatedDays(0)}>{demoEnabled ? '回到初始值' : '恢复实时'}</button> : null}</div>
         </section>
 
         <aside className="right-panel">
           {selectedConcept && selectedState ? (
             <>
               <div className="detail-head"><div className="detail-domain">{selectedConcept.domain}</div><h2>{selectedConcept.title}</h2><div className="alias-row">{selectedConcept.aliases.slice(0, 3).map((alias) => <span key={alias}>{alias}</span>)}</div></div>
-              <div className="detail-state"><div><span className="eyebrow">当前时间状态</span><div className="state-line"><StatusBadge status={selectedState.status} /></div></div><span className="state-asof">截至 {formatDate(displaySnapshot.asOf, true)}</span></div>
-              <div className="state-metrics"><div><span>距上次重温</span><strong>{formatElapsed(selectedState.elapsedDays)}</strong></div><div><span>时间起点 {selectedState.anchor?.kind === 'estimated' ? <em className="estimate-badge">估计</em> : null}</span><strong>{formatDate(selectedState.anchor?.occurredAt)}</strong></div></div>
-              <Curve state={selectedState} halfLifeDays={snapshot.config.halfLifeDays} />
+              <div className="detail-state"><div><span className="eyebrow">{demoEnabled ? '模拟时间状态' : '当前时间状态'}</span><div className="state-line"><StatusBadge status={selectedState.status} /></div></div><span className="state-asof">截至 {formatDate(displaySnapshot.asOf, true)}</span></div>
+              <div className="state-metrics"><div><span>{demoEnabled ? '模拟重温间隔' : '距上次重温'}</span><strong>{formatElapsed(selectedState.elapsedDays)}</strong></div><div><span>{demoEnabled ? '模拟起点' : '时间起点'} {!demoEnabled && selectedState.anchor?.kind === 'estimated' ? <em className="estimate-badge">估计</em> : null}</span><strong>{formatDate(selectedState.anchor?.occurredAt)}</strong></div></div>
+              <div className="time-indicator">时间指标 D <strong>{selectedState.decay === null ? '未知' : selectedState.decay.toFixed(3)}</strong><span>{demoEnabled ? '模拟值' : '时间推算'}</span></div>
+              <Curve state={selectedState} halfLifeDays={displaySnapshot.config.halfLifeDays} />
               <p className="state-reason">{selectedState.reason ?? '状态由当前时间与最近确认事件投影。'}</p>
               <div className="detail-actions"><button type="button" className="primary-button" onClick={() => void submitReview('review')} disabled={writeLocked || busyAction === 'review'}>{busyAction === 'review' ? '保存中…' : '确认已重温'}</button><button type="button" className="secondary-button" onClick={() => { reviewEventRef.current = null; setEstimatedDate(new Date().toISOString().slice(0, 10)); setReviewDialogOpen(true); }} disabled={writeLocked || busyAction === 'review'}>补记过去重温</button></div>
               <button type="button" className="recall-button" onClick={startRecall} disabled={writeLocked || Boolean(attempt)}><span>✦</span>先想一句，再查看资料</button>

@@ -27,6 +27,7 @@ npm start
 ## 从这里开始
 
 - [当前优先：时间驱动原型](docs/design/time-first-prototype.md)：LM-003 收敛方案、单参数曲线、最小交互、五步开发与试用条件。
+- [初始模拟数值与连线说明](docs/development/time-colors-and-links.md)：可复现的示例颜色、数值记录及局部图谱连线解释。
 - [P0 运行与联调](docs/development/p0-running.md)：启动方式、progressive-kg 接入、时间模拟、观察记录和当前检查边界。
 - [首版需求分析](docs/requirements/v0.1.md)：用户确认、记忆理论到产品行为的映射、首版范围与边界。
 - [首版技术设计](docs/design/technical-design-v0.1.md)：记忆属性、遗忘/再访规则、知识与事件契约、Web/CLI/语音共用架构。
@@ -62,4 +63,4 @@ npm start
 
 本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。项目许可证将在未来开源前确定。
 
-状态：2026-09-16，P0 时间驱动原型已[可运行并进入小范围试用](docs/development/p0-validation.md)；完整 v0.1 的 18 项任务与 23 项验收仍保留为后续路线。当前 22 项模型/KG/服务测试和 4 条真实 Chromium 交互检查已通过；实际 GPU 性能与真实延迟试用尚待完成，语音链路及 Obsidian 宿主属于后续范围。附一个离线 HTML/SVG 风格预览。
+状态：2026-09-16，P0 时间驱动原型已[可运行并进入小范围试用](docs/development/p0-validation.md)；完整 v0.1 的 18 项任务与 23 项验收仍保留为后续路线。当前 30 项模型/模拟数据/KG/服务测试和 6 条真实 Chromium 交互检查已通过；实际 GPU 性能与真实延迟试用尚待完成，语音链路及 Obsidian 宿主属于后续范围。附一个离线 HTML/SVG 风格预览。

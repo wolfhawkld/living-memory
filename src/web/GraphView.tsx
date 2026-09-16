@@ -30,9 +30,14 @@ interface GraphInstance {
   nodeThreeObject: (callback: (node: GraphNode) => THREE.Object3D) => GraphInstance;
   nodeThreeObjectExtend: (value: boolean) => GraphInstance;
   nodeLabel: (callback: (node: GraphNode) => string) => GraphInstance;
+  linkLabel: (callback: (link: GraphLink) => string) => GraphInstance;
   linkColor: (callback: (link: GraphLink) => string) => GraphInstance;
   linkOpacity: (value: number) => GraphInstance;
-  linkWidth: (value: number) => GraphInstance;
+  linkWidth: (value: number | ((link: GraphLink) => number)) => GraphInstance;
+  linkDirectionalArrowLength: (value: number | ((link: GraphLink) => number)) => GraphInstance;
+  linkDirectionalArrowColor: (value: string | ((link: GraphLink) => string)) => GraphInstance;
+  linkDirectionalArrowRelPos: (value: number) => GraphInstance;
+  linkHoverPrecision: (value: number) => GraphInstance;
   backgroundColor: (value: string) => GraphInstance;
   showNavInfo: (value: boolean) => GraphInstance;
   enableNodeDrag: (value: boolean) => GraphInstance;
@@ -67,6 +72,12 @@ const STATUS_COLORS: Record<MemoryState['status'], string> = {
   stale: '#ff817d',
   pending: '#a4a9b6',
 };
+
+// Relationship colors use a cool blue range, separate from the node memory-status
+// colors. This keeps the temporal signal on nodes while making graph structure legible.
+const LINK_COLOR = '#668caf';
+const LINK_MUTED_COLOR = '#2b4563';
+const LINK_SELECTED_COLOR = '#b5edff';
 
 function hashPosition(id: string): { x: number; y: number; z: number } {
   let hash = 2166136261;
@@ -110,6 +121,16 @@ function linkSignature(link: GraphLink): string {
 
 function linksSignature(links: GraphLink[]): string {
   return links.map(linkSignature).sort().join('\u0001');
+}
+
+function isIncidentLink(link: GraphLink, conceptId: string | null): boolean {
+  if (!conceptId) return false;
+  return endpointId(link.source) === conceptId || endpointId(link.target) === conceptId;
+}
+
+function selectedLinkCount(links: GraphLink[], conceptId: string | null): number {
+  if (!conceptId) return 0;
+  return links.reduce((count, link) => count + (isIncidentLink(link, conceptId) ? 1 : 0), 0);
 }
 
 function cloneLinks(links: GraphLink[]): GraphLink[] {
@@ -294,7 +315,7 @@ export function GraphView({
   }, [layout, snapshot]);
 
   const saveLayout = () => {
-    if (simulatedRef.current || pausedRef.current) return;
+    if (!graphRef.current || simulatedRef.current || pausedRef.current) return;
     const positions: Layout = {};
     for (const node of nodesRef.current) {
       if (typeof node.x === 'number' && typeof node.y === 'number' && typeof node.z === 'number') {
@@ -305,7 +326,7 @@ export function GraphView({
   };
 
   const scheduleLayoutSave = () => {
-    if (simulatedRef.current || pausedRef.current) return;
+    if (!graphRef.current || simulatedRef.current || pausedRef.current) return;
     if (layoutTimerRef.current !== null) window.clearTimeout(layoutTimerRef.current);
     layoutTimerRef.current = window.setTimeout(() => {
       layoutTimerRef.current = null;
@@ -343,9 +364,34 @@ export function GraphView({
         .nodeThreeObject(buildNodeVisual)
         .nodeThreeObjectExtend(false)
         .nodeLabel((node) => `<strong>${escapeHtml(node.title)}</strong><br/><span>${escapeHtml(node.domain)}</span>`)
-        .linkColor(() => '#35516f')
-        .linkOpacity(0.46)
-        .linkWidth(0.7)
+        .linkLabel((link) => {
+          const type = link.type?.trim() || '相关';
+          const description = link.description?.trim();
+          return `<strong>关系：${escapeHtml(type)}</strong>${description ? `<br/><span>${escapeHtml(description)}</span>` : ''}`;
+        })
+        .linkColor((link) => {
+          const selected = selectedIdRef.current;
+          if (!selected) return LINK_COLOR;
+          return isIncidentLink(link, selected) ? LINK_SELECTED_COLOR : LINK_MUTED_COLOR;
+        })
+        .linkOpacity(0.78)
+        .linkWidth((link) => {
+          const selected = selectedIdRef.current;
+          if (!selected) return 1.35;
+          return isIncidentLink(link, selected) ? 2.8 : 0.95;
+        })
+        .linkDirectionalArrowLength((link) => {
+          const selected = selectedIdRef.current;
+          if (!selected) return 4.2;
+          return isIncidentLink(link, selected) ? 6.5 : 3;
+        })
+        .linkDirectionalArrowColor((link) => {
+          const selected = selectedIdRef.current;
+          if (!selected) return LINK_COLOR;
+          return isIncidentLink(link, selected) ? LINK_SELECTED_COLOR : LINK_MUTED_COLOR;
+        })
+        .linkDirectionalArrowRelPos(0.84)
+        .linkHoverPrecision(6)
         .onNodeClick((node) => {
           onSelectRef.current(node.id);
           const x = node.x ?? 0;
@@ -514,9 +560,17 @@ export function GraphView({
     );
   }, [selectedId]);
 
+  const edgeCount = snapshot.links.length;
+  const selectedEdgeCount = selectedLinkCount(snapshot.links, selectedId);
+
   return (
     <div className="graph-stage" aria-label="3D 知识图谱">
-      <div ref={hostRef} className={`graph-canvas${graphError ? ' graph-canvas-hidden' : ''}`} />
+      <div
+        ref={hostRef}
+        className={`graph-canvas${graphError ? ' graph-canvas-hidden' : ''}`}
+        data-edge-count={edgeCount}
+        data-selected-edge-count={selectedEdgeCount}
+      />
       {graphError ? (
         <>
           <div className="graph-fallback" role="status">

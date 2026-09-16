@@ -9,7 +9,7 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 15_000 },
   use: {
-    baseURL: 'http://127.0.0.1:4317',
+    baseURL: 'http://127.0.0.1:4318',
     viewport: { width: 1440, height: 1000 },
     reducedMotion: 'reduce',
     screenshot: 'only-on-failure',
@@ -24,7 +24,7 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 30_000,
     env: {
-      LM_PORT: '4317',
+      LM_PORT: '4318',
       LM_DATA_DIR: resolve('.cache', `e2e-${randomUUID()}`),
       LM_KG_ROOT: resolve('fixtures/demo-kg'),
       LM_KG_LIMIT: '20',

@@ -1,5 +1,16 @@
 import { expect, test, type Page, type APIRequestContext } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import type { ExportData, Snapshot } from '../../src/shared/types';
+
+type DemoExport = {
+  kind: 'living-memory-demo';
+  record: Record<string, unknown>;
+  preview: {
+    offsetDays: number;
+    asOf: string;
+    states: Record<string, { status: string; decay: number | null; elapsedDays: number | null }>;
+  };
+};
 
 async function snapshot(request: APIRequestContext): Promise<Snapshot> {
   const response = await request.get('/api/snapshot');
@@ -19,6 +30,176 @@ async function selectConcept(page: Page, title: string) {
   await expect(page.locator('.detail-head h2')).toHaveText(title);
 }
 
+async function enterRealMode(page: Page) {
+  const realButton = page.getByRole('button', { name: '查看真实记录', exact: true });
+  const demoButton = page.getByRole('button', { name: '查看示例状态', exact: true });
+  await expect(realButton.or(demoButton)).toBeVisible();
+  if (await realButton.isVisible()) await realButton.click();
+  await expect(page.getByRole('button', { name: '查看示例状态', exact: true })).toBeVisible();
+  await expect(page.locator('.demo-panel')).toBeHidden();
+}
+
+async function enterDemoMode(page: Page) {
+  const demoButton = page.getByRole('button', { name: '查看示例状态', exact: true });
+  const realButton = page.getByRole('button', { name: '查看真实记录', exact: true });
+  await expect(demoButton.or(realButton)).toBeVisible();
+  if (await demoButton.isVisible()) await demoButton.click();
+  await expect(page.getByRole('button', { name: '查看真实记录', exact: true })).toBeVisible();
+  await expect(page.locator('.demo-panel')).toBeVisible();
+}
+
+async function demoDownload(page: Page): Promise<DemoExport> {
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '导出模拟记录', exact: true }).click();
+  const download = await downloadPromise;
+  const path = await download.path();
+  expect(path).toBeTruthy();
+  return JSON.parse(await readFile(path!, 'utf8')) as DemoExport;
+}
+
+async function expectTimeIndicator(page: Page, value: string) {
+  await expect(page.locator('.right-panel .time-indicator strong')).toHaveText(value);
+}
+
+test('demo mode shows the seeded time stages and persists its source-scoped preview', async ({ page, request }) => {
+  const realBefore = await exported(request);
+  const sourceResponse = await request.get('/api/session');
+  expect(sourceResponse.ok()).toBeTruthy();
+  const sourceId = (await sourceResponse.json() as { sourceId: string }).sourceId;
+
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '查看真实记录', exact: true })).toBeVisible();
+  const demoPanel = page.locator('.demo-panel');
+  await expect(demoPanel).toBeVisible();
+  const panelText = await demoPanel.innerText();
+  expect(panelText).toMatch(/近期重温\s*4|4\s*近期重温/);
+  expect(panelText).toMatch(/建议再看\s*4|4\s*建议再看/);
+  expect(panelText).toMatch(/较久未重温\s*6|6\s*较久未重温/);
+  expect(panelText).toMatch(/尚未评估\s*2|2\s*尚未评估/);
+  await expect(page.locator('.graph-canvas')).toHaveAttribute('data-layout-ready', 'true');
+  await page.screenshot({ path: 'test-results/p0-demo-colors.png', fullPage: true });
+  await expect(demoPanel.locator('details summary')).toHaveText('查看初始模拟数值');
+  await demoPanel.locator('details summary').click();
+  const table = demoPanel.locator('details table');
+  await expect(table).toBeVisible();
+  await expect(table.locator('thead')).toContainText('概念');
+  await expect(table.locator('thead')).toContainText('初始间隔');
+  await expect(table.locator('thead')).toContainText('当前间隔');
+  await expect(table.locator('thead')).toContainText('时间指标 D');
+  await expect(table.locator('thead')).toContainText('颜色状态');
+  await expect(table.locator('tbody tr')).toHaveCount(16);
+  await page.screenshot({ path: 'test-results/p0-demo-values.png', fullPage: true });
+
+  const concepts = (await snapshot(request)).concepts.slice().sort((left, right) => left.id.localeCompare(right.id));
+  const seeded = [0, 3, 7, 10, 14, 21, 28, null] as const;
+  const initialByTitle = new Map(concepts.map((concept, index) => [concept.title, seeded[index % seeded.length]]));
+  expect(initialByTitle.size).toBe(16);
+
+  const atZero = concepts.find((concept) => initialByTitle.get(concept.title) === 0)!;
+  const atHalf = concepts.find((concept) => initialByTitle.get(concept.title) === 7)!;
+  const atDouble = concepts.find((concept) => initialByTitle.get(concept.title) === 14)!;
+  const unknown = concepts.find((concept) => initialByTitle.get(concept.title) === null)!;
+
+  await selectConcept(page, atZero.title);
+  await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-recent/);
+  await expectTimeIndicator(page, '1.000');
+  await selectConcept(page, atHalf.title);
+  await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-revisit/);
+  await expectTimeIndicator(page, '0.500');
+  await selectConcept(page, atDouble.title);
+  await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-stale/);
+  await expectTimeIndicator(page, '0.250');
+  await selectConcept(page, unknown.title);
+  await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-unknown/);
+  await expect(page.locator('.right-panel .time-indicator')).toContainText('未知');
+
+  const slider = page.getByRole('slider', { name: '模拟时间，单位天' });
+  await slider.fill('7');
+  await expect(slider).toHaveValue('7');
+  await selectConcept(page, atZero.title);
+  await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-revisit/);
+  await expectTimeIndicator(page, '0.500');
+  await selectConcept(page, atHalf.title);
+  await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-stale/);
+  await expectTimeIndicator(page, '0.250');
+  await selectConcept(page, unknown.title);
+  await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-unknown/);
+  await expect(page.locator('.right-panel .time-indicator')).toContainText('未知');
+
+  const stored = await page.evaluate(() => Object.entries(localStorage));
+  expect(stored.some(([key, value]) => key.includes(sourceId) || value.includes(sourceId))).toBe(true);
+  await page.reload();
+  await expect(page.getByRole('button', { name: '查看真实记录', exact: true })).toBeVisible();
+  await expect(page.getByRole('slider', { name: '模拟时间，单位天' })).toHaveValue('7');
+  await selectConcept(page, atZero.title);
+  await expectTimeIndicator(page, '0.500');
+
+  await enterRealMode(page);
+  await expect(page.getByRole('slider', { name: '模拟时间，单位天' })).toHaveValue('0');
+  const realAfter = await exported(request);
+  expect(realAfter.anchors).toEqual(realBefore.anchors);
+  expect(realAfter.observations).toEqual(realBefore.observations);
+  expect(realAfter.config).toEqual(realBefore.config);
+  expect(realAfter.layout).toEqual(realBefore.layout);
+  await page.reload();
+  await expect(page.getByRole('button', { name: '查看示例状态', exact: true })).toBeVisible();
+  await enterDemoMode(page);
+  await expect(page.getByRole('slider', { name: '模拟时间，单位天' })).toHaveValue('7');
+});
+
+test('demo export stays isolated and graph relations remain visible through time projection', async ({ page, request }) => {
+  const realBefore = await exported(request);
+  await page.goto('/');
+  await expect(page.locator('.demo-panel')).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await page.waitForTimeout(1_500);
+
+  const canvas = page.locator('.graph-canvas');
+  await expect(canvas).toHaveAttribute('data-edge-count', /\d+/);
+  await expect(canvas).toHaveAttribute('data-selected-edge-count', /\d+/);
+  const linkCount = Number(await canvas.getAttribute('data-edge-count'));
+  expect(linkCount).toBeGreaterThan(0);
+  await selectConcept(page, '内积');
+  await expect(canvas).toHaveAttribute('data-selected-edge-count', /[1-9]\d*/);
+  const highlightedCount = Number(await canvas.getAttribute('data-selected-edge-count'));
+  expect(highlightedCount).toBeGreaterThan(0);
+
+  const slider = page.getByRole('slider', { name: '模拟时间，单位天' });
+  await slider.fill('7');
+  await expect(canvas).toHaveAttribute('data-edge-count', String(linkCount));
+  await expect(canvas).toHaveAttribute('data-selected-edge-count', String(highlightedCount));
+  await page.waitForTimeout(1_500);
+
+  const demoData = await demoDownload(page);
+  expect(demoData.kind).toBe('living-memory-demo');
+  expect(demoData.record).toEqual(expect.objectContaining({
+    mode: 'demo',
+    modelVersion: 'time-only-v0',
+    halfLifeDays: 7,
+    sourceId: expect.any(String),
+  }));
+  expect(demoData.record.assignments).toBeDefined();
+  expect((demoData.record.assignments as unknown[]).length).toBe(16);
+  expect(demoData.preview.offsetDays).toBe(7);
+  expect(demoData.preview.asOf).toEqual(expect.any(String));
+  expect(Object.keys(demoData.preview.states)).toHaveLength(16);
+  expect(demoData.preview.states[Object.keys(demoData.preview.states)[0]]).toEqual(expect.objectContaining({ status: expect.any(String) }));
+
+  await page.waitForTimeout(1_500);
+  const realAfter = await exported(request);
+  expect(realAfter.anchors).toEqual(realBefore.anchors);
+  expect(realAfter.observations).toEqual(realBefore.observations);
+  expect(realAfter.config).toEqual(realBefore.config);
+  expect(realAfter.layout).toEqual(realBefore.layout);
+
+  await enterRealMode(page);
+  await selectConcept(page, '内积');
+  await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-unknown/);
+  await expect(page.locator('.right-panel .time-indicator')).toContainText('未知');
+  await enterDemoMode(page);
+  await expect(page.getByRole('slider', { name: '模拟时间，单位天' })).toHaveValue('7');
+});
+
 test('real WebGL, lookup, review, simulated time and reload form one persistent workflow', async ({ page, request }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -27,6 +208,7 @@ test('real WebGL, lookup, review, simulated time and reload form one persistent 
   expect(Object.values(initial.states).every((state) => state.status === 'unknown')).toBe(true);
   const concept = initial.concepts.find((item) => item.title === '内积')!;
   await page.goto('/');
+  await enterRealMode(page);
   await expect(page.locator('.graph-stage canvas')).toBeVisible();
   await selectConcept(page, concept.title);
   await expect(page.locator('.right-panel .status-badge')).toContainText('尚未');
@@ -52,6 +234,7 @@ test('real WebGL, lookup, review, simulated time and reload form one persistent 
   await page.getByRole('button', { name: '恢复实时' }).click();
   await expect(page.locator('.right-panel .status-badge')).toHaveText('近期重温');
   await page.reload();
+  await enterRealMode(page);
   await selectConcept(page, concept.title);
   await expect(page.locator('.right-panel .status-badge')).toHaveText('近期重温');
   expect((await snapshot(request)).states[concept.id].anchor?.eventId).toBe(anchor.eventId);
@@ -70,6 +253,7 @@ test('recall hides sources, stores a frozen observation, and never resets time',
   const concept = before.concepts.find((item) => item.title === '贝叶斯定理')!;
   const recordsBefore = await exported(request);
   await page.goto('/');
+  await enterRealMode(page);
   await selectConcept(page, concept.title);
   await page.getByRole('button', { name: /先想一句/ }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
@@ -104,6 +288,7 @@ test('recall hides sources, stores a frozen observation, and never resets time',
 test('estimated dates remain labelled and export preserves versioned data', async ({ page, request }) => {
   const concept = (await snapshot(request)).concepts.find((item) => item.title === '向量')!;
   await page.goto('/');
+  await enterRealMode(page);
   await selectConcept(page, concept.title);
   await page.getByRole('button', { name: '补记过去重温' }).click();
   const past = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10);
@@ -125,6 +310,7 @@ test('estimated dates remain labelled and export preserves versioned data', asyn
 test('failed writes remain pending and an explicit retry preserves the original event', async ({ page, request }) => {
   const concept = (await snapshot(request)).concepts.find((item) => item.title === '正交')!;
   await page.goto('/');
+  await enterRealMode(page);
   await selectConcept(page, concept.title);
   await page.route('**/api/reviews', (route) => route.abort('connectionfailed'));
   await page.getByRole('button', { name: '确认已重温', exact: true }).click();
