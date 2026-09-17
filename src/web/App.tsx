@@ -24,7 +24,7 @@ import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
 import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
 import { CrossDomainPanel, DomainPicker } from './DomainControls';
-import { createIdleRotationClock, trackRotationActivity } from './graph-rotation';
+import { createIdleRotationClock, trackRotationActivity, type RotationStatus } from './graph-rotation';
 import type { ChangeNotification } from '../shared/types';
 import './styles.css';
 
@@ -179,7 +179,8 @@ export default function App() {
   const [simDays, setSimDays] = useState(0);
   const [twoDimensional, setTwoDimensional] = useState(false);
   const [glowEnabled, setGlowEnabled] = useState(true);
-  const [autoRotateEnabled, setAutoRotateEnabled] = useState(true);
+  const [autoRotateEnabled, setAutoRotateEnabled] = useState(() => !window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const [rotationStatus, setRotationStatus] = useState<RotationStatus>({ kind: 'preparing', text: '等待图谱定位完成' });
   const [rotationClock] = useState(createIdleRotationClock);
   const [listMode, setListMode] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1029,15 +1030,22 @@ export default function App() {
             <div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div>
             <div className="graph-tools">
               <button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button>
-              <button type="button" className={`tool-button${autoRotateEnabled ? ' active' : ''}`} aria-pressed={autoRotateEnabled} disabled={twoDimensional || listMode} title="操作后暂停，连续 2 分钟无操作后恢复；仅用于 3D 视图" onClick={() => setAutoRotateEnabled((value) => !value)}>自动旋转</button>
+              <button type="button" className={`tool-button${autoRotateEnabled ? ' active' : ''}`} aria-pressed={autoRotateEnabled} disabled={twoDimensional || listMode} title="手动开启后立即旋转；后续操作暂停 2 分钟。系统要求减少动态效果时默认关闭。" onClick={() => {
+                if (!autoRotateEnabled) rotationClock.resume();
+                setAutoRotateEnabled((value) => !value);
+              }}>自动旋转</button>
               <button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button>
               <button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button>
+            </div>
+            <div className="rotation-status" aria-label="自动旋转状态">
+              {autoRotateEnabled && !listMode && !twoDimensional && (rotationStatus.kind === 'waiting' || rotationStatus.kind === 'holding') ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={() => rotationClock.resume()}>立即旋转</button> : null}
+              <span>{listMode ? '文字列表 · 旋转暂停' : rotationStatus.text}</span>
             </div>
           </div>
           {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={viewSnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled && !domainBusy} rotationClock={rotationClock} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
             <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
             <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · 亮线连接选中概念 · 悬停看关系</div>
           </div>

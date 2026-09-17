@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from 'three';
+import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import {
   ROTATION_IDLE_MS,
   ROTATION_TURN_MS,
   createIdleRotationClock,
   rotateCameraClockwise,
+  readRotationStatus,
   trackRotationActivity,
 } from '../src/web/graph-rotation.ts';
 
@@ -47,6 +49,126 @@ test('camera rotation changes only its orbit and keeps the focused point centere
   const projected = new THREE.Vector3(target.x, target.y, target.z).project(camera);
   assertClose(projected.x, 0, 1e-9);
   assertClose(projected.y, 0, 1e-9);
+});
+
+test('focus and visibility notifications do not restart the manual inactivity deadline', () => {
+  const clock = createIdleRotationClock();
+  const page = new EventTarget();
+  const viewport = new EventTarget();
+  let now = 0;
+  const cleanup = trackRotationActivity(page, viewport, clock, () => now);
+  try {
+    viewport.dispatchEvent(new Event('focus'));
+    page.dispatchEvent(new Event('visibilitychange'));
+    clock.step(0, true);
+    assert.ok(clock.step(16, true) > 0, 'initial focus must not defer startup for two minutes');
+    now = 100;
+    page.dispatchEvent(new Event('click'));
+    now = 119_100;
+    viewport.dispatchEvent(new Event('blur'));
+    viewport.dispatchEvent(new Event('focus'));
+    page.dispatchEvent(new Event('visibilitychange'));
+    assert.equal(clock.inspect(now).remainingMs, 1_000);
+    clock.step(120_100, true);
+    assert.ok(clock.step(120_116, true) > 0);
+  } finally { cleanup(); }
+});
+
+test('unchanged pointer notifications do not postpone rotation but a real movement does', () => {
+  const clock = createIdleRotationClock();
+  const page = new EventTarget();
+  const viewport = new EventTarget();
+  let now = 100;
+  const cleanup = trackRotationActivity(page, viewport, clock, () => now);
+  const move = (x: number) => {
+    const event = pointerEvent('pointermove', 1);
+    Object.defineProperties(event, {
+      clientX: { value: x }, clientY: { value: 20 }, screenX: { value: x }, screenY: { value: 40 },
+    });
+    page.dispatchEvent(event);
+  };
+  try {
+    move(10);
+    now = 119_100;
+    move(10);
+    assert.equal(clock.inspect(now).remainingMs, 1_000);
+    move(11);
+    assert.equal(clock.inspect(now).remainingMs, 120_000);
+  } finally { cleanup(); }
+});
+
+test('visible rotation status follows the gate and an explicit start clears the wait', () => {
+  const clock = createIdleRotationClock();
+  const view = { enabled: true, ready: true, twoDimensional: false, hidden: false, paused: false };
+  clock.interact(1_000);
+  assert.deepEqual(readRotationStatus(clock, 1_000, view), { kind: 'waiting', text: '旋转暂停 · 2:00 后恢复' });
+  assert.equal(readRotationStatus(clock, 61_000, view).text, '旋转暂停 · 1:00 后恢复');
+  assert.equal(readRotationStatus(clock, 121_000, view).kind, 'rotating');
+  clock.interact(121_001);
+  clock.resume();
+  assert.equal(readRotationStatus(clock, 121_001, view).kind, 'rotating');
+  assert.equal(clock.step(121_001, true), 0);
+  assert.ok(clock.step(121_017, true) > 0);
+  assert.equal(readRotationStatus(clock, 121_017, { ...view, enabled: false }).kind, 'disabled');
+  assert.equal(readRotationStatus(clock, 121_017, { ...view, ready: false }).kind, 'preparing');
+  assert.equal(readRotationStatus(clock, 121_017, { ...view, paused: true }).kind, 'paused');
+  assert.equal(readRotationStatus(clock, 121_017, { ...view, twoDimensional: true }).kind, 'flat');
+  clock.hold(1, 122_000);
+  clock.resume();
+  assert.equal(readRotationStatus(clock, 122_000, view).kind, 'holding');
+  assert.equal(clock.step(122_100, true), 0, 'an explicit start must not interrupt a held gesture');
+});
+
+test('explicit start is not immediately cancelled by a stationary pointer notification', () => {
+  const clock = createIdleRotationClock();
+  const page = new EventTarget();
+  const viewport = new EventTarget();
+  let now = 0;
+  const cleanup = trackRotationActivity(page, viewport, clock, () => now);
+  const pointer = (type: string) => {
+    const event = pointerEvent(type, 1);
+    Object.defineProperties(event, {
+      clientX: { value: 10 }, clientY: { value: 20 }, screenX: { value: 10 }, screenY: { value: 40 },
+    });
+    return event;
+  };
+  try {
+    page.dispatchEvent(pointer('pointerdown'));
+    now = 50;
+    viewport.dispatchEvent(pointer('pointerup'));
+    page.dispatchEvent(new Event('click'));
+    clock.resume(); // The button's explicit handler runs after capture listeners.
+    now = 66;
+    page.dispatchEvent(pointer('pointermove'));
+    assert.deepEqual(clock.inspect(now), { holding: false, remainingMs: 0 });
+    clock.step(now, true);
+    assert.ok(clock.step(now + 16, true) > 0);
+  } finally { cleanup(); }
+});
+
+test('the installed Trackball controller preserves camera rotation over repeated render updates', () => {
+  const camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 2_000);
+  camera.position.set(10, 50, 300);
+  // No DOM element means no browser, WebGL renderer, or event listeners.
+  const controls = new TrackballControls(camera, null);
+  controls.target.set(10, 0, 0);
+  const clock = createIdleRotationClock();
+  const initial = camera.position.clone();
+  const radius = initial.distanceTo(controls.target);
+  for (let frame = 0; frame <= 600; frame += 1) {
+    controls.update();
+    const angle = clock.step(frame * 1_000 / 60, true);
+    const position = rotateCameraClockwise(camera.position, controls.target, angle);
+    camera.position.set(position.x, position.y, position.z);
+    camera.lookAt(controls.target);
+  }
+  controls.update();
+  assert.ok(camera.position.distanceTo(initial) > 50, 'the controller must not restore the original camera');
+  assertClose(camera.position.distanceTo(controls.target), radius, 1e-8);
+  camera.updateMatrixWorld();
+  const target = controls.target.clone().project(camera);
+  assertClose(target.x, 0);
+  assertClose(target.y, 0);
 });
 
 test('rotation uses elapsed time across frame rates and caps long or disabled gaps', () => {

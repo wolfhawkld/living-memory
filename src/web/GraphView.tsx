@@ -6,7 +6,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { Concept, GraphLink, Layout, MemoryState, Snapshot } from '../shared/types';
 import { calculateNodeFocus } from './graph-focus';
 import { createGraphLabels } from './graph-labels';
-import { rotateCameraClockwise, type IdleRotationClock } from './graph-rotation';
+import { readRotationStatus, rotateCameraClockwise, type IdleRotationClock, type RotationStatus } from './graph-rotation';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -17,6 +17,8 @@ export interface GraphViewProps {
   twoDimensional: boolean;
   glowEnabled?: boolean;
   autoRotateEnabled?: boolean;
+  rotationPaused?: boolean;
+  onRotationStatusChange?: (status: RotationStatus) => void;
   rotationClock: IdleRotationClock;
   focusRevision?: number;
   onSelect: (conceptId: string) => void;
@@ -260,6 +262,8 @@ export function GraphView({
   twoDimensional,
   glowEnabled = true,
   autoRotateEnabled = true,
+  rotationPaused = false,
+  onRotationStatusChange,
   rotationClock,
   focusRevision = 0,
   onSelect,
@@ -279,6 +283,8 @@ export function GraphView({
   const simulatedRef = useRef(simulated);
   const glowEnabledRef = useRef(glowEnabled);
   const autoRotateEnabledRef = useRef(autoRotateEnabled);
+  const rotationPausedRef = useRef(rotationPaused);
+  const onRotationStatusRef = useRef(onRotationStatusChange);
   const pausedRef = useRef(paused);
   const animationPausedRef = useRef(false);
   const dimensionsInitializedRef = useRef(false);
@@ -295,6 +301,8 @@ export function GraphView({
   simulatedRef.current = simulated;
   glowEnabledRef.current = glowEnabled;
   autoRotateEnabledRef.current = autoRotateEnabled;
+  rotationPausedRef.current = rotationPaused;
+  onRotationStatusRef.current = onRotationStatusChange;
   twoDimensionalRef.current = twoDimensional;
   pausedRef.current = paused;
 
@@ -472,14 +480,25 @@ export function GraphView({
       let activeLabelId: string | null | undefined;
       let previousLinks: GraphLink[] | undefined;
       let neighborIds = new Set<string>();
+      let previousRotationStatus = '';
       const cameraSpace = new THREE.Vector3();
       // Labels live outside the WebGL/bloom scene. ForceGraph has no public
       // post-render hook; this loop also follows the camera after layout settles.
       const updatePresentation = (now: number) => {
         frame = window.requestAnimationFrame(updatePresentation);
-        const rotationAngle = rotationClock.step(now,
-          autoRotateEnabledRef.current && graphReadyRef.current && now >= rotationNotBeforeRef.current
-          && !twoDimensionalRef.current && !reducedMotion.matches && !document.hidden && !pausedRef.current);
+        const rotationStatus = readRotationStatus(rotationClock, now, {
+          enabled: autoRotateEnabledRef.current,
+          ready: graphReadyRef.current && now >= rotationNotBeforeRef.current,
+          twoDimensional: twoDimensionalRef.current,
+          hidden: document.hidden,
+          paused: pausedRef.current || rotationPausedRef.current,
+        });
+        const rotationAngle = rotationClock.step(now, rotationStatus.kind === 'rotating');
+        if (rotationStatus.text !== previousRotationStatus) {
+          previousRotationStatus = rotationStatus.text;
+          host.dataset.rotationStatus = rotationStatus.kind;
+          onRotationStatusRef.current?.(rotationStatus);
+        }
         if (document.hidden || pausedRef.current) return;
         const camera = graph.camera();
         if (rotationAngle > 0) {
