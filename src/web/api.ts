@@ -6,11 +6,9 @@ import type {
   Snapshot,
   WriteReceipt,
 } from '../shared/types';
+import { createSessionRecovery, type LocalSession } from './session-recovery';
 
-export interface SessionResponse {
-  writeToken: string;
-  sourceId?: string;
-}
+export type SessionResponse = LocalSession;
 
 export interface PendingWrite {
   id: string;
@@ -39,6 +37,52 @@ export class ApiRequestError extends Error {
 
 const API_ROOT = '/api';
 const PENDING_KEY_PREFIX = 'living-memory.pending-writes.v1';
+
+type SessionRecoveryEvent = { kind: 'recovered'; session: LocalSession }
+  | { kind: 'source-mismatch'; sourceId?: string };
+const sessionListeners = new Set<(event: SessionRecoveryEvent) => void>();
+const notifySession = (event: SessionRecoveryEvent) => {
+  for (const listener of sessionListeners) listener(event);
+};
+
+export function subscribeToSessionRecovery(listener: (event: SessionRecoveryEvent) => void): () => void {
+  sessionListeners.add(listener);
+  return () => { sessionListeners.delete(listener); };
+}
+
+async function getSession(): Promise<LocalSession> {
+  const session = await requestJson<LocalSession>('/session', { cache: 'no-store' });
+  if (!session || typeof session.writeToken !== 'string' || !session.writeToken.trim()
+      || typeof session.sourceId !== 'string' || !session.sourceId.trim()) {
+    throw new ApiRequestError('无法取得有效的本地会话，请重新连接。', { code: 'SESSION_INVALID' });
+  }
+  return session;
+}
+
+const sessionRecovery = createSessionRecovery({
+  getSession,
+  isExpired: (error) => error instanceof ApiRequestError && error.status === 401 && error.code === 'TOKEN_REQUIRED',
+  onRecovered: (session) => notifySession({ kind: 'recovered', session }),
+  onSourceMismatch: (sourceId) => notifySession({ kind: 'source-mismatch', sourceId }),
+  sourceMismatchError: () => new ApiRequestError('知识源已变化，请完成当前输入后重新加载页面。', { code: 'SOURCE_MISMATCH', status: 409 }),
+});
+
+async function withSession<T>(writeToken: string, sourceId: string, send: (headers: Record<string, string>) => Promise<T>): Promise<T> {
+  if (!sourceId?.trim()) throw new ApiRequestError('缺少当前知识源，未执行写入，请重新连接。', { code: 'SOURCE_REQUIRED' });
+  try {
+    return await sessionRecovery.run({ writeToken, sourceId }, (session) => send({
+      'x-lm-token': session.writeToken,
+      'x-lm-source-id': session.sourceId,
+    }));
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.code === 'SOURCE_MISMATCH') notifySession({ kind: 'source-mismatch' });
+    throw error;
+  }
+}
+
+function authenticatedJson<T>(path: string, init: RequestInit, writeToken: string, sourceId: string): Promise<T> {
+  return withSession(writeToken, sourceId, (headers) => requestJson<T>(path, { ...init, headers }));
+}
 
 function pendingKey(sourceId: string | null | undefined): string | null {
   if (!sourceId?.trim()) return null;
@@ -179,52 +223,49 @@ async function requestBlob(path: string, init: RequestInit = {}): Promise<Blob> 
   return response.blob();
 }
 
-export async function writeJson<T>(path: string, payload: unknown, writeToken: string): Promise<T> {
-  return requestJson<T>(path, {
+export async function writeJson<T>(path: string, payload: unknown, writeToken: string, sourceId: string): Promise<T> {
+  return authenticatedJson<T>(path, {
     method: 'POST',
-    headers: { 'x-lm-token': writeToken },
     body: JSON.stringify(payload),
-  });
+  }, writeToken, sourceId);
 }
 
 export const api = {
-  getSession: () => requestJson<SessionResponse>('/session'),
+  getSession,
   getSnapshot: (asOf?: string, sourceId?: string) => requestJson<Snapshot>(`/snapshot${asOf ? `?asOf=${encodeURIComponent(asOf)}` : ''}`, sourceId ? { headers: { 'x-lm-source-id': sourceId } } : {}),
-  postReview: (payload: ReviewRequest, writeToken: string) =>
-    writeJson<WriteReceipt>('/reviews', payload, writeToken),
-  postObservation: (payload: ObservationRequest, writeToken: string) =>
-    writeJson<WriteReceipt>('/observations', payload, writeToken),
-  putConfig: (payload: Pick<ModelConfig, 'halfLifeDays' | 'revision'>, writeToken: string) =>
-    requestJson<ModelConfig>('/config', {
+  postReview: (payload: ReviewRequest, writeToken: string, sourceId: string) =>
+    writeJson<WriteReceipt>('/reviews', payload, writeToken, sourceId),
+  postObservation: (payload: ObservationRequest, writeToken: string, sourceId: string) =>
+    writeJson<WriteReceipt>('/observations', payload, writeToken, sourceId),
+  putConfig: (payload: Pick<ModelConfig, 'halfLifeDays' | 'revision'>, writeToken: string, sourceId: string) =>
+    authenticatedJson<ModelConfig>('/config', {
       method: 'PUT',
-      headers: { 'x-lm-token': writeToken },
       body: JSON.stringify(payload),
-    }),
+    }, writeToken, sourceId),
   getLayout: (sourceId?: string) => requestJson<Layout>('/layout', sourceId ? { headers: { 'x-lm-source-id': sourceId } } : {}),
-  putLayout: (payload: Layout, writeToken: string) =>
-    requestJson<Layout>('/layout', {
+  putLayout: (payload: Layout, writeToken: string, sourceId: string) =>
+    authenticatedJson<Layout>('/layout', {
       method: 'PUT',
-      headers: { 'x-lm-token': writeToken },
       body: JSON.stringify(payload),
-    }),
-  refresh: (writeToken: string) => writeJson<{ status: string }>('/refresh', {}, writeToken),
-  exportData: (writeToken: string) => requestBlob('/export', { headers: { 'x-lm-token': writeToken } }),
-  sendPending: async (write: PendingWrite, writeToken: string): Promise<void> => {
-    const result = await requestJson<WriteReceipt | ModelConfig | Layout>(write.path, {
+    }, writeToken, sourceId),
+  refresh: (writeToken: string, sourceId: string) => writeJson<{ status: string }>('/refresh', {}, writeToken, sourceId),
+  exportData: (writeToken: string, sourceId: string) => withSession(writeToken, sourceId, (headers) => requestBlob('/export', { headers })),
+  sendPending: async (write: PendingWrite, writeToken: string, sourceId: string): Promise<void> => {
+    const result = await authenticatedJson<WriteReceipt | ModelConfig | Layout>(write.path, {
       method: write.method,
-      headers: { 'x-lm-token': writeToken },
       body: JSON.stringify(write.payload),
-    });
+    }, writeToken, sourceId);
     if (!result) return;
   },
 };
 
 export async function flushPendingWrites(writeToken: string, sourceId: string | null | undefined): Promise<{ sent: number; failed: number }> {
+  if (!sourceId) return { sent: 0, failed: 0 };
   let sent = 0;
   let failed = 0;
   for (const write of getPendingWrites(sourceId)) {
     try {
-      await api.sendPending(write, writeToken);
+      await api.sendPending(write, writeToken, sourceId);
       removePendingWrite(sourceId, write.id);
       sent += 1;
     } catch {

@@ -15,6 +15,7 @@ import {
   flushPendingWrites,
   getPendingWrites,
   queuePendingWrite,
+  subscribeToSessionRecovery,
   type PendingWrite,
 } from './api';
 import { GraphFallbackList, GraphView, STATUS_COLORS } from './GraphView';
@@ -349,6 +350,21 @@ export default function App() {
     setSourceReloadPending(true);
   }, []);
 
+  useEffect(() => subscribeToSessionRecovery((event) => {
+    if (event.kind === 'source-mismatch') {
+      markSourceMismatch(event.sourceId ?? 'changed-source');
+      return;
+    }
+    if (pendingSourceIdRef.current) return;
+    if (sourceIdRef.current !== event.session.sourceId) {
+      markSourceMismatch(event.session.sourceId);
+      return;
+    }
+    // Credential renewal must not reload the form or alter the frozen event.
+    writeTokenRef.current = event.session.writeToken;
+    setWriteToken(event.session.writeToken);
+  }), [markSourceMismatch]);
+
   const flushDeferredChanges = useCallback(() => {
     if (!canApplyChange() || sourceReloadPending || pendingSourceIdRef.current) return;
     const operation = deferredChangeRef.current.begin();
@@ -617,7 +633,7 @@ export default function App() {
     if (!writeToken || writeLocked || attempt) return;
     setRefreshing(true);
     try {
-      await api.refresh(writeToken);
+      await api.refresh(writeToken, sourceId);
       await loadSnapshot();
       setError(null);
       showNotice({ tone: 'success', text: '知识源与时间状态已刷新。' });
@@ -626,7 +642,7 @@ export default function App() {
     } finally {
       setRefreshing(false);
     }
-  }, [attempt, loadSnapshot, showNotice, writeLocked, writeToken]);
+  }, [attempt, loadSnapshot, showNotice, sourceId, writeLocked, writeToken]);
 
   const writeWithRetry = useCallback(async (options: {
     path: '/reviews' | '/observations' | '/config' | '/layout';
@@ -682,7 +698,7 @@ export default function App() {
       eventId: stableEvent.eventId,
       conceptId: selectedConcept.id,
       label: kind === 'estimated' ? '补记重温' : '确认重温',
-      send: () => api.postReview(payload, writeToken),
+      send: () => api.postReview(payload, writeToken, sourceId),
     });
     setBusyAction(null);
     if (result.ok || result.queued) setReviewDialogOpen(false);
@@ -691,7 +707,7 @@ export default function App() {
       showNotice({ tone: 'success', text: kind === 'estimated' ? '已保存一条估计的过去重温。' : '已确认重温，时间起点已更新。' });
       await reloadRealSnapshot();
     }
-  }, [reloadRealSnapshot, selectedConcept, showNotice, snapshot, writeLocked, writeToken, writeWithRetry]);
+  }, [reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const startRecall = useCallback(() => {
     if (!snapshot || !selectedConcept || !selectedState || writeLocked || attempt) return;
@@ -745,7 +761,7 @@ export default function App() {
       eventId: payload.eventId,
       conceptId: selectedConcept.id,
       label: '回忆观察',
-      send: () => api.postObservation(payload, writeToken),
+      send: () => api.postObservation(payload, writeToken, sourceId),
     });
     if (!result.ok) setAttempt({ ...attempt, eventId });
     setBusyAction(null);
@@ -754,7 +770,7 @@ export default function App() {
       showNotice({ tone: 'success', text: '观察已记录；它暂时不会改变重温时间曲线。' });
       await reloadRealSnapshot();
     }
-  }, [attempt, reloadRealSnapshot, selectedConcept, showNotice, snapshot, writeLocked, writeToken, writeWithRetry]);
+  }, [attempt, reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const saveConfig = useCallback(async () => {
     if (!snapshot || !writeToken || writeLocked || attempt) return;
@@ -765,31 +781,32 @@ export default function App() {
     }
     setBusyAction('config');
     const payload = { halfLifeDays, revision: snapshot.config.revision };
-    const result = await writeWithRetry({ path: '/config', method: 'PUT', payload, eventId: null, conceptId: null, label: '更新半衰时间', send: () => api.putConfig(payload, writeToken) });
+    const result = await writeWithRetry({ path: '/config', method: 'PUT', payload, eventId: null, conceptId: null, label: '更新半衰时间', send: () => api.putConfig(payload, writeToken, sourceId) });
     setBusyAction(null);
     if (result.ok) {
       setConfigOpen(false);
       showNotice({ tone: 'success', text: `已更新全局 H = ${halfLifeDays} 天。` });
       await reloadRealSnapshot();
     }
-  }, [attempt, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, writeLocked, writeToken, writeWithRetry]);
+  }, [attempt, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const saveLayout = useCallback((next: Layout) => {
     if (writeLockedRef.current || !writeToken) return;
     setLayout(next);
     if (layoutWriteTimer.current !== null) window.clearTimeout(layoutWriteTimer.current);
     layoutWriteTimer.current = window.setTimeout(() => {
-      if (writeLockedRef.current) return;
+      if (writeLockedRef.current || sourceIdRef.current !== sourceId || !writeTokenRef.current) return;
       const payload = next;
-      void writeWithRetry({ path: '/layout', method: 'PUT', payload, eventId: null, conceptId: null, label: '保存图谱布局', send: () => api.putLayout(payload, writeToken) });
+      const currentToken = writeTokenRef.current;
+      void writeWithRetry({ path: '/layout', method: 'PUT', payload, eventId: null, conceptId: null, label: '保存图谱布局', send: () => api.putLayout(payload, currentToken, sourceId) });
     }, 1_200);
-  }, [writeLocked, writeToken, writeWithRetry]);
+  }, [sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const exportData = useCallback(async () => {
     if (!writeToken) return;
     setBusyAction('export');
     try {
-      const blob = await api.exportData(writeToken);
+      const blob = await api.exportData(writeToken, sourceId);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -804,7 +821,7 @@ export default function App() {
     } finally {
       setBusyAction(null);
     }
-  }, [showNotice, writeToken]);
+  }, [showNotice, sourceId, writeToken]);
 
   const retryPending = useCallback(async () => {
     if (!writeToken || !sourceId || writeLocked || pendingWrites.length === 0) return;

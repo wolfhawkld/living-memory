@@ -234,7 +234,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     next();
   };
 
-  app.get('/api/session', (_req, res) => res.json({ writeToken: token, sourceId: source.namespace }));
+  app.get('/api/session', (_req, res) => res.set('Cache-Control', 'no-store').json({ writeToken: token, sourceId: source.namespace }));
   app.get('/api/changes', (_req, res) => changes.subscribe(res));
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', modelVersion: store.getConfig().modelVersion, source: source.graph.source });
