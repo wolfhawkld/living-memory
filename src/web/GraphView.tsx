@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { Concept, GraphLink, Layout, MemoryState, Snapshot } from '../shared/types';
 import { calculateNodeFocus } from './graph-focus';
+import { createGraphLabels } from './graph-labels';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -22,6 +23,9 @@ export interface GraphViewProps {
 interface PostProcessingComposer {
   addPass: (pass: UnrealBloomPass | OutputPass) => void;
   removePass: (pass: UnrealBloomPass | OutputPass) => void;
+  renderTarget1: THREE.WebGLRenderTarget;
+  renderTarget2: THREE.WebGLRenderTarget;
+  reset: () => void;
 }
 
 interface GraphNode extends Concept {
@@ -58,16 +62,19 @@ interface GraphInstance {
   warmupTicks: (value: number) => GraphInstance;
   numDimensions: (value: 2 | 3) => GraphInstance;
   onNodeClick: (callback: (node: GraphNode) => void) => GraphInstance;
+  onNodeHover: (callback: (node: GraphNode | null) => void) => GraphInstance;
   onNodeDragEnd: (callback: (node: GraphNode) => void) => GraphInstance;
   onEngineStop: (callback: () => void) => GraphInstance;
   scene: () => THREE.Scene;
+  camera: () => THREE.PerspectiveCamera;
+  renderer: () => THREE.WebGLRenderer;
+  lights: (lights: THREE.Light[]) => GraphInstance;
   cameraPosition: (
     position?: { x: number; y: number; z: number },
     lookAt?: { x: number; y: number; z: number },
     transitionMs?: number,
   ) => { x: number; y: number; z: number } | GraphInstance;
   zoomToFit: (durationMs?: number, padding?: number) => GraphInstance;
-  refresh?: () => GraphInstance;
   pauseAnimation?: () => GraphInstance;
   resumeAnimation?: () => GraphInstance;
   d3ReheatSimulation?: () => GraphInstance;
@@ -89,21 +96,6 @@ const STATUS_COLORS: Record<MemoryState['status'], string> = {
 const LINK_COLOR = '#668caf';
 const LINK_MUTED_COLOR = '#2b4563';
 const LINK_SELECTED_COLOR = '#b5edff';
-
-const LABEL_WIDTH_PX = 512;
-const LABEL_MAX_WIDTH_PX = 456;
-const LABEL_FONT = '600 26px "Microsoft YaHei", "PingFang SC", sans-serif';
-const LABEL_LINE_HEIGHT_PX = 30;
-const LABEL_PADDING_Y_PX = 21;
-const LABEL_BASE_HEIGHT_PX = 72;
-const LABEL_MAX_LINES = 3;
-const LABEL_WORLD_WIDTH = 85;
-const LABEL_WORLD_HEIGHT_PER_BASE = 12;
-
-interface LabelLayout {
-  texture: THREE.Texture;
-  heightPx: number;
-}
 
 function hashPosition(id: string): { x: number; y: number; z: number } {
   let hash = 2166136261;
@@ -187,172 +179,55 @@ function glowTexture(): THREE.Texture {
   return texture;
 }
 
-function labelUnits(text: string): string[] {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.match(/[A-Za-z0-9]+(?:[._/'-][A-Za-z0-9]+)*|./gu) ?? (normalized ? [normalized] : ['']);
+function nodeSize(_node: GraphNode): number {
+  return 2.2;
 }
 
-function fitLabelEllipsis(value: string, measure: (text: string) => number, maxWidth: number): string {
-  const ellipsis = '…';
-  let result = value.trimEnd();
-  while (result && measure(`${result}${ellipsis}`) > maxWidth) {
-    result = Array.from(result).slice(0, -1).join('');
-  }
-  return result ? `${result}${ellipsis}` : ellipsis;
+interface NodeVisual {
+  sphere: THREE.Mesh<THREE.SphereGeometry, THREE.MeshLambertMaterial>;
+  halo: THREE.Sprite;
+  ring: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
 }
 
-function wrapLabelLines(text: string, measure: (text: string) => number, maxWidth = LABEL_MAX_WIDTH_PX): string[] {
-  const lines: string[] = [];
-  let current = '';
-  const pushCurrent = () => {
-    const line = current.trim();
-    if (line) lines.push(line);
-    current = '';
-  };
-
-  for (const unit of labelUnits(text)) {
-    if (/\s/.test(unit)) {
-      if (current && !current.endsWith(' ')) current += ' ';
-      continue;
-    }
-    const candidate = `${current}${unit}`;
-    if (measure(candidate) <= maxWidth) {
-      current = candidate;
-      continue;
-    }
-    pushCurrent();
-    if (measure(unit) <= maxWidth) {
-      current = unit;
-      continue;
-    }
-    for (const character of Array.from(unit)) {
-      const characterCandidate = `${current}${character}`;
-      if (current && measure(characterCandidate) > maxWidth) pushCurrent();
-      current += character;
-    }
-  }
-  pushCurrent();
-  return lines.length > 0 ? lines : [''];
-}
-
-function createLabelLayout(text: string, color: string): LabelLayout {
-  const canvas = document.createElement('canvas');
-  canvas.width = LABEL_WIDTH_PX;
-  const context = canvas.getContext('2d');
-  const measure = (value: string) => context ? context.measureText(value).width : Array.from(value).length * 26;
-  if (context) context.font = LABEL_FONT;
-  const wrapped = wrapLabelLines(text, measure);
-  const truncated = wrapped.length > LABEL_MAX_LINES
-    ? [...wrapped.slice(0, LABEL_MAX_LINES - 1), fitLabelEllipsis(wrapped[LABEL_MAX_LINES - 1], measure, LABEL_MAX_WIDTH_PX)]
-    : wrapped;
-  const heightPx = LABEL_PADDING_Y_PX * 2 + truncated.length * LABEL_LINE_HEIGHT_PX;
-  canvas.height = heightPx;
-  if (context) {
-    context.font = LABEL_FONT;
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-    context.shadowColor = '#030810';
-    context.shadowBlur = 9;
-    context.fillStyle = '#030810';
-    for (const [index, line] of truncated.entries()) {
-      const y = LABEL_PADDING_Y_PX + LABEL_LINE_HEIGHT_PX * (index + 0.5);
-      context.fillText(line, LABEL_WIDTH_PX / 2, y);
-    }
-    context.shadowBlur = 0;
-    context.fillStyle = color === STATUS_COLORS.unknown ? '#a5b4cc' : '#dce9fb';
-    for (const [index, line] of truncated.entries()) {
-      const y = LABEL_PADDING_Y_PX + LABEL_LINE_HEIGHT_PX * (index + 0.5);
-      context.fillText(line, LABEL_WIDTH_PX / 2, y);
-    }
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.needsUpdate = true;
-  return { texture, heightPx };
-}
-
-function nodeSize(node: GraphNode): number {
-  if (node.state.status === 'stale') return 5.8;
-  if (node.state.status === 'revisit') return 5.4;
-  if (node.state.status === 'recent') return 5.1;
-  return 4.7;
-}
-
-function updateNodeVisual(node: GraphNode, glowEnabled = true): void {
-  const group = node.__mesh;
-  if (!group) return;
-  const color = STATUS_COLORS[node.state.status];
-  const visual = group.userData.lmVisual as
-    | { sphere: THREE.Mesh; halo: THREE.Sprite; ring: THREE.Mesh; label: THREE.Sprite }
-    | undefined;
+function updateNodeVisual(node: GraphNode, glowEnabled = true, selected = false): void {
+  const visual = node.__mesh?.userData.lmVisual as NodeVisual | undefined;
   if (!visual) return;
-  const sphereMaterial = visual.sphere.material as THREE.MeshBasicMaterial;
-  sphereMaterial.color.set(color);
-  sphereMaterial.wireframe = node.state.status === 'unknown';
-  sphereMaterial.opacity = node.state.status === 'unknown' ? 0.62 : 0.95;
-  sphereMaterial.transparent = node.state.status === 'unknown';
-  const ringMaterial = visual.ring.material as THREE.MeshBasicMaterial;
-  ringMaterial.color.set(color);
-  ringMaterial.opacity = node.state.status === 'unknown' ? 0.58 : 0.22;
+  const color = STATUS_COLORS[node.state.status];
+  visual.sphere.material.color.set(color);
+  visual.sphere.material.emissive.set(color);
+  visual.sphere.material.emissiveIntensity = glowEnabled ? 0.32 : 0.06;
+  const unknown = node.state.status === 'unknown';
+  visual.sphere.visible = !unknown;
+  visual.ring.visible = unknown || selected;
+  visual.ring.material.color.set(selected ? '#cbefff' : color);
+  visual.ring.material.opacity = selected ? 0.75 : 0.8;
   const haloMaterial = visual.halo.material as THREE.SpriteMaterial;
   haloMaterial.color.set(color);
-  haloMaterial.opacity = glowEnabled ? (node.state.status === 'unknown' ? 0.24 : 0.58) : 0;
+  haloMaterial.opacity = unknown ? 0.08 : 0.19;
   visual.halo.visible = glowEnabled;
   const size = nodeSize(node);
-  visual.sphere.scale.setScalar(size / 5);
-  visual.ring.scale.setScalar(size / 5);
-  visual.halo.scale.set(size * 5.8, size * 5.8, 1);
-  visual.label.position.y = size + 7 + (visual.label.scale.y - LABEL_WORLD_HEIGHT_PER_BASE) / 2;
+  visual.sphere.scale.setScalar(size);
+  visual.ring.scale.setScalar(size * (selected ? 1.45 : 1));
+  visual.halo.scale.set(size * 6, size * 6, 1);
 }
 
-function applyLabelLayout(label: THREE.Sprite, layout: LabelLayout, size: number): void {
-  const worldHeight = LABEL_WORLD_HEIGHT_PER_BASE * layout.heightPx / LABEL_BASE_HEIGHT_PX;
-  label.scale.set(LABEL_WORLD_WIDTH, worldHeight, 1);
-  // Keep the bottom of a multi-line label at the same height as the old one-line label.
-  label.position.set(0, size + 7 + (worldHeight - LABEL_WORLD_HEIGHT_PER_BASE) / 2, 0);
-}
-
-function updateNodeLabel(node: GraphNode): void {
-  const visual = node.__mesh?.userData.lmVisual as
-    | { label: THREE.Sprite }
-    | undefined;
-  if (!visual) return;
-  const material = visual.label.material as THREE.SpriteMaterial;
-  material.map?.dispose();
-  const layout = createLabelLayout(node.title, STATUS_COLORS[node.state.status]);
-  material.map = layout.texture;
-  material.needsUpdate = true;
-  applyLabelLayout(visual.label, layout, nodeSize(node));
-}
-
-function buildNodeVisual(node: GraphNode, glowEnabled = true): THREE.Group {
-  const color = STATUS_COLORS[node.state.status];
-  const size = nodeSize(node);
+function buildNodeVisual(node: GraphNode, glowEnabled = true, selected = false): THREE.Group {
   const group = new THREE.Group();
   const sphere = new THREE.Mesh(
-    new THREE.SphereGeometry(size, 18, 12),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }),
+    new THREE.SphereGeometry(1, 32, 24),
+    new THREE.MeshLambertMaterial(),
   );
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(size * 1.28, 0.4, 8, 32),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22 }),
+    new THREE.RingGeometry(0.96, 1.08, 48),
+    new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide }),
   );
-  ring.rotation.x = Math.PI / 2;
-  const halo = new THREE.Sprite(
-    new THREE.SpriteMaterial({
-      map: glowTexture(),
-      transparent: true,
-      opacity: 0.58,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    }),
-  );
-  const labelLayout = createLabelLayout(node.title, color);
-  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelLayout.texture, transparent: true, depthWrite: false, opacity: 0.92 }));
-  applyLabelLayout(label, labelLayout, size);
-  group.add(halo, ring, sphere, label);
-  group.userData.lmVisual = { sphere, halo, ring, label };
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTexture(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  group.add(halo, ring, sphere);
+  group.userData.lmVisual = { sphere, halo, ring };
   node.__mesh = group;
-  updateNodeVisual(node, glowEnabled);
+  updateNodeVisual(node, glowEnabled, selected);
   return group;
 }
 
@@ -391,6 +266,8 @@ export function GraphView({
   const nodesRef = useRef<GraphNode[]>([]);
   const layoutTimerRef = useRef<number | null>(null);
   const selectedIdRef = useRef(selectedId);
+  const hoveredIdRef = useRef<string | null>(null);
+  const linksRef = useRef(snapshot.links);
   const onSelectRef = useRef(onSelect);
   const onLayoutChangeRef = useRef(onLayoutChange);
   const simulatedRef = useRef(simulated);
@@ -404,6 +281,7 @@ export function GraphView({
   const [graphError, setGraphError] = useState<string | null>(null);
 
   selectedIdRef.current = selectedId;
+  linksRef.current = snapshot.links;
   onSelectRef.current = onSelect;
   onLayoutChangeRef.current = onLayoutChange;
   simulatedRef.current = simulated;
@@ -463,7 +341,9 @@ export function GraphView({
       graphReadyRef.current = false;
       focusRequestedRef.current = false;
       animationPausedRef.current = false;
+      hoveredIdRef.current = null;
       const graph = new ForceGraph3D(host) as unknown as GraphInstance;
+      const labels = createGraphLabels(host);
       let initialFitDone = false;
       const transitionMs = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 550;
       graphRef.current = graph;
@@ -481,7 +361,7 @@ export function GraphView({
         .warmupTicks(0)
         .d3AlphaDecay(0.045)
         .numDimensions(twoDimensional ? 2 : 3)
-        .nodeThreeObject((node) => buildNodeVisual(node, glowEnabledRef.current))
+        .nodeThreeObject((node) => buildNodeVisual(node, glowEnabledRef.current, node.id === selectedIdRef.current))
         .nodeThreeObjectExtend(false)
         .nodeLabel((node) => `<strong style="display:inline-block;max-width:280px;white-space:normal;overflow-wrap:anywhere;line-height:1.3">${escapeHtml(node.title)}</strong><br/><span style="display:inline-block;max-width:280px;white-space:normal;overflow-wrap:anywhere;line-height:1.3">${escapeHtml(node.domain)}</span>`)
         .linkLabel((link) => {
@@ -494,17 +374,11 @@ export function GraphView({
           if (!selected) return LINK_COLOR;
           return isIncidentLink(link, selected) ? LINK_SELECTED_COLOR : LINK_MUTED_COLOR;
         })
-        .linkOpacity(0.78)
-        .linkWidth((link) => {
-          const selected = selectedIdRef.current;
-          if (!selected) return 1.35;
-          return isIncidentLink(link, selected) ? 2.8 : 0.95;
-        })
-        .linkDirectionalArrowLength((link) => {
-          const selected = selectedIdRef.current;
-          if (!selected) return 4.2;
-          return isIncidentLink(link, selected) ? 6.5 : 3;
-        })
+        .linkOpacity(0.65)
+        // Native lines keep a one-pixel footprint while zooming; world-space
+        // cylinders and persistent arrows grew into large bars in close views.
+        .linkWidth(0)
+        .linkDirectionalArrowLength((link) => hoveredIdRef.current && isIncidentLink(link, hoveredIdRef.current) ? 1.4 : 0)
         .linkDirectionalArrowColor((link) => {
           const selected = selectedIdRef.current;
           if (!selected) return LINK_COLOR;
@@ -514,6 +388,10 @@ export function GraphView({
         .linkHoverPrecision(6)
         .onNodeClick((node) => {
           onSelectRef.current(node.id);
+        })
+        .onNodeHover((node) => {
+          hoveredIdRef.current = node?.id ?? null;
+          graph.linkDirectionalArrowLength((link) => isIncidentLink(link, hoveredIdRef.current) ? 1.4 : 0);
         })
         .onNodeDragEnd((node) => {
           node.fx = node.x;
@@ -528,22 +406,27 @@ export function GraphView({
             graphReadyRef.current = true;
             const requestedNode = focusRequestedRef.current ? nodesRef.current.find((node) => node.id === selectedIdRef.current) : undefined;
             if (requestedNode) focusNode(graph, requestedNode, twoDimensionalRef.current, transitionMs);
-            else graph.zoomToFit(transitionMs, 80);
+            else graph.zoomToFit(transitionMs, 40);
             host.dataset.layoutReady = 'true';
           }
           scheduleLayoutSave();
         });
 
-      // The halo sprites carry most of the glow. This low-strength bloom pass adds
-      // a restrained light spread without making dense relationship edges luminous.
+      // Offscreen bloom bypasses the default framebuffer's antialiasing. MSAA
+      // on both composer targets keeps thin links and small node silhouettes clean.
+      const composer = graph.postProcessingComposer();
+      const samples = Math.min(4, graph.renderer().capabilities.maxSamples);
+      composer.renderTarget1.samples = samples;
+      composer.renderTarget2.samples = samples;
+      composer.reset();
       let bloomPass: UnrealBloomPass | null = null;
       let outputPass: OutputPass | null = null;
       try {
         bloomPass = new UnrealBloomPass(
           new THREE.Vector2(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight)),
-          0.32,
-          0.35,
-          0.95,
+          0.85,
+          0.45,
+          0.3,
         );
         // The built-in composer only has RenderPass. Keep the final color-space
         // conversion after Bloom so the dark background retains its original color.
@@ -566,13 +449,58 @@ export function GraphView({
         outputPassRef.current = null;
       }
 
-      const ambient = new THREE.AmbientLight('#b6cbff', 0.7);
-      const point = new THREE.PointLight('#65a9ff', 1.6, 500);
+      const ambient = new THREE.AmbientLight('#ffffff', 1.6);
+      const point = new THREE.DirectionalLight('#ecf5ff', 2);
       point.position.set(0, 80, 140);
-      graph.scene().add(ambient, point);
+      graph.lights([ambient, point]);
+
+      let width = host.clientWidth;
+      let height = host.clientHeight;
+      let frame = 0;
+      let activeLabelId: string | null | undefined;
+      let previousLinks: GraphLink[] | undefined;
+      let neighborIds = new Set<string>();
+      const cameraSpace = new THREE.Vector3();
+      // Labels live outside the WebGL/bloom scene. ForceGraph has no public
+      // post-render hook; this loop also follows the camera after layout settles.
+      const updatePresentation = () => {
+        frame = window.requestAnimationFrame(updatePresentation);
+        if (document.hidden || pausedRef.current) return;
+        const camera = graph.camera();
+        camera.updateMatrixWorld();
+        const active = hoveredIdRef.current ?? selectedIdRef.current;
+        if (active !== activeLabelId || previousLinks !== linksRef.current) {
+          activeLabelId = active;
+          previousLinks = linksRef.current;
+          neighborIds = new Set<string>();
+          for (const link of linksRef.current) {
+            if (!isIncidentLink(link, active)) continue;
+            neighborIds.add(endpointId(link.source));
+            neighborIds.add(endpointId(link.target));
+          }
+        }
+        const viewHeightFactor = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+        for (const node of nodesRef.current) {
+          const group = node.__mesh;
+          if (!group) continue;
+          const visual = group.userData.lmVisual as NodeVisual;
+          visual.ring.quaternion.copy(camera.quaternion);
+          cameraSpace.set(node.x ?? 0, node.y ?? 0, node.z ?? 0).applyMatrix4(camera.matrixWorldInverse);
+          // Close foreground nodes retain their color without becoming giant
+          // disks that obscure the selected node or its relationships.
+          const pixelRadius = node.id === selectedIdRef.current ? 8 : 6;
+          const maxWorldRadius = Math.max(0, -cameraSpace.z) * viewHeightFactor * pixelRadius / Math.max(1, height);
+          group.scale.setScalar(Math.min(1, maxWorldRadius / nodeSize(node)));
+        }
+        labels.update({ nodes: nodesRef.current, camera, width, height,
+          selectedId: selectedIdRef.current, hoveredId: hoveredIdRef.current, neighborIds });
+      };
+      frame = window.requestAnimationFrame(updatePresentation);
 
       const resizeObserver = new ResizeObserver(() => {
-        graph.width(host.clientWidth).height(host.clientHeight);
+        width = host.clientWidth;
+        height = host.clientHeight;
+        graph.width(width).height(height);
       });
       resizeObserver.observe(host);
       const onVisibility = () => {
@@ -592,6 +520,8 @@ export function GraphView({
       graph.graphData({ nodes: graphData.nodes, links: cloneLinks(graphData.links) });
 
       return () => {
+        window.cancelAnimationFrame(frame);
+        labels.dispose();
         resizeObserver.disconnect();
         document.removeEventListener('visibilitychange', onVisibility);
         if (layoutTimerRef.current !== null) window.clearTimeout(layoutTimerRef.current);
@@ -634,13 +564,19 @@ export function GraphView({
   }, []);
 
   useEffect(() => {
-    const graph = graphRef.current;
     const bloomPass = bloomPassRef.current;
     if (bloomPass) bloomPass.enabled = glowEnabled;
     if (outputPassRef.current) outputPassRef.current.enabled = glowEnabled;
-    for (const node of nodesRef.current) updateNodeVisual(node, glowEnabled);
-    graph?.refresh?.();
+    for (const node of nodesRef.current) updateNodeVisual(node, glowEnabled, node.id === selectedIdRef.current);
   }, [glowEnabled]);
+
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const linkColor = (link: GraphLink) => !selectedId ? LINK_COLOR : isIncidentLink(link, selectedId) ? LINK_SELECTED_COLOR : LINK_MUTED_COLOR;
+    graph.linkColor(linkColor).linkDirectionalArrowColor(linkColor);
+    for (const node of nodesRef.current) updateNodeVisual(node, glowEnabledRef.current, node.id === selectedId);
+  }, [selectedId]);
 
   useEffect(() => {
     nodesRef.current = graphData.nodes;
@@ -651,7 +587,6 @@ export function GraphView({
     for (const incoming of graphData.nodes) {
       const existing = previousById.get(incoming.id);
       if (existing) {
-        const titleChanged = existing.title !== incoming.title;
         existing.state = incoming.state;
         existing.title = incoming.title;
         existing.summary = incoming.summary;
@@ -666,8 +601,7 @@ export function GraphView({
         incoming.fy = existing.fy;
         incoming.fz = existing.fz;
         incoming.__mesh = existing.__mesh;
-        updateNodeVisual(existing, glowEnabledRef.current);
-        if (titleChanged) updateNodeLabel(existing);
+        updateNodeVisual(existing, glowEnabledRef.current, existing.id === selectedIdRef.current);
       }
     }
     const nextNodes = graphData.nodes.map((node) => previousById.get(node.id) ?? node);
@@ -679,7 +613,6 @@ export function GraphView({
       // A source refresh may add/remove concepts. Preserve coordinates for surviving nodes while allowing the engine to add/remove only then.
       graph.graphData({ nodes: nextNodes, links: cloneLinks(graphData.links) });
     }
-    graph.refresh?.();
     if (selectedId && !selectedIdRef.current) selectedIdRef.current = selectedId;
   }, [graphData, selectedId]);
 
