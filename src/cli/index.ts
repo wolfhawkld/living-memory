@@ -107,7 +107,7 @@ const HELP_TEXT = `Living Memory 本地 CLI
 用法：node --import tsx src/cli/index.ts <命令> [参数] [选项]
 
 命令：
-  query <文本>                         刷新后搜索服务器当前配置加载范围内的标题、别名和摘要
+  query <文本>                         刷新后搜索整个知识源的标题、别名和摘要
   show <ID|相对路径|标题|别名>           显示概念、当前状态和关联关系
   status [选择器]                       显示配置、来源、时间和状态计数
   refresh                              刷新当前知识源
@@ -619,7 +619,7 @@ async function runQuery(client: ApiClient, root: string | undefined, args: strin
   const session = await client.session();
   validateSourceRoot(root, session.sourceId);
   const refreshed = await client.json<RefreshResponse>('/refresh', { method: 'POST', body: {}, write: true });
-  const snapshot = await client.json<Snapshot>('/snapshot');
+  const snapshot = await client.json<Snapshot>('/snapshot?scope=all');
   const needle = query.toLocaleLowerCase();
   const hits = snapshot.concepts
     .filter((concept) => [concept.title, concept.summary, ...concept.aliases].some((field) => field.toLocaleLowerCase().includes(needle)))
@@ -638,11 +638,12 @@ async function runQuery(client: ApiClient, root: string | undefined, args: strin
     query,
     sourceId: session.sourceId,
     scope: {
+      kind: 'all',
       source: snapshot.source.name,
       mode: snapshot.source.mode,
       loadedConcepts: snapshot.concepts.length,
       sourceConcepts: snapshot.source.conceptCount,
-      limit: snapshot.source.limit,
+      viewLimit: snapshot.source.limit,
     },
     refreshed,
     asOf: snapshot.asOf,
@@ -654,7 +655,7 @@ async function runShow(client: ApiClient, root: string | undefined, args: string
   const selector = asNonEmptyString(args.join(' '), '选择器');
   const session = await client.session();
   validateSourceRoot(root, session.sourceId);
-  const snapshot = await client.json<Snapshot>('/snapshot');
+  const snapshot = await client.json<Snapshot>('/snapshot?scope=all');
   const selected = resolveSelector(snapshot, selector);
   const incidentLinks = snapshot.links.filter((link) => link.source === selected.concept.id || link.target === selected.concept.id);
   return {
@@ -672,7 +673,7 @@ async function runStatus(client: ApiClient, root: string | undefined, args: stri
   const selector = args.length > 0 ? args.join(' ') : undefined;
   const session = await client.session();
   validateSourceRoot(root, session.sourceId);
-  const snapshot = await client.json<Snapshot>('/snapshot');
+  const snapshot = await client.json<Snapshot>('/snapshot?scope=all');
   const result: Record<string, unknown> = {
     command: 'status',
     sourceId: session.sourceId,
@@ -733,7 +734,7 @@ async function runReview(
   const selector = asNonEmptyString(args.join(' '), '选择器');
   const session = await client.session();
   validateSourceRoot(root, session.sourceId);
-  const snapshot = await client.json<Snapshot>('/snapshot');
+  const snapshot = await client.json<Snapshot>('/snapshot?scope=all');
   const selected = resolveSelector(snapshot, selector);
   const requestedRevision = options.revision ?? selected.concept.source.revision;
   if (requestedRevision !== selected.concept.source.revision) {

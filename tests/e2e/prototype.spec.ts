@@ -1,6 +1,7 @@
 import { expect, test, type Page, type APIRequestContext } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { createDemoRecord, type DemoRecord } from '../../src/core/demo-snapshot';
+import { createDemoRecord, projectDemoSnapshot, type DemoRecord } from '../../src/core/demo-snapshot';
+import { domainIdOf } from '../../src/core/domain-view';
 import type { ExportData, Snapshot } from '../../src/shared/types';
 
 type DemoExport = {
@@ -25,7 +26,14 @@ async function exported(request: APIRequestContext): Promise<ExportData> {
   return response.json();
 }
 
-async function selectConcept(page: Page, title: string) {
+async function selectConcept(page: Page, title: string, domainId?: string) {
+  if (domainId) {
+    const domainPicker = page.getByRole('combobox', { name: '知识域', exact: true });
+    if (await domainPicker.inputValue() !== domainId) {
+      await domainPicker.selectOption(domainId);
+      await expect(domainPicker).toHaveValue(domainId);
+    }
+  }
   await page.getByRole('textbox', { name: '搜索概念' }).fill(title);
   await page.locator('.concept-list button').filter({ has: page.locator('strong', { hasText: title }) }).first().click();
   await expect(page.locator('.detail-head h2')).toHaveText(title);
@@ -120,11 +128,29 @@ test('demo mode shows the seeded time stages and persists its source-scoped prev
   await expect(page.getByRole('button', { name: '查看真实记录', exact: true })).toBeVisible();
   const demoPanel = page.locator('.demo-panel');
   await expect(demoPanel).toBeVisible();
-  const panelText = await demoPanel.innerText();
-  expect(panelText).toMatch(/近期重温\s*4|4\s*近期重温/);
-  expect(panelText).toMatch(/建议再看\s*4|4\s*建议再看/);
-  expect(panelText).toMatch(/较久未重温\s*6|6\s*较久未重温/);
-  expect(panelText).toMatch(/尚未评估\s*2|2\s*尚未评估/);
+  const domainPicker = page.getByRole('combobox', { name: '知识域', exact: true });
+  await expect(domainPicker).toBeVisible();
+  const currentDomainId = await domainPicker.inputValue();
+  const sourceSnapshot = await snapshot(request);
+  const currentDomainConcepts = sourceSnapshot.concepts.filter((concept) => domainIdOf(concept) === currentDomainId);
+  const demoProjection = projectDemoSnapshot(sourceSnapshot, createDemoRecord(sourceSnapshot, sourceId, sourceSnapshot.asOf));
+  const statusCounts = currentDomainConcepts.reduce((counts, concept) => {
+    const status = demoProjection.states[concept.id]?.status;
+    if (status) counts[status] += 1;
+    return counts;
+  }, { recent: 0, revisit: 0, stale: 0, unknown: 0, pending: 0 });
+  const statusLabels = { recent: '近期重温', revisit: '建议再看', stale: '较久未重温', unknown: '尚未评估', pending: '待确认' } as const;
+  for (const status of Object.keys(statusLabels) as Array<keyof typeof statusLabels>) {
+    const row = demoPanel.locator(`.demo-count[data-status="${status}"]`);
+    const count = statusCounts[status];
+    if (status !== 'pending' || count > 0) {
+      await expect(row).toHaveCount(1);
+      await expect(row).toContainText(statusLabels[status]);
+      await expect(row).toContainText(String(count));
+    } else {
+      await expect(row).toHaveCount(0);
+    }
+  }
   await expect(page.locator('.graph-canvas')).toHaveAttribute('data-layout-ready', 'true');
   await page.screenshot({ path: 'test-results/p0-demo-colors.png', fullPage: true });
   await expect(demoPanel.locator('details summary')).toHaveText('查看初始模拟数值');
@@ -136,10 +162,10 @@ test('demo mode shows the seeded time stages and persists its source-scoped prev
   await expect(table.locator('thead')).toContainText('当前间隔');
   await expect(table.locator('thead')).toContainText('时间指标 D');
   await expect(table.locator('thead')).toContainText('颜色状态');
-  await expect(table.locator('tbody tr')).toHaveCount(16);
+  await expect(table.locator('tbody tr')).toHaveCount(currentDomainConcepts.length);
   await page.screenshot({ path: 'test-results/p0-demo-values.png', fullPage: true });
 
-  const concepts = (await snapshot(request)).concepts.slice().sort((left, right) => left.id.localeCompare(right.id));
+  const concepts = sourceSnapshot.concepts.slice().sort((left, right) => left.id.localeCompare(right.id));
   const seeded = [0, 3, 7, 10, 14, 21, 28, null] as const;
   const initialByTitle = new Map(concepts.map((concept, index) => [concept.title, seeded[index % seeded.length]]));
   expect(initialByTitle.size).toBe(16);
@@ -149,29 +175,29 @@ test('demo mode shows the seeded time stages and persists its source-scoped prev
   const atDouble = concepts.find((concept) => initialByTitle.get(concept.title) === 14)!;
   const unknown = concepts.find((concept) => initialByTitle.get(concept.title) === null)!;
 
-  await selectConcept(page, atZero.title);
+  await selectConcept(page, atZero.title, domainIdOf(atZero));
   await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-recent/);
   await expectTimeIndicator(page, '1.000');
-  await selectConcept(page, atHalf.title);
+  await selectConcept(page, atHalf.title, domainIdOf(atHalf));
   await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-revisit/);
   await expectTimeIndicator(page, '0.500');
-  await selectConcept(page, atDouble.title);
+  await selectConcept(page, atDouble.title, domainIdOf(atDouble));
   await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-stale/);
   await expectTimeIndicator(page, '0.250');
-  await selectConcept(page, unknown.title);
+  await selectConcept(page, unknown.title, domainIdOf(unknown));
   await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-unknown/);
   await expect(page.locator('.right-panel .time-indicator')).toContainText('未知');
 
   const slider = page.getByRole('slider', { name: '模拟时间，单位天' });
   await slider.fill('7');
   await expect(slider).toHaveValue('7');
-  await selectConcept(page, atZero.title);
+  await selectConcept(page, atZero.title, domainIdOf(atZero));
   await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-revisit/);
   await expectTimeIndicator(page, '0.500');
-  await selectConcept(page, atHalf.title);
+  await selectConcept(page, atHalf.title, domainIdOf(atHalf));
   await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-stale/);
   await expectTimeIndicator(page, '0.250');
-  await selectConcept(page, unknown.title);
+  await selectConcept(page, unknown.title, domainIdOf(unknown));
   await expect(page.locator('.right-panel .status-badge')).toHaveClass(/status-unknown/);
   await expect(page.locator('.right-panel .time-indicator')).toContainText('未知');
 
@@ -180,7 +206,7 @@ test('demo mode shows the seeded time stages and persists its source-scoped prev
   await page.reload();
   await expect(page.getByRole('button', { name: '查看真实记录', exact: true })).toBeVisible();
   await expect(page.getByRole('slider', { name: '模拟时间，单位天' })).toHaveValue('7');
-  await selectConcept(page, atZero.title);
+  await selectConcept(page, atZero.title, domainIdOf(atZero));
   await expectTimeIndicator(page, '0.500');
 
   await enterRealMode(page);
@@ -377,7 +403,7 @@ test('recall hides sources, stores a frozen observation, and never resets time',
   await page.getByRole('textbox', { name: '回忆答案' }).fill('后验概率与似然和先验的乘积成比例，并需要归一化。');
   await page.getByRole('button', { name: '提交回答，查看资料' }).click();
   await page.getByRole('button', { name: '能解释', exact: true }).click();
-  await page.getByRole('combobox').selectOption('unexposed');
+  await page.locator('.exposure-options select').selectOption('unexposed');
   await page.getByRole('button', { name: '保存这次观察' }).click();
   await expect(page.getByRole('dialog')).toBeHidden();
   const records = await exported(request);
@@ -393,7 +419,7 @@ test('recall hides sources, stores a frozen observation, and never resets time',
   await page.getByRole('textbox', { name: '回忆答案' }).fill('第二次是在看过资料之后的重建。');
   await page.getByRole('button', { name: '提交回答，查看资料' }).click();
   await page.getByRole('button', { name: '有些模糊', exact: true }).click();
-  await page.getByRole('combobox').selectOption('unexposed');
+  await page.locator('.exposure-options select').selectOption('unexposed');
   await page.getByRole('button', { name: '保存这次观察' }).click();
   await expect(page.getByRole('dialog')).toBeHidden();
   const observations = (await exported(request)).observations.filter((item) => item.conceptId === concept.id);

@@ -15,6 +15,8 @@ export interface KnowledgeGraphOptions {
 
 export interface KnowledgeSource {
   graph: KnowledgeGraph;
+  /** Complete source index, independent of the configured display prefix/limit. */
+  index: KnowledgeGraph;
   /** Hash used to isolate learning history between source roots. */
   namespace: string;
   /** Canonical source root, kept internal and never returned by the API. */
@@ -105,6 +107,13 @@ function domainOf(frontmatter: Record<string, unknown>, relativePath: string, ro
   const parent = normalizePath(relativePath).split('/').slice(0, -1).pop();
   if (parent) return parent;
   return root.split(/[\\/]/).filter(Boolean).pop() ?? 'default';
+}
+
+/** A stable display-domain identifier derived from the note's normalized folder. */
+function domainIdOf(relativePath: string): string {
+  const normalized = normalizePath(relativePath);
+  const parent = normalized.split('/').slice(0, -1).join('/');
+  return parent || '__root__';
 }
 
 function canonicalBody(body: string): string {
@@ -260,6 +269,68 @@ function resolveTarget(
   return {};
 }
 
+interface ResolvedLinks {
+  links: GraphLink[];
+  diagnosticsBySource: Map<string, string[]>;
+}
+
+/**
+ * Resolve every parsed relation once. Consumers can then filter this complete
+ * edge set for a display view without rescanning or reparsing the source.
+ */
+function resolveLinks(
+  parsed: ParsedConcept[],
+  byKey: Map<string, ParsedConcept[]>,
+  byPath: Map<string, ParsedConcept>,
+): ResolvedLinks {
+  const links: GraphLink[] = [];
+  const seenLinks = new Set<string>();
+  const diagnosticsBySource = new Map<string, string[]>();
+  const addDiagnostic = (sourcePath: string, diagnostic: string): void => {
+    const diagnostics = diagnosticsBySource.get(sourcePath) ?? [];
+    diagnostics.push(diagnostic);
+    diagnosticsBySource.set(sourcePath, diagnostics);
+  };
+  for (const item of parsed) {
+    const candidates = [
+      ...parseRelationLinks(item.relativePath, item.concept.body),
+      ...parseOrdinaryLinks(item.relativePath, item.concept.body),
+    ];
+    for (const link of candidates) {
+      const targetResult = resolveTarget(item.relativePath, link.target, byKey, byPath);
+      if (targetResult.ambiguous) {
+        addDiagnostic(item.relativePath, `关系目标有歧义：${item.relativePath} → ${targetWithoutHeading(link.target)}`);
+        continue;
+      }
+      if (!targetResult.concept) {
+        addDiagnostic(item.relativePath, `关系目标未找到：${item.relativePath} → ${targetWithoutHeading(link.target)}`);
+        continue;
+      }
+      const dedupe = `${item.relativePath}\u0000${targetResult.concept.relativePath}\u0000${link.type}\u0000${link.description}`;
+      if (seenLinks.has(dedupe)) continue;
+      seenLinks.add(dedupe);
+      links.push({
+        id: `link_${sha256(dedupe).slice(0, 32)}`,
+        source: item.concept.id,
+        target: targetResult.concept.concept.id,
+        type: link.type,
+        description: link.description,
+      });
+    }
+  }
+  return { links, diagnosticsBySource };
+}
+
+function diagnosticsFor(
+  baseDiagnostics: string[],
+  sourcePaths: Set<string>,
+  diagnosticsBySource: Map<string, string[]>,
+): string[] {
+  const result = [...baseDiagnostics];
+  for (const path of sourcePaths) result.push(...(diagnosticsBySource.get(path) ?? []));
+  return result;
+}
+
 /**
  * Read a progressive-kg source as a deterministic, read-only graph snapshot.
  * The scan happens before applying the limit so diagnostics and conceptCount are
@@ -344,45 +415,41 @@ export function loadKnowledgeGraph(options: KnowledgeGraphOptions): KnowledgeSou
     : parsed;
   const selected = candidates.slice(0, limit);
   const selectedPaths = new Set(selected.map((item) => item.relativePath));
-  const links: GraphLink[] = [];
-  const seenLinks = new Set<string>();
-  for (const item of selected) {
-    const candidates = [...parseRelationLinks(item.relativePath, item.concept.body), ...parseOrdinaryLinks(item.relativePath, item.concept.body)];
-    for (const link of candidates) {
-      const targetResult = resolveTarget(item.relativePath, link.target, byKey, byPath);
-      if (targetResult.ambiguous) {
-        diagnostics.push(`关系目标有歧义：${item.relativePath} → ${targetWithoutHeading(link.target)}`);
-        continue;
-      }
-      if (!targetResult.concept) {
-        diagnostics.push(`关系目标未找到：${item.relativePath} → ${targetWithoutHeading(link.target)}`);
-        continue;
-      }
-      if (!selectedPaths.has(targetResult.concept.relativePath)) continue;
-      const dedupe = `${item.relativePath}\u0000${targetResult.concept.relativePath}\u0000${link.type}\u0000${link.description}`;
-      if (seenLinks.has(dedupe)) continue;
-      seenLinks.add(dedupe);
-      links.push({
-        id: `link_${sha256(dedupe).slice(0, 32)}`,
-        source: item.concept.id,
-        target: targetResult.concept.concept.id,
-        type: link.type,
-        description: link.description,
-      });
-    }
-  }
-
+  const resolved = resolveLinks(parsed, byKey, byPath);
+  const selectedIds = new Set(selected.map((item) => item.concept.id));
+  const links = resolved.links.filter((link) => selectedIds.has(link.source) && selectedIds.has(link.target));
+  const initialDomainId = includePrefix && candidates[0]
+    ? domainIdOf(candidates[0].relativePath)
+    : undefined;
+  const allPaths = new Set(parsed.map((item) => item.relativePath));
+  const selectedDiagnostics = diagnosticsFor(diagnostics, selectedPaths, resolved.diagnosticsBySource);
+  const fullDiagnostics = diagnosticsFor(diagnostics, allPaths, resolved.diagnosticsBySource);
+  const sourceName = root.split(/[\\/]/).filter(Boolean).pop() ?? 'knowledge-source';
+  const sourceMode = root.endsWith(normalizePath('fixtures/demo-kg')) ? 'demo' : 'local';
+  const index: KnowledgeGraph = {
+    concepts: parsed.map((item) => item.concept),
+    links: resolved.links,
+    source: {
+      name: sourceName,
+      mode: sourceMode,
+      conceptCount: parsed.length,
+      limit,
+      diagnostics: fullDiagnostics,
+      ...(initialDomainId ? { initialDomainId } : {}),
+    },
+  };
   const namespace = `kg_${sha256(root).slice(0, 48)}`;
   const graph: KnowledgeGraph = {
     concepts: selected.map((item) => item.concept),
     links,
     source: {
-      name: root.split(/[\\/]/).filter(Boolean).pop() ?? 'knowledge-source',
-      mode: root.endsWith(normalizePath('fixtures/demo-kg')) ? 'demo' : 'local',
+      name: sourceName,
+      mode: sourceMode,
       conceptCount: candidates.length,
       limit,
-      diagnostics,
+      diagnostics: selectedDiagnostics,
+      ...(initialDomainId ? { initialDomainId } : {}),
     },
   };
-  return { graph, namespace, root };
+  return { graph, index, namespace, root };
 }

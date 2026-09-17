@@ -151,3 +151,43 @@ test('resolves links outside an include prefix before omitting out-of-view edges
     cleanup();
   }
 });
+
+test('builds a complete cross-domain index once while keeping the scoped graph limited', () => {
+  const { root, cleanup } = fixture();
+  try {
+    mkdirSync(join(root, 'Model'));
+    writeFileSync(join(root, 'Model', 'Softmax.md'), '---\ntype: concept\ntitle: Softmax\n---\n\n## 关系网络\n- 应用：[[Math/Decision.md]] — 分类规则\n');
+    writeFileSync(join(root, 'Math', 'Cross.md'), '---\ntype: concept\ntitle: Cross\n---\n\n## 关系网络\n- 应用：[[Model/Softmax.md]] — 模型输出\n');
+
+    const scoped = loadKnowledgeGraph({ root, includePrefix: 'Math', limit: 1 });
+    const complete = scoped.index;
+    assert.equal(scoped.graph.concepts.length, 1);
+    assert.equal(scoped.graph.source.conceptCount, 3);
+    assert.equal(complete.concepts.length, 4);
+    assert.equal(complete.source.conceptCount, 4);
+    assert.equal(complete.source.initialDomainId, 'Math');
+    assert.equal(scoped.graph.source.initialDomainId, 'Math');
+    assert.equal(complete.links.some((link) => link.type === 'application'), true);
+    assert.equal(scoped.graph.links.length, 0);
+
+    const byPath = new Map(complete.concepts.map((concept) => [concept.source.path, concept.id]));
+    assert.equal(byPath.get('Math/Boolean.md'), scoped.graph.concepts[0].id);
+    assert.equal(scoped.namespace, loadKnowledgeGraph({ root, includePrefix: 'Model', limit: 20 }).namespace);
+    assert.equal(scoped.graph.concepts.some((concept) => concept.source.path.startsWith('Model/')), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test('uses a stable root domain identifier for root-level concepts', () => {
+  const { root, cleanup } = fixture();
+  try {
+    writeFileSync(join(root, 'Root.md'), '---\ntype: concept\ntitle: 根概念\n---\n正文\n');
+    const next = loadKnowledgeGraph({ root, includePrefix: 'Root.md' });
+    assert.equal(next.index.concepts.find((concept) => concept.title === '根概念')?.source.path, 'Root.md');
+    assert.equal(next.index.source.initialDomainId, '__root__');
+    assert.equal(next.graph.source.initialDomainId, '__root__');
+  } finally {
+    cleanup();
+  }
+});

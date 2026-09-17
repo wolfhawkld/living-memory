@@ -148,8 +148,14 @@ function parseAsOf(value: unknown, now: Date): string {
   return new Date(parsed).toISOString();
 }
 
+function parseSnapshotScope(value: unknown): 'default' | 'all' {
+  if (value === undefined) return 'default';
+  if (value === 'all') return 'all';
+  throw new StoreError('INVALID_SCOPE', 'scope 只能是 all。');
+}
+
 function conceptById(source: KnowledgeSource, id: string) {
-  const concept = source.graph.concepts.find((item) => item.id === id);
+  const concept = source.index.concepts.find((item) => item.id === id);
   if (!concept) throw new StoreError('CONCEPT_NOT_FOUND', '找不到对应概念，请先刷新知识源。', 404);
   return concept;
 }
@@ -237,14 +243,16 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   app.get('/api/session', (_req, res) => res.set('Cache-Control', 'no-store').json({ writeToken: token, sourceId: source.namespace }));
   app.get('/api/changes', (_req, res) => changes.subscribe(res));
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', modelVersion: store.getConfig().modelVersion, source: source.graph.source });
+    res.json({ status: 'ok', modelVersion: store.getConfig().modelVersion, source: source.index.source });
   });
   app.get('/api/snapshot', asyncRoute((req, res) => {
     const asOf = parseAsOf(req.query.asOf, now());
+    const scope = parseSnapshotScope(req.query.scope);
+    const graph = scope === 'all' ? source.index : source.graph;
     const snapshot: Snapshot = {
-      ...source.graph,
+      ...graph,
       config: store.getConfig(),
-      states: store.getStates(source.graph.concepts, asOf),
+      states: store.getStates(graph.concepts, asOf),
       asOf,
       observationsCount: store.countObservations(),
     };
@@ -285,15 +293,19 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     res.json(config);
   }));
   app.get('/api/layout', (_req, res) => res.json(store.getLayout()));
-  app.put('/api/layout', requireWrite, asyncRoute((req, res) => res.json(store.setLayout(validateLayout(req.body)))));
+  app.put('/api/layout', requireWrite, asyncRoute((req, res) => {
+    const partial = validateLayout(req.body);
+    const merged = { ...store.getLayout(), ...partial };
+    res.json(store.setLayout(merged));
+  }));
   app.get('/api/export', (_req, res) => {
-    const data = store.exportData(source.graph.source, source.graph.concepts);
+    const data = store.exportData(source.index.source, source.index.concepts);
     res.setHeader('Content-Disposition', 'attachment; filename="living-memory-export.json"');
     res.type('application/json').send(JSON.stringify(data));
   });
   app.post('/api/refresh', requireWrite, asyncRoute((_req, res) => {
     refreshSource();
-    res.json({ status: 'ok', source: source.graph.source });
+    res.json({ status: 'ok', source: source.index.source });
   }));
 
   const staticDir = options.staticDir ?? resolve(process.cwd(), 'dist');

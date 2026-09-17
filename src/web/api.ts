@@ -232,7 +232,12 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 
 export const api = {
   getSession,
-  getSnapshot: (asOf?: string, sourceId?: string) => requestJson<Snapshot>(`/snapshot${asOf ? `?asOf=${encodeURIComponent(asOf)}` : ''}`, sourceId ? { headers: { 'x-lm-source-id': sourceId } } : {}),
+  getSnapshot: (asOf?: string, sourceId?: string, scope?: 'all') => {
+    const params = new URLSearchParams();
+    if (asOf) params.set('asOf', asOf);
+    if (scope) params.set('scope', scope);
+    return requestJson<Snapshot>(`/snapshot${params.size ? `?${params}` : ''}`, sourceId ? { headers: { 'x-lm-source-id': sourceId } } : {});
+  },
   postReview: (payload: ReviewRequest, writeToken: string, sourceId: string) =>
     writeJson<WriteReceipt>('/reviews', payload, writeToken, sourceId),
   postObservation: (payload: ObservationRequest, writeToken: string, sourceId: string) =>

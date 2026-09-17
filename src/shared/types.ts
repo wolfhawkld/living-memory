@@ -75,6 +75,8 @@ export interface KnowledgeGraph {
     conceptCount: number;
     limit: number;
     diagnostics: string[];
+    /** The first directory selected by the configured source prefix, if any. */
+    initialDomainId?: string;
   };
 }
 

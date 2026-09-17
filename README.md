@@ -12,6 +12,8 @@
 
 视觉目标已明确：**桌面优先，整体深色，突出空间纵深、较明显的发光与镜头运动；每个概念或实体用清晰颜色对应记忆/遗忘相关状态。** 当前已确认直接采用上述 3D 技术方向。颜色背后的阶段估计仍需验证；日常以融入阅读、查询和工作为主，附带少量复习。
 
+知识域浏览采用“完整索引 + 当前领域投影”：服务在内存中保留全部概念和关系，Web 默认按目录领域显示一个受限子图，并提供按需展开的跨域关联。切换领域不会切换学习记录或时间颜色；实现边界和范围参数见[知识域视图](docs/development/domain-views.md)。
+
 ## 本地运行
 
 使用 Node.js 22.13 或更新版本：
@@ -22,15 +24,16 @@ npm run build
 npm start
 ```
 
-打开 `http://127.0.0.1:4317`，默认使用 16 个合成概念。接入自己的知识库、数据位置与试用方式见[运行说明](docs/development/p0-running.md)，检查范围见[验证记录](docs/development/p0-validation.md)。
+打开 `http://127.0.0.1:4317`，默认使用仓库内的合成知识源。接入自己的知识库、数据位置与试用方式见[运行说明](docs/development/p0-running.md)，知识域行为见[知识域视图](docs/development/domain-views.md)，检查范围见[验证记录](docs/development/p0-validation.md)。
 
-服务启动后，可用 `npm run --silent lm -- query "内积"` 查询当前加载范围，或在实际完成重温后执行 `npm run --silent lm -- review "内积" --confirm`。CLI、Web 与 progressive-kg 收尾钩子使用同一份学习记录；查询和生成只刷新状态。安装方式、来源核对与失败重试见 [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)。
+服务启动后，可用 `npm run --silent lm -- query "概念关键词"` 查询完整知识索引，或在实际完成重温后执行 `npm run --silent lm -- review "概念选择器" --confirm`。CLI、Web 与 progressive-kg 收尾钩子使用同一份学习记录；查询和生成只刷新状态。安装方式、来源核对与失败重试见 [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)。
 
 ## 从这里开始
 
 - [当前优先：时间驱动原型](docs/design/time-first-prototype.md)：LM-003 收敛方案、单参数曲线、最小交互、五步开发与试用条件。
 - [初始模拟数值与连线说明](docs/development/time-colors-and-links.md)：可复现的示例颜色、数值记录及局部图谱连线解释。
 - [P0 运行与联调](docs/development/p0-running.md)：启动方式、progressive-kg 接入、时间模拟、观察记录和当前检查边界。
+- [知识域视图](docs/development/domain-views.md)：完整索引、目录领域切换、跨域展开、CLI/Web 范围和布局保存。
 - [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)：查询、明确确认重温、重试、Agent 收尾钩子与页面变化通知。
 - [首版需求分析](docs/requirements/v0.1.md)：用户确认、记忆理论到产品行为的映射、首版范围与边界。
 - [首版技术设计](docs/design/technical-design-v0.1.md)：记忆属性、遗忘/再访规则、知识与事件契约、Web/CLI/语音共用架构。
@@ -66,4 +69,4 @@ npm start
 
 本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。项目许可证将在未来开源前确定。
 
-状态：2026-09-17，P0 时间驱动原型已[可运行并进入小范围试用](docs/development/p0-validation.md)，并增加 [LM-009 的 CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)；完整 v0.1 的 18 项任务与 23 项验收仍保留为后续路线。P0 原有 42 项逻辑测试和 9 条 Chromium 交互检查的结果保留在验证记录中，本轮新增检查见接入说明。后续浏览器视觉验收由用户进行；实际 GPU 性能与真实延迟试用尚待完成，语音链路及 Obsidian 宿主属于后续范围。
+状态：2026-09-17，P0 时间驱动原型已[可运行并进入小范围试用](docs/development/p0-validation.md)，并增加 [LM-009 的 CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)及知识域浏览。完整 v0.1 的任务与验收仍保留为后续路线；本轮 85 项自动测试与构建通过，浏览器视觉验收由用户进行。实际 GPU 性能与真实延迟试用尚待完成，语音链路及 Obsidian 宿主属于后续范围。
