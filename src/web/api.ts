@@ -189,7 +189,7 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 
 export const api = {
   getSession: () => requestJson<SessionResponse>('/session'),
-  getSnapshot: (asOf?: string) => requestJson<Snapshot>(`/snapshot${asOf ? `?asOf=${encodeURIComponent(asOf)}` : ''}`),
+  getSnapshot: (asOf?: string, sourceId?: string) => requestJson<Snapshot>(`/snapshot${asOf ? `?asOf=${encodeURIComponent(asOf)}` : ''}`, sourceId ? { headers: { 'x-lm-source-id': sourceId } } : {}),
   postReview: (payload: ReviewRequest, writeToken: string) =>
     writeJson<WriteReceipt>('/reviews', payload, writeToken),
   postObservation: (payload: ObservationRequest, writeToken: string) =>
@@ -200,7 +200,7 @@ export const api = {
       headers: { 'x-lm-token': writeToken },
       body: JSON.stringify(payload),
     }),
-  getLayout: () => requestJson<Layout>('/layout'),
+  getLayout: (sourceId?: string) => requestJson<Layout>('/layout', sourceId ? { headers: { 'x-lm-source-id': sourceId } } : {}),
   putLayout: (payload: Layout, writeToken: string) =>
     requestJson<Layout>('/layout', {
       method: 'PUT',

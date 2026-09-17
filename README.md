@@ -24,11 +24,14 @@ npm start
 
 打开 `http://127.0.0.1:4317`，默认使用 16 个合成概念。接入自己的知识库、数据位置与试用方式见[运行说明](docs/development/p0-running.md)，检查范围见[验证记录](docs/development/p0-validation.md)。
 
+服务启动后，可用 `npm run --silent lm -- query "内积"` 查询当前加载范围，或在实际完成重温后执行 `npm run --silent lm -- review "内积" --confirm`。CLI、Web 与 progressive-kg 收尾钩子使用同一份学习记录；查询和生成只刷新状态。安装方式、来源核对与失败重试见 [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)。
+
 ## 从这里开始
 
 - [当前优先：时间驱动原型](docs/design/time-first-prototype.md)：LM-003 收敛方案、单参数曲线、最小交互、五步开发与试用条件。
 - [初始模拟数值与连线说明](docs/development/time-colors-and-links.md)：可复现的示例颜色、数值记录及局部图谱连线解释。
 - [P0 运行与联调](docs/development/p0-running.md)：启动方式、progressive-kg 接入、时间模拟、观察记录和当前检查边界。
+- [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)：查询、明确确认重温、重试、Agent 收尾钩子与页面变化通知。
 - [首版需求分析](docs/requirements/v0.1.md)：用户确认、记忆理论到产品行为的映射、首版范围与边界。
 - [首版技术设计](docs/design/technical-design-v0.1.md)：记忆属性、遗忘/再访规则、知识与事件契约、Web/CLI/语音共用架构。
 - [18 项开发任务](docs/planning/development-tasks-v0.1.md)：四个里程碑、依赖、责任线、交付物与完成条件。
@@ -63,4 +66,4 @@ npm start
 
 本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。项目许可证将在未来开源前确定。
 
-状态：2026-09-17，P0 时间驱动原型已[可运行并进入小范围试用](docs/development/p0-validation.md)；完整 v0.1 的 18 项任务与 23 项验收仍保留为后续路线。当前 42 项模型/模拟数据/KG/服务/镜头/标签测试和 9 条真实 Chromium 交互检查已通过；实际 GPU 性能与真实延迟试用尚待完成，语音链路及 Obsidian 宿主属于后续范围。附一个离线 HTML/SVG 风格预览。
+状态：2026-09-17，P0 时间驱动原型已[可运行并进入小范围试用](docs/development/p0-validation.md)，并增加 [LM-009 的 CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)；完整 v0.1 的 18 项任务与 23 项验收仍保留为后续路线。P0 原有 42 项逻辑测试和 9 条 Chromium 交互检查的结果保留在验证记录中，本轮新增检查见接入说明。后续浏览器视觉验收由用户进行；实际 GPU 性能与真实延迟试用尚待完成，语音链路及 Obsidian 宿主属于后续范围。
