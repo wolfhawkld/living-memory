@@ -253,6 +253,18 @@ function focusNode(graph: GraphInstance, node: GraphNode, twoDimensional: boolea
   graph.cameraPosition(focus.position, focus.target, transitionMs);
 }
 
+function fitOverview(graph: GraphInstance, transitionMs: number): void {
+  const startPosition = graph.camera().position.clone();
+  const startTarget = graph.controls().target.clone();
+  // Measure the engine's normal fit synchronously, then halve the distance to
+  // its target for a roughly 2× larger overview. Only the final move is animated.
+  graph.zoomToFit(0, 40);
+  const target = graph.controls().target.clone();
+  const position = graph.camera().position.clone().sub(target).multiplyScalar(0.5).add(target);
+  graph.cameraPosition(startPosition, startTarget, 0);
+  graph.cameraPosition(position, target, transitionMs);
+}
+
 export function GraphView({
   snapshot,
   layout,
@@ -425,7 +437,7 @@ export function GraphView({
             graphReadyRef.current = true;
             const requestedNode = focusRequestedRef.current ? nodesRef.current.find((node) => node.id === selectedIdRef.current) : undefined;
             if (requestedNode) focusNode(graph, requestedNode, twoDimensionalRef.current, transitionMs);
-            else graph.zoomToFit(transitionMs, 40);
+            else if (nodesRef.current.length > 0) fitOverview(graph, transitionMs);
             rotationNotBeforeRef.current = performance.now() + transitionMs;
             host.dataset.layoutReady = 'true';
           }
