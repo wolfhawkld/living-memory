@@ -9,6 +9,7 @@ server.listen(port, '127.0.0.1', () => {
 });
 
 function shutdown(): void {
+  app.livingMemory.closeChanges();
   server.close(() => {
     app.livingMemory.store.close();
     process.exit(0);

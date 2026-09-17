@@ -15,11 +15,14 @@ import {
   flushPendingWrites,
   getPendingWrites,
   queuePendingWrite,
+  subscribeToSessionRecovery,
   type PendingWrite,
 } from './api';
 import { GraphFallbackList, GraphView, STATUS_COLORS } from './GraphView';
 import { createDemoRecord, extendDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
 import { DemoPanel } from './DemoPanel';
+import { createDeferredChangeController, subscribeToChanges } from './change-sync';
+import type { ChangeNotification } from '../shared/types';
 import './styles.css';
 
 const DAY_MS = 86_400_000;
@@ -187,18 +190,58 @@ export default function App() {
   const [halfLifeDraft, setHalfLifeDraft] = useState('');
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [simulationLoading, setSimulationLoading] = useState(false);
+  const [sourceReloadPending, setSourceReloadPending] = useState(false);
   const layoutWriteTimer = useRef<number | null>(null);
   const noticeTimer = useRef<number | null>(null);
   const snapshotRequestRef = useRef(0);
   const simulationBaseRef = useRef(Date.now());
   const reviewEventRef = useRef<{ conceptId: string; kind: 'review' | 'estimated'; occurredAt: string; eventId: string } | null>(null);
   const writeLockedRef = useRef(true);
+  const sourceIdRef = useRef('');
+  const writeTokenRef = useRef('');
+  const pendingSourceIdRef = useRef<string | null>(null);
+  const deferredChangeRef = useRef(createDeferredChangeController<ChangeNotification>());
+  const sessionRefreshInFlightRef = useRef<Promise<void> | null>(null);
+  const changeUiRef = useRef({
+    loading: true,
+    hidden: false,
+    demoEnabled: true,
+    simulated: false,
+    attempt: false,
+    reviewDialogOpen: false,
+    configOpen: false,
+    busyAction: null as string | null,
+    refreshing: false,
+    simulationLoading: false,
+    sourceReloadPending: false,
+  });
+  const changeHandlersRef = useRef<{
+    onChange: (notification: ChangeNotification) => void;
+    onConnected: (notification: ChangeNotification, reconnected: boolean) => void;
+    flush: () => void;
+  }>({ onChange: () => undefined, onConnected: () => undefined, flush: () => undefined });
 
   const realNow = new Date();
   const simulated = simDays > 0;
-  const writeLocked = demoEnabled || simulated || simulationLoading;
+  const hasSession = Boolean(writeToken);
+  const writeLocked = demoEnabled || simulated || simulationLoading || sourceReloadPending;
   writeLockedRef.current = writeLocked;
   const asOf = simulated && !demoEnabled ? new Date(simulationBaseRef.current + simDays * DAY_MS).toISOString() : undefined;
+  sourceIdRef.current = sourceId;
+  writeTokenRef.current = writeToken;
+  changeUiRef.current = {
+    loading,
+    hidden: typeof document !== 'undefined' && document.hidden,
+    demoEnabled,
+    simulated,
+    attempt: Boolean(attempt),
+    reviewDialogOpen,
+    configOpen,
+    busyAction,
+    refreshing,
+    simulationLoading,
+    sourceReloadPending,
+  };
 
   const refreshPendingState = useCallback(() => setPendingWrites(getPendingWrites(sourceId)), [sourceId]);
 
@@ -208,29 +251,42 @@ export default function App() {
     if (next) noticeTimer.current = window.setTimeout(() => setNotice(null), 5_000);
   }, []);
 
-  const loadSnapshot = useCallback(async (requestedAsOf?: string) => {
+  const loadSnapshot = useCallback(async (requestedAsOf?: string, expectedSourceId?: string, canApply?: () => boolean) => {
     const requestId = snapshotRequestRef.current + 1;
     snapshotRequestRef.current = requestId;
-    const next = await api.getSnapshot(requestedAsOf);
-    if (requestId !== snapshotRequestRef.current) return next;
+    const sourceAtRequest = expectedSourceId ?? sourceIdRef.current;
+    const next = await api.getSnapshot(requestedAsOf, sourceAtRequest || undefined);
+    if (requestId !== snapshotRequestRef.current) return null;
+    if (sourceAtRequest && sourceIdRef.current !== sourceAtRequest) return null;
+    if (canApply && !canApply()) return null;
     setSnapshot(next);
-    setHalfLifeDraft(String(next.config.halfLifeDays));
+    if (!changeUiRef.current.configOpen) setHalfLifeDraft(String(next.config.halfLifeDays));
     setSelectedId((current) => (current && next.concepts.some((concept) => concept.id === current) ? current : next.concepts[0]?.id ?? null));
     return next;
   }, []);
 
-  const loadInitial = useCallback(async () => {
+  const loadInitial = useCallback(async (): Promise<Snapshot | null> => {
+    const requestId = snapshotRequestRef.current + 1;
+    snapshotRequestRef.current = requestId;
     setLoading(true);
     setError(null);
     try {
-      const [session, nextSnapshot, nextLayout] = await Promise.all([api.getSession(), api.getSnapshot(), api.getLayout().catch(() => ({} as Layout))]);
+      const session = await api.getSession();
+      if (requestId !== snapshotRequestRef.current) return null;
+      const currentSource = session.sourceId ?? 'legacy-unscoped';
+      const [nextSnapshot, nextLayout] = await Promise.all([
+        api.getSnapshot(undefined, currentSource),
+        api.getLayout(currentSource).catch(() => ({} as Layout)),
+      ]);
+      if (requestId !== snapshotRequestRef.current) return null;
+      sourceIdRef.current = currentSource;
+      writeTokenRef.current = session.writeToken;
       setWriteToken(session.writeToken);
-      setSourceId(session.sourceId ?? 'legacy-unscoped');
+      setSourceId(currentSource);
       setSnapshot(nextSnapshot);
       setLayout(nextLayout);
       setHalfLifeDraft(String(nextSnapshot.config.halfLifeDays));
       setSelectedId(nextSnapshot.concepts[0]?.id ?? null);
-      const currentSource = session.sourceId ?? 'legacy-unscoped';
       let initialDemo = createDemoRecord(nextSnapshot, currentSource);
       try {
         const storedDemo: unknown = JSON.parse(window.localStorage.getItem(`living-memory.demo-record.v1.${currentSource}`) ?? 'null');
@@ -257,13 +313,174 @@ export default function App() {
       } catch {
         // Private browsing may deny sessionStorage; the in-memory marker still works.
       }
-      setPendingWrites(getPendingWrites(session.sourceId ?? 'legacy-unscoped'));
+      setPendingWrites(getPendingWrites(currentSource));
+      return nextSnapshot;
     } catch (loadError) {
-      setError(errorMessage(loadError));
+      if (requestId === snapshotRequestRef.current) setError(errorMessage(loadError));
+      return null;
     } finally {
-      setLoading(false);
+      if (requestId === snapshotRequestRef.current) setLoading(false);
     }
   }, []);
+
+  const canApplyChange = useCallback(() => {
+    const ui = changeUiRef.current;
+    return (
+      !ui.loading &&
+      !ui.hidden &&
+      !ui.demoEnabled &&
+      !ui.simulated &&
+      !ui.attempt &&
+      !ui.reviewDialogOpen &&
+      !ui.configOpen &&
+      !ui.busyAction &&
+      !ui.refreshing &&
+      !ui.simulationLoading &&
+      !ui.sourceReloadPending
+    );
+  }, []);
+
+  const markSourceMismatch = useCallback((nextSourceId: string) => {
+    if (pendingSourceIdRef.current === nextSourceId) return;
+    pendingSourceIdRef.current = nextSourceId;
+    deferredChangeRef.current.clear();
+    writeTokenRef.current = '';
+    changeUiRef.current.sourceReloadPending = true;
+    setWriteToken('');
+    setSourceReloadPending(true);
+  }, []);
+
+  useEffect(() => subscribeToSessionRecovery((event) => {
+    if (event.kind === 'source-mismatch') {
+      markSourceMismatch(event.sourceId ?? 'changed-source');
+      return;
+    }
+    if (pendingSourceIdRef.current) return;
+    if (sourceIdRef.current !== event.session.sourceId) {
+      markSourceMismatch(event.session.sourceId);
+      return;
+    }
+    // Credential renewal must not reload the form or alter the frozen event.
+    writeTokenRef.current = event.session.writeToken;
+    setWriteToken(event.session.writeToken);
+  }), [markSourceMismatch]);
+
+  const flushDeferredChanges = useCallback(() => {
+    if (!canApplyChange() || sourceReloadPending || pendingSourceIdRef.current) return;
+    const operation = deferredChangeRef.current.begin();
+    if (!operation) return;
+    const pending = operation.value;
+
+    const currentSource = sourceIdRef.current;
+    if (!currentSource) {
+      operation.settle(false);
+      return;
+    }
+    if (pending.sourceId !== currentSource) {
+      markSourceMismatch(pending.sourceId);
+      operation.settle(false);
+      return;
+    }
+
+    const task = (async (): Promise<boolean> => {
+      const nextSnapshot = await loadSnapshot(undefined, currentSource, canApplyChange);
+      if (!nextSnapshot || sourceIdRef.current !== currentSource) return false;
+      return true;
+    })();
+    const finish = (succeeded: boolean) => {
+      const shouldRetry = operation.settle(succeeded);
+      if (shouldRetry && canApplyChange()) {
+        window.setTimeout(() => changeHandlersRef.current.flush(), 0);
+      }
+    };
+    void task.then((succeeded) => finish(succeeded), (changeError) => {
+      showNotice({ tone: 'error', text: errorMessage(changeError) });
+      finish(false);
+    });
+  }, [canApplyChange, loadSnapshot, markSourceMismatch, sourceReloadPending]);
+
+  const handleChange = useCallback((notification: ChangeNotification) => {
+    const currentSource = sourceIdRef.current;
+    if (currentSource && notification.sourceId !== currentSource) {
+      markSourceMismatch(notification.sourceId);
+      return;
+    }
+    if (sourceReloadPending) return;
+    deferredChangeRef.current.defer(notification);
+    if (canApplyChange()) changeHandlersRef.current.flush();
+  }, [canApplyChange, markSourceMismatch, sourceReloadPending]);
+
+  const handleConnected = useCallback((notification: ChangeNotification, reconnected: boolean) => {
+    if (!reconnected) {
+      const currentSource = sourceIdRef.current;
+      if (currentSource && notification.sourceId !== currentSource) {
+        markSourceMismatch(notification.sourceId);
+        return;
+      }
+      if (sourceReloadPending) return;
+      deferredChangeRef.current.defer(notification);
+      if (canApplyChange()) changeHandlersRef.current.flush();
+      return;
+    }
+    if (sessionRefreshInFlightRef.current) return;
+    const task = (async () => {
+      try {
+        const session = await api.getSession();
+        const nextSource = session.sourceId ?? 'legacy-unscoped';
+        const currentSource = sourceIdRef.current;
+        const sourceChanged = Boolean(currentSource && nextSource !== currentSource);
+        if (sourceChanged || pendingSourceIdRef.current) {
+          if (sourceChanged) markSourceMismatch(nextSource);
+          return;
+        }
+        pendingSourceIdRef.current = null;
+        sourceIdRef.current = nextSource;
+        setSourceId(nextSource);
+        writeTokenRef.current = session.writeToken;
+        setWriteToken(session.writeToken);
+        deferredChangeRef.current.defer({ ...notification, sourceId: nextSource, reason: 'connected' as const });
+        changeHandlersRef.current.flush();
+      } catch (sessionError) {
+        showNotice({ tone: 'error', text: errorMessage(sessionError) });
+      }
+    })();
+    sessionRefreshInFlightRef.current = task;
+    void task.then(() => {
+      if (sessionRefreshInFlightRef.current === task) sessionRefreshInFlightRef.current = null;
+    }, () => {
+      if (sessionRefreshInFlightRef.current === task) sessionRefreshInFlightRef.current = null;
+    });
+  }, [canApplyChange, markSourceMismatch, showNotice, sourceReloadPending]);
+
+  changeHandlersRef.current = {
+    onChange: handleChange,
+    onConnected: handleConnected,
+    flush: flushDeferredChanges,
+  };
+
+  useEffect(() => {
+    return subscribeToChanges({
+      onChange: (notification) => changeHandlersRef.current.onChange(notification),
+      onConnected: (notification, reconnected) => changeHandlersRef.current.onConnected(notification, reconnected),
+    });
+  }, []);
+
+  useEffect(() => {
+    const resume = () => {
+      changeUiRef.current.hidden = typeof document !== 'undefined' && document.hidden;
+      if (!changeUiRef.current.hidden) changeHandlersRef.current.flush();
+    };
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('focus', resume);
+    return () => {
+      document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener('focus', resume);
+    };
+  }, []);
+
+  useEffect(() => {
+    changeHandlersRef.current.flush();
+  }, [attempt, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken]);
 
   useEffect(() => {
     void loadInitial();
@@ -282,17 +499,27 @@ export default function App() {
   useEffect(() => {
     if (!writeToken) return undefined;
     const timer = window.setInterval(() => {
-      if (!document.hidden && !demoEnabled && !simulated && !attempt) void loadSnapshot();
+      if (canApplyChange() && !pendingSourceIdRef.current) {
+        const queued = deferredChangeRef.current.peek();
+        const queuedRevision = queued?.sourceId === sourceIdRef.current ? queued.revision : null;
+        void loadSnapshot(undefined, sourceIdRef.current, canApplyChange).then((nextSnapshot) => {
+          const after = deferredChangeRef.current.peek();
+          if (nextSnapshot && queuedRevision !== null && after?.sourceId === sourceIdRef.current && after.revision <= queuedRevision) deferredChangeRef.current.clear();
+        }).catch((tickError) => {
+          showNotice({ tone: 'error', text: errorMessage(tickError) });
+        });
+      }
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [attempt, demoEnabled, loadSnapshot, simulated, writeToken]);
+  }, [canApplyChange, loadSnapshot, showNotice, writeToken]);
 
   useEffect(() => {
     if (demoEnabled) {
       setSimulationLoading(false);
       return undefined;
     }
-    if (!writeToken || !snapshot) return undefined;
+    if (!hasSession || !snapshot) return undefined;
+    if (sourceReloadPending) return undefined;
     let cancelled = false;
     setSimulationLoading(true);
     void loadSnapshot(asOf).catch((simulationError) => {
@@ -303,7 +530,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [asOf, demoEnabled, loadSnapshot, showNotice, simDays, writeToken]);
+  }, [asOf, demoEnabled, hasSession, loadSnapshot, showNotice, simDays, sourceReloadPending]);
 
   useEffect(() => {
     if (writeLocked && layoutWriteTimer.current !== null) {
@@ -406,7 +633,7 @@ export default function App() {
     if (!writeToken || writeLocked || attempt) return;
     setRefreshing(true);
     try {
-      await api.refresh(writeToken);
+      await api.refresh(writeToken, sourceId);
       await loadSnapshot();
       setError(null);
       showNotice({ tone: 'success', text: '知识源与时间状态已刷新。' });
@@ -415,7 +642,7 @@ export default function App() {
     } finally {
       setRefreshing(false);
     }
-  }, [attempt, loadSnapshot, showNotice, writeLocked, writeToken]);
+  }, [attempt, loadSnapshot, showNotice, sourceId, writeLocked, writeToken]);
 
   const writeWithRetry = useCallback(async (options: {
     path: '/reviews' | '/observations' | '/config' | '/layout';
@@ -471,7 +698,7 @@ export default function App() {
       eventId: stableEvent.eventId,
       conceptId: selectedConcept.id,
       label: kind === 'estimated' ? '补记重温' : '确认重温',
-      send: () => api.postReview(payload, writeToken),
+      send: () => api.postReview(payload, writeToken, sourceId),
     });
     setBusyAction(null);
     if (result.ok || result.queued) setReviewDialogOpen(false);
@@ -480,7 +707,7 @@ export default function App() {
       showNotice({ tone: 'success', text: kind === 'estimated' ? '已保存一条估计的过去重温。' : '已确认重温，时间起点已更新。' });
       await reloadRealSnapshot();
     }
-  }, [reloadRealSnapshot, selectedConcept, showNotice, snapshot, writeLocked, writeToken, writeWithRetry]);
+  }, [reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const startRecall = useCallback(() => {
     if (!snapshot || !selectedConcept || !selectedState || writeLocked || attempt) return;
@@ -534,7 +761,7 @@ export default function App() {
       eventId: payload.eventId,
       conceptId: selectedConcept.id,
       label: '回忆观察',
-      send: () => api.postObservation(payload, writeToken),
+      send: () => api.postObservation(payload, writeToken, sourceId),
     });
     if (!result.ok) setAttempt({ ...attempt, eventId });
     setBusyAction(null);
@@ -543,7 +770,7 @@ export default function App() {
       showNotice({ tone: 'success', text: '观察已记录；它暂时不会改变重温时间曲线。' });
       await reloadRealSnapshot();
     }
-  }, [attempt, reloadRealSnapshot, selectedConcept, showNotice, snapshot, writeLocked, writeToken, writeWithRetry]);
+  }, [attempt, reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const saveConfig = useCallback(async () => {
     if (!snapshot || !writeToken || writeLocked || attempt) return;
@@ -554,31 +781,32 @@ export default function App() {
     }
     setBusyAction('config');
     const payload = { halfLifeDays, revision: snapshot.config.revision };
-    const result = await writeWithRetry({ path: '/config', method: 'PUT', payload, eventId: null, conceptId: null, label: '更新半衰时间', send: () => api.putConfig(payload, writeToken) });
+    const result = await writeWithRetry({ path: '/config', method: 'PUT', payload, eventId: null, conceptId: null, label: '更新半衰时间', send: () => api.putConfig(payload, writeToken, sourceId) });
     setBusyAction(null);
     if (result.ok) {
       setConfigOpen(false);
       showNotice({ tone: 'success', text: `已更新全局 H = ${halfLifeDays} 天。` });
       await reloadRealSnapshot();
     }
-  }, [attempt, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, writeLocked, writeToken, writeWithRetry]);
+  }, [attempt, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const saveLayout = useCallback((next: Layout) => {
     if (writeLockedRef.current || !writeToken) return;
     setLayout(next);
     if (layoutWriteTimer.current !== null) window.clearTimeout(layoutWriteTimer.current);
     layoutWriteTimer.current = window.setTimeout(() => {
-      if (writeLockedRef.current) return;
+      if (writeLockedRef.current || sourceIdRef.current !== sourceId || !writeTokenRef.current) return;
       const payload = next;
-      void writeWithRetry({ path: '/layout', method: 'PUT', payload, eventId: null, conceptId: null, label: '保存图谱布局', send: () => api.putLayout(payload, writeToken) });
+      const currentToken = writeTokenRef.current;
+      void writeWithRetry({ path: '/layout', method: 'PUT', payload, eventId: null, conceptId: null, label: '保存图谱布局', send: () => api.putLayout(payload, currentToken, sourceId) });
     }, 1_200);
-  }, [writeLocked, writeToken, writeWithRetry]);
+  }, [sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const exportData = useCallback(async () => {
     if (!writeToken) return;
     setBusyAction('export');
     try {
-      const blob = await api.exportData(writeToken);
+      const blob = await api.exportData(writeToken, sourceId);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -593,7 +821,7 @@ export default function App() {
     } finally {
       setBusyAction(null);
     }
-  }, [showNotice, writeToken]);
+  }, [showNotice, sourceId, writeToken]);
 
   const retryPending = useCallback(async () => {
     if (!writeToken || !sourceId || writeLocked || pendingWrites.length === 0) return;
@@ -610,7 +838,7 @@ export default function App() {
   }, [loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, writeLocked, writeToken]);
 
   const setSimulatedDays = (value: number) => {
-    if (attempt) return;
+    if (attempt || sourceReloadPending) return;
     setSimDays(value);
     if (demoEnabled) {
       try {
@@ -620,7 +848,7 @@ export default function App() {
   };
 
   const changeDemoMode = (enabled: boolean) => {
-    if (attempt) return;
+    if (attempt || sourceReloadPending) return;
     writeLockedRef.current = true;
     setSimulationLoading(!enabled);
     setSimDays(enabled ? readDemoOffset(sourceId) : 0);
@@ -691,9 +919,11 @@ export default function App() {
         </div>
       </header>
 
+      {sourceReloadPending ? <div className="mode-bar source-reload-banner" role="alert"><div><strong>知识源已变化</strong><span>请完成当前输入后重新加载页面。</span></div></div> : null}
+
       <div className={`mode-bar${demoEnabled ? ' is-demo' : ''}`}>
         <div><strong>{demoEnabled ? '示例状态 · 非真实记忆' : '真实学习记录'}</strong><span>{demoEnabled ? '虚构重温间隔，拖动时间轴查看颜色变化' : '由你确认的学习与重温记录计算'}</span></div>
-        <div className="mode-actions">{demoEnabled ? <button type="button" onClick={exportDemo}>导出模拟记录</button> : null}<button type="button" onClick={() => changeDemoMode(!demoEnabled)} disabled={Boolean(attempt) || busyAction !== null}>{demoEnabled ? '查看真实记录' : '查看示例状态'}</button></div>
+        <div className="mode-actions">{demoEnabled ? <button type="button" onClick={exportDemo}>导出模拟记录</button> : null}<button type="button" onClick={() => changeDemoMode(!demoEnabled)} disabled={Boolean(attempt) || busyAction !== null || sourceReloadPending}>{demoEnabled ? '查看真实记录' : '查看示例状态'}</button></div>
       </div>
       <main className={`workspace${attempt ? ' workspace-recall-hidden' : ''}`} aria-hidden={attempt ? true : undefined} inert={attempt ? true : undefined}>
         <aside className="left-panel">
@@ -719,7 +949,7 @@ export default function App() {
             <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
             <div className="graph-hint">{snapshot.links.length} 条关系 · 亮线连接选中概念 · 悬停看关系</div>
           </div>
-          <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间预览</span><strong>{simulated ? `+${simDays} 天` : demoEnabled ? '初始模拟值' : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt)} /><div className="range-labels"><span>{demoEnabled ? '模拟起点' : '现在'}</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimulatedDays(0)}>{demoEnabled ? '回到初始值' : '恢复实时'}</button> : null}</div>
+          <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间预览</span><strong>{simulated ? `+${simDays} 天` : demoEnabled ? '初始模拟值' : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt) || sourceReloadPending} /><div className="range-labels"><span>{demoEnabled ? '模拟起点' : '现在'}</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimulatedDays(0)}>{demoEnabled ? '回到初始值' : '恢复实时'}</button> : null}</div>
         </section>
 
         <aside className="right-panel">

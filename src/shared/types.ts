@@ -111,6 +111,13 @@ export interface WriteReceipt {
   eventId: string;
 }
 
+/** Invalidation only: clients re-read the shared projection, never apply deltas. */
+export interface ChangeNotification {
+  sourceId: string;
+  revision: number;
+  reason: 'connected' | 'source' | 'review' | 'observation' | 'config';
+}
+
 export interface LayoutPosition { x: number; y: number; z: number }
 export type Layout = Record<string, LayoutPosition>;
 

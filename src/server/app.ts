@@ -5,6 +5,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { Layout, ModelConfig, Snapshot } from '../shared/types.js';
 import { isValidInstant } from '../core/time-model.js';
 import { loadKnowledgeGraph, KnowledgeSourceError, type KnowledgeSource } from './kg.js';
+import { createChangeFeed } from './changes.js';
 import {
   parseObservationRequest,
   parseReviewRequest,
@@ -32,6 +33,7 @@ export interface LivingMemoryApp extends Express {
     store: Store;
     getSource: () => KnowledgeSource;
     refresh: () => KnowledgeSource;
+    closeChanges: () => void;
     token: string;
     port: number;
   };
@@ -182,6 +184,16 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   const store = new Store({ dataDir, dbPath: options.dbPath, namespace: initialSource.namespace, now: options.now });
   const token = options.token ?? randomBytes(32).toString('hex');
   let source = initialSource;
+  const changes = createChangeFeed(initialSource.namespace);
+  const refreshSource = () => {
+    const next = loadKnowledgeGraph({ root, limit: sourceLimit(options), includePrefix: sourceInclude(options) });
+    if (next.namespace !== store.namespace) {
+      throw new StoreError('SOURCE_MISMATCH', '知识根目录已变化，请重启服务后重新连接。', 409);
+    }
+    source = next;
+    changes.publish('source');
+    return source;
+  };
   const now = options.now ?? (() => new Date());
   const app = express() as LivingMemoryApp;
   app.use(express.json({ limit: '1mb' }));
@@ -202,8 +214,13 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     }
     if (req.method === 'OPTIONS') {
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-LM-Token');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-LM-Token, X-LM-Source-ID');
       res.status(204).end();
+      return;
+    }
+    const expectedSource = req.header('x-lm-source-id');
+    if (expectedSource && expectedSource !== source.namespace) {
+      res.status(409).json({ error: { code: 'SOURCE_MISMATCH', message: '服务正在使用另一个知识源，请重新连接后确认操作。' } });
       return;
     }
     next();
@@ -217,7 +234,8 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     next();
   };
 
-  app.get('/api/session', (_req, res) => res.json({ writeToken: token, sourceId: source.namespace }));
+  app.get('/api/session', (_req, res) => res.set('Cache-Control', 'no-store').json({ writeToken: token, sourceId: source.namespace }));
+  app.get('/api/changes', (_req, res) => changes.subscribe(res));
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', modelVersion: store.getConfig().modelVersion, source: source.graph.source });
   });
@@ -239,6 +257,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       if (review.sourceRevision !== concept.source.revision) throw new StoreError('SOURCE_REVISION_MISMATCH', '概念内容已变化，请先刷新知识源后重新确认。', 409);
     }
     const receipt = store.addReview(review);
+    if (receipt.status === 'accepted') changes.publish('review');
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.post('/api/observations', requireWrite, asyncRoute((req, res) => {
@@ -251,6 +270,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     if (Date.parse(observedAt) > now().getTime()) throw new StoreError('FUTURE_OBSERVATION', '观察时间不能晚于服务当前时间。');
     const expectedAnchor = store.getAnchor(observation.conceptId, observedAt);
     const receipt = store.addObservation({ ...observation, observedAt }, expectedAnchor?.eventId ?? null);
+    if (receipt.status === 'accepted') changes.publish('observation');
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.put('/api/config', requireWrite, asyncRoute((req, res) => {
@@ -260,7 +280,9 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     const revision = body.revision;
     if (typeof halfLifeDays !== 'number' || !Number.isFinite(halfLifeDays)) throw new StoreError('INVALID_HALF_LIFE', 'halfLifeDays 必须是有限数字。');
     if (typeof revision !== 'number' || !Number.isInteger(revision)) throw new StoreError('INVALID_REVISION', 'revision 必须是正整数。');
-    res.json(store.updateConfig(halfLifeDays, revision));
+    const config = store.updateConfig(halfLifeDays, revision);
+    changes.publish('config');
+    res.json(config);
   }));
   app.get('/api/layout', (_req, res) => res.json(store.getLayout()));
   app.put('/api/layout', requireWrite, asyncRoute((req, res) => res.json(store.setLayout(validateLayout(req.body)))));
@@ -270,7 +292,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     res.type('application/json').send(JSON.stringify(data));
   });
   app.post('/api/refresh', requireWrite, asyncRoute((_req, res) => {
-    source = loadKnowledgeGraph({ root, limit: sourceLimit(options), includePrefix: sourceInclude(options) });
+    refreshSource();
     res.json({ status: 'ok', source: source.graph.source });
   }));
 
@@ -281,10 +303,8 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   app.livingMemory = {
     store,
     getSource: () => source,
-    refresh: () => {
-      source = loadKnowledgeGraph({ root, limit: sourceLimit(options), includePrefix: sourceInclude(options) });
-      return source;
-    },
+    refresh: refreshSource,
+    closeChanges: changes.close,
     token,
     port,
   };
@@ -292,6 +312,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
 }
 
 export function closeApp(app: LivingMemoryApp): void {
+  app.livingMemory.closeChanges();
   app.livingMemory.store.close();
 }
 

@@ -11,6 +11,8 @@
     "dev:server": "tsx watch src/server/index.ts",
     "dev:web": "vite --host 127.0.0.1",
     "start": "tsx src/server/index.ts",
+    "lm": "tsx src/cli/index.ts",
+    "install:kg-hook": "tsx src/integrations/install-kg-hook.ts",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",

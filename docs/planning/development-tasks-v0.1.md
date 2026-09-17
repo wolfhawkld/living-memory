@@ -109,6 +109,7 @@ P0-1～P0-3 的软件实现已完成；P0-4 的回忆观察流程已实现，但
 
 ### LM-009 — CLI 与隐式触发
 
+- **2026-09-17 先行子集**（[Issue #3](https://github.com/wolfhawkld/living-memory/issues/3)）：已实现当前加载范围的 CLI 查询/正文/邻域/状态、明确确认重温与冻结请求重试，提供 progressive-kg Agent 成功收尾钩子和 Web 变化通知。沿用 `time-only-v0`，查询与生成不创建学习起点。详见[运行与验收说明](../development/cli-and-kg-triggers.md)。历史时间线、多维事件和语音适配尚未实现，本任务不整体标记完成。
 - 交付：查询、读正文/子图/状态、记事件、刷新索引的 CLI；现有 Agent 的 Ingest/Query/Consolidate 接入说明与示例 wrapper。
 - 完成：操作成功边界明确；保留操作 ID；内部读取、呈现、主动回答分开；绕过 wrapper 的文件修改只更新内容，不伪造学习记录。
 - 检查：AC-01～AC-04、AC-10、AC-11；失败/重试不会丢查询结果或重复延长间隔。
