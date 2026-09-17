@@ -256,11 +256,11 @@ function focusNode(graph: GraphInstance, node: GraphNode, twoDimensional: boolea
 function fitOverview(graph: GraphInstance, transitionMs: number): void {
   const startPosition = graph.camera().position.clone();
   const startTarget = graph.controls().target.clone();
-  // Measure the engine's normal fit synchronously, then halve the distance to
-  // its target for a roughly 2× larger overview. Only the final move is animated.
+  // Measure the engine's normal fit synchronously, then quarter the distance to
+  // its target for a roughly 4× larger overview. Only the final move is animated.
   graph.zoomToFit(0, 40);
   const target = graph.controls().target.clone();
-  const position = graph.camera().position.clone().sub(target).multiplyScalar(0.5).add(target);
+  const position = graph.camera().position.clone().sub(target).multiplyScalar(0.25).add(target);
   graph.cameraPosition(startPosition, startTarget, 0);
   graph.cameraPosition(position, target, transitionMs);
 }
