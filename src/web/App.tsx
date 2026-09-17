@@ -24,6 +24,7 @@ import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
 import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
 import { CrossDomainPanel, DomainPicker } from './DomainControls';
+import { createIdleRotationClock, trackRotationActivity } from './graph-rotation';
 import type { ChangeNotification } from '../shared/types';
 import './styles.css';
 
@@ -178,6 +179,8 @@ export default function App() {
   const [simDays, setSimDays] = useState(0);
   const [twoDimensional, setTwoDimensional] = useState(false);
   const [glowEnabled, setGlowEnabled] = useState(true);
+  const [autoRotateEnabled, setAutoRotateEnabled] = useState(true);
+  const [rotationClock] = useState(createIdleRotationClock);
   const [listMode, setListMode] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -499,6 +502,8 @@ export default function App() {
   useEffect(() => {
     void loadInitial();
   }, [loadInitial]);
+
+  useEffect(() => trackRotationActivity(document, window, rotationClock, () => performance.now()), [rotationClock]);
 
   useEffect(() => {
     const onPending = () => refreshPendingState();
@@ -1020,11 +1025,19 @@ export default function App() {
         </aside>
 
         <section className="graph-panel">
-          <div className="graph-toolbar"><div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div><div className="graph-tools"><button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button><button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button><button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button></div></div>
+          <div className="graph-toolbar">
+            <div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div>
+            <div className="graph-tools">
+              <button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button>
+              <button type="button" className={`tool-button${autoRotateEnabled ? ' active' : ''}`} aria-pressed={autoRotateEnabled} disabled={twoDimensional || listMode} title="操作后暂停，连续 2 分钟无操作后恢复；仅用于 3D 视图" onClick={() => setAutoRotateEnabled((value) => !value)}>自动旋转</button>
+              <button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button>
+              <button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button>
+            </div>
+          </div>
           {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={viewSnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled && !domainBusy} rotationClock={rotationClock} onSelect={selectConcept} onLayoutChange={saveLayout} />}
             <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
             <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · 亮线连接选中概念 · 悬停看关系</div>
           </div>

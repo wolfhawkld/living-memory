@@ -171,10 +171,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .sync-retry:hover { border-color: var(--amber); background: rgba(86, 59, 25, .52); }
 
 .graph-panel { position: relative; display: flex; min-width: 0; flex-direction: column; background: radial-gradient(ellipse at 50% 45%, rgba(36, 74, 122, .09), transparent 62%); }
-.graph-toolbar { justify-content: space-between; padding: 26px 26px 13px; }
+.graph-toolbar { justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 26px 26px 13px; }
 .graph-toolbar h2 { display: flex; align-items: center; gap: 8px; font-size: 16px; }
 .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 10px var(--mint); }
-.graph-tools { gap: 7px; }
+.graph-tools { gap: 7px; flex-wrap: wrap; }
 .tool-button { padding: 7px 10px; border-radius: 6px; color: var(--muted); font-size: 10px; }
 .tool-button.active { border-color: rgba(120, 170, 255, .3); background: rgba(79, 126, 203, .18); color: var(--accent); }
 .graph-frame { position: relative; min-height: 0; flex: 1; overflow: hidden; margin: 0 13px; border: 1px solid rgba(110, 149, 204, .13); border-radius: 14px; background: rgba(5, 11, 22, .48); box-shadow: inset 0 0 80px rgba(44, 83, 139, .06); }

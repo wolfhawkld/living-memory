@@ -6,6 +6,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { Concept, GraphLink, Layout, MemoryState, Snapshot } from '../shared/types';
 import { calculateNodeFocus } from './graph-focus';
 import { createGraphLabels } from './graph-labels';
+import { rotateCameraClockwise, type IdleRotationClock } from './graph-rotation';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -15,6 +16,8 @@ export interface GraphViewProps {
   paused?: boolean;
   twoDimensional: boolean;
   glowEnabled?: boolean;
+  autoRotateEnabled?: boolean;
+  rotationClock: IdleRotationClock;
   focusRevision?: number;
   onSelect: (conceptId: string) => void;
   onLayoutChange: (layout: Layout) => void;
@@ -67,6 +70,7 @@ interface GraphInstance {
   onEngineStop: (callback: () => void) => GraphInstance;
   scene: () => THREE.Scene;
   camera: () => THREE.PerspectiveCamera;
+  controls: () => { target: THREE.Vector3 };
   renderer: () => THREE.WebGLRenderer;
   lights: (lights: THREE.Light[]) => GraphInstance;
   cameraPosition: (
@@ -255,6 +259,8 @@ export function GraphView({
   paused = false,
   twoDimensional,
   glowEnabled = true,
+  autoRotateEnabled = true,
+  rotationClock,
   focusRevision = 0,
   onSelect,
   onLayoutChange,
@@ -272,11 +278,13 @@ export function GraphView({
   const onLayoutChangeRef = useRef(onLayoutChange);
   const simulatedRef = useRef(simulated);
   const glowEnabledRef = useRef(glowEnabled);
+  const autoRotateEnabledRef = useRef(autoRotateEnabled);
   const pausedRef = useRef(paused);
   const animationPausedRef = useRef(false);
   const dimensionsInitializedRef = useRef(false);
   const graphReadyRef = useRef(false);
   const focusRequestedRef = useRef(false);
+  const rotationNotBeforeRef = useRef(0);
   const twoDimensionalRef = useRef(twoDimensional);
   const [graphError, setGraphError] = useState<string | null>(null);
 
@@ -286,6 +294,7 @@ export function GraphView({
   onLayoutChangeRef.current = onLayoutChange;
   simulatedRef.current = simulated;
   glowEnabledRef.current = glowEnabled;
+  autoRotateEnabledRef.current = autoRotateEnabled;
   twoDimensionalRef.current = twoDimensional;
   pausedRef.current = paused;
 
@@ -340,12 +349,14 @@ export function GraphView({
       dimensionsInitializedRef.current = false;
       graphReadyRef.current = false;
       focusRequestedRef.current = false;
+      rotationNotBeforeRef.current = 0;
       animationPausedRef.current = false;
       hoveredIdRef.current = null;
       const graph = new ForceGraph3D(host) as unknown as GraphInstance;
       const labels = createGraphLabels(host);
       let initialFitDone = false;
-      const transitionMs = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 550;
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+      const transitionMs = reducedMotion.matches ? 0 : 550;
       graphRef.current = graph;
       nodesRef.current = graphData.nodes;
       // A scene background clears in the current render target's color space.
@@ -407,6 +418,7 @@ export function GraphView({
             const requestedNode = focusRequestedRef.current ? nodesRef.current.find((node) => node.id === selectedIdRef.current) : undefined;
             if (requestedNode) focusNode(graph, requestedNode, twoDimensionalRef.current, transitionMs);
             else graph.zoomToFit(transitionMs, 40);
+            rotationNotBeforeRef.current = performance.now() + transitionMs;
             host.dataset.layoutReady = 'true';
           }
           scheduleLayoutSave();
@@ -463,10 +475,21 @@ export function GraphView({
       const cameraSpace = new THREE.Vector3();
       // Labels live outside the WebGL/bloom scene. ForceGraph has no public
       // post-render hook; this loop also follows the camera after layout settles.
-      const updatePresentation = () => {
+      const updatePresentation = (now: number) => {
         frame = window.requestAnimationFrame(updatePresentation);
+        const rotationAngle = rotationClock.step(now,
+          autoRotateEnabledRef.current && graphReadyRef.current && now >= rotationNotBeforeRef.current
+          && !twoDimensionalRef.current && !reducedMotion.matches && !document.hidden && !pausedRef.current);
         if (document.hidden || pausedRef.current) return;
         const camera = graph.camera();
+        if (rotationAngle > 0) {
+          const target = graph.controls().target;
+          const position = rotateCameraClockwise(camera.position, target, rotationAngle);
+          // Keep the controls' existing target, zoom and camera up vector. The
+          // normal render loop updates controls; no new camera tween is created.
+          camera.position.set(position.x, position.y, position.z);
+          camera.lookAt(target);
+        }
         camera.updateMatrixWorld();
         const active = hoveredIdRef.current ?? selectedIdRef.current;
         if (active !== activeLabelId || previousLinks !== linksRef.current) {
@@ -644,6 +667,7 @@ export function GraphView({
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph || !selectedId || focusRevision === 0) return;
+    rotationClock.interact(performance.now());
     focusRequestedRef.current = true;
     if (!graphReadyRef.current) return;
     const node = nodesRef.current.find((item) => item.id === selectedId);
@@ -651,7 +675,7 @@ export function GraphView({
     focusNode(graph, node, twoDimensionalRef.current,
       window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 550,
     );
-  }, [focusRevision, selectedId]);
+  }, [focusRevision, rotationClock, selectedId]);
 
   const edgeCount = snapshot.links.length;
   const selectedEdgeCount = selectedLinkCount(snapshot.links, selectedId);

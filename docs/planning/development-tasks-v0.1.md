@@ -134,6 +134,7 @@ P0-1～P0-3 的软件实现已完成；P0-4 的回忆观察流程已实现，但
 
 ### LM-013 — 动态 3D 图谱
 
+- **2026-09-17 空闲旋转子集**（[Issue #7](https://github.com/wolfhawkld/living-memory/issues/7)）：3D 默认缓慢顺时针旋转；人工操作暂停，连续两分钟无操作恢复。跨域/模式共用空闲计时，保留当前观察中心和缩放，提供关闭入口；详见[视觉记录](../development/visual-refinement.md)。
 - **2026-09-17 领域视图子集**（[Issue #5](https://github.com/wolfhawkld/living-memory/issues/5)）：已实现目录领域切换、当前领域搜索定位、最多 6 个跨域节点展开、跳转领域定位及跨域布局保留。完整索引与显示范围分离，CLI 查询扩展到完整知识源；切换不创建学习事件。详见[领域视图说明](../development/domain-views.md)。多维记忆显示与完整任务验收继续保留。
 
 - 交付：3d-force-graph + Three.js、暗色空间/可调光效、聚焦/邻域关系、搜索定位、中文详情、稳定布局；切换记忆维度，状态色/进度与证据说明由核心投影驱动。
