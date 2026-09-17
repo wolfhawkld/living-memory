@@ -22,6 +22,8 @@ import { GraphFallbackList, GraphView, STATUS_COLORS } from './GraphView';
 import { createDemoRecord, extendDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
 import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
+import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
+import { CrossDomainPanel, DomainPicker } from './DomainControls';
 import type { ChangeNotification } from '../shared/types';
 import './styles.css';
 
@@ -191,6 +193,10 @@ export default function App() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [simulationLoading, setSimulationLoading] = useState(false);
   const [sourceReloadPending, setSourceReloadPending] = useState(false);
+  const [activeDomainId, setActiveDomainId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<string[]>([]);
+  const layoutRef = useRef<Layout>({});
+  const activeDomainRef = useRef<string | null>(null);
   const layoutWriteTimer = useRef<number | null>(null);
   const noticeTimer = useRef<number | null>(null);
   const snapshotRequestRef = useRef(0);
@@ -224,6 +230,7 @@ export default function App() {
   const realNow = new Date();
   const simulated = simDays > 0;
   const hasSession = Boolean(writeToken);
+  activeDomainRef.current = activeDomainId;
   const writeLocked = demoEnabled || simulated || simulationLoading || sourceReloadPending;
   writeLockedRef.current = writeLocked;
   const asOf = simulated && !demoEnabled ? new Date(simulationBaseRef.current + simDays * DAY_MS).toISOString() : undefined;
@@ -255,7 +262,7 @@ export default function App() {
     const requestId = snapshotRequestRef.current + 1;
     snapshotRequestRef.current = requestId;
     const sourceAtRequest = expectedSourceId ?? sourceIdRef.current;
-    const next = await api.getSnapshot(requestedAsOf, sourceAtRequest || undefined);
+    const next = await api.getSnapshot(requestedAsOf, sourceAtRequest || undefined, 'all');
     if (requestId !== snapshotRequestRef.current) return null;
     if (sourceAtRequest && sourceIdRef.current !== sourceAtRequest) return null;
     if (canApply && !canApply()) return null;
@@ -275,7 +282,7 @@ export default function App() {
       if (requestId !== snapshotRequestRef.current) return null;
       const currentSource = session.sourceId ?? 'legacy-unscoped';
       const [nextSnapshot, nextLayout] = await Promise.all([
-        api.getSnapshot(undefined, currentSource),
+        api.getSnapshot(undefined, currentSource, 'all'),
         api.getLayout(currentSource).catch(() => ({} as Layout)),
       ]);
       if (requestId !== snapshotRequestRef.current) return null;
@@ -285,8 +292,15 @@ export default function App() {
       setSourceId(currentSource);
       setSnapshot(nextSnapshot);
       setLayout(nextLayout);
+      layoutRef.current = nextLayout;
+      let rememberedDomain: string | null = null;
+      try { rememberedDomain = window.localStorage.getItem(`living-memory.domain.v1.${currentSource}`); } catch { /* In-memory selection still works. */ }
+      const initialDomain = chooseDomain(nextSnapshot, rememberedDomain);
+      activeDomainRef.current = initialDomain;
+      setActiveDomainId(initialDomain);
+      setExpandedIds([]);
       setHalfLifeDraft(String(nextSnapshot.config.halfLifeDays));
-      setSelectedId(nextSnapshot.concepts[0]?.id ?? null);
+      setSelectedId(nextSnapshot.concepts.find((concept) => domainIdOf(concept) === initialDomain)?.id ?? null);
       let initialDemo = createDemoRecord(nextSnapshot, currentSource);
       try {
         const storedDemo: unknown = JSON.parse(window.localStorage.getItem(`living-memory.demo-record.v1.${currentSource}`) ?? 'null');
@@ -573,16 +587,36 @@ export default function App() {
     return { ...snapshot, states };
   }, [demoEnabled, demoRecord, pendingConceptIds, simDays, snapshot]);
 
+  const domains = useMemo(() => snapshot ? listDomains(snapshot) : [], [snapshot]);
+  const domainId = useMemo(() => snapshot ? chooseDomain(snapshot, activeDomainId) : null, [activeDomainId, snapshot]);
+  const viewSnapshot = useMemo(() => displaySnapshot && domainId
+    ? projectDomainView(displaySnapshot, domainId, { selectedId, expandedIds })
+    : displaySnapshot, [displaySnapshot, domainId, expandedIds, selectedId]);
+  const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
+  const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
+  const domainBusy = Boolean(attempt) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+
+  // Source refreshes may remove a domain or a relation. Reconcile only when no
+  // answer/dialog is active, and never turn a view change into a learning event.
+  useEffect(() => {
+    if (domainBusy || !viewSnapshot) return;
+    if (activeDomainId !== domainId) setActiveDomainId(domainId);
+    if (!selectedId || !visibleIds.includes(selectedId)) setSelectedId(viewSnapshot.concepts[0]?.id ?? null);
+    if (expandedIds.length !== visibleExpandedIds.length || expandedIds.some((id) => !visibleExpandedIds.includes(id))) setExpandedIds(visibleExpandedIds);
+  }, [activeDomainId, domainBusy, domainId, expandedIds, selectedId, viewSnapshot, visibleExpandedIds, visibleIds]);
+
   const selectedConcept = useMemo(() => snapshot?.concepts.find((concept) => concept.id === selectedId) ?? null, [selectedId, snapshot]);
   const selectedState = useMemo(() => {
     if (!selectedId || !displaySnapshot) return null;
     return displaySnapshot.states[selectedId] ?? null;
   }, [displaySnapshot, selectedId]);
+  const crossDomainNeighbors = useMemo(() => snapshot && selectedId ? getCrossDomainNeighbors(snapshot, selectedId) : [], [selectedId, snapshot]);
 
   const filteredConcepts = useMemo(() => {
     if (!displaySnapshot) return [];
     const query = search.trim().toLocaleLowerCase();
     const matches = displaySnapshot.concepts.filter((concept) => {
+      if (domainIdOf(concept) !== domainId && !visibleExpandedIds.includes(concept.id)) return false;
       if (!query) return true;
       return [concept.title, concept.domain, concept.summary, ...concept.aliases].some((field) => field.toLocaleLowerCase().includes(query));
     });
@@ -592,7 +626,39 @@ export default function App() {
       const rank: Record<MemoryState['status'], number> = { stale: 0, revisit: 1, unknown: 2, pending: 3, recent: 4 };
       return (rank[leftState?.status ?? 'unknown'] - rank[rightState?.status ?? 'unknown']) || left.title.localeCompare(right.title, 'zh-CN');
     });
-  }, [displaySnapshot, search]);
+  }, [displaySnapshot, domainId, search, visibleExpandedIds]);
+
+  const changeDomain = useCallback((nextDomainId: string, targetId?: string) => {
+    if (domainBusy || !snapshot || !domains.some((domain) => domain.id === nextDomainId)) return;
+    if (layoutWriteTimer.current !== null) {
+      window.clearTimeout(layoutWriteTimer.current);
+      layoutWriteTimer.current = null;
+    }
+    const target = snapshot.concepts.find((concept) => concept.id === targetId && domainIdOf(concept) === nextDomainId)
+      ?? snapshot.concepts.find((concept) => domainIdOf(concept) === nextDomainId);
+    activeDomainRef.current = nextDomainId;
+    setActiveDomainId(nextDomainId);
+    setExpandedIds([]);
+    setSelectedId(target?.id ?? null);
+    setSearch('');
+    setFocusRevision((revision) => targetId ? revision + 1 : 0);
+    reviewEventRef.current = null;
+    try { window.localStorage.setItem(`living-memory.domain.v1.${sourceId}`, nextDomainId); } catch {
+      showNotice({ tone: 'info', text: '已切换知识域；浏览器未允许记住这次选择。' });
+    }
+  }, [domainBusy, domains, showNotice, snapshot, sourceId]);
+
+  const canExpand = !domainBusy && selectedConcept !== null && domainIdOf(selectedConcept) === domainId
+    && visibleExpandedIds.length < 6 && visibleIds.length < 300;
+  const toggleExpanded = useCallback((id: string) => {
+    if (domainBusy) return;
+    if (visibleExpandedIds.includes(id)) {
+      setExpandedIds((current) => current.filter((value) => value !== id));
+      return;
+    }
+    if (!canExpand || !crossDomainNeighbors.some((neighbor) => neighbor.concept.id === id)) return;
+    setExpandedIds((current) => [...new Set([...current, id])]);
+  }, [canExpand, crossDomainNeighbors, domainBusy, visibleExpandedIds]);
 
   const markSourceViewed = useCallback((conceptId: string) => {
     setSourceViewedIds((current) => {
@@ -791,16 +857,18 @@ export default function App() {
   }, [attempt, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const saveLayout = useCallback((next: Layout) => {
-    if (writeLockedRef.current || !writeToken) return;
-    setLayout(next);
+    if (writeLockedRef.current || !writeToken || activeDomainRef.current !== domainId) return;
+    const merged = mergeLayout(layoutRef.current, next);
+    layoutRef.current = merged;
+    setLayout(merged);
     if (layoutWriteTimer.current !== null) window.clearTimeout(layoutWriteTimer.current);
     layoutWriteTimer.current = window.setTimeout(() => {
-      if (writeLockedRef.current || sourceIdRef.current !== sourceId || !writeTokenRef.current) return;
+      if (writeLockedRef.current || sourceIdRef.current !== sourceId || activeDomainRef.current !== domainId || !writeTokenRef.current) return;
       const payload = next;
       const currentToken = writeTokenRef.current;
       void writeWithRetry({ path: '/layout', method: 'PUT', payload, eventId: null, conceptId: null, label: '保存图谱布局', send: () => api.putLayout(payload, currentToken, sourceId) });
     }, 1_200);
-  }, [sourceId, writeLocked, writeToken, writeWithRetry]);
+  }, [domainId, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const exportData = useCallback(async () => {
     if (!writeToken) return;
@@ -890,7 +958,7 @@ export default function App() {
     );
   }
 
-  if (!snapshot || !displaySnapshot) return null;
+  if (!snapshot || !displaySnapshot || !viewSnapshot) return null;
 
   return (
     <div className="app-shell">
@@ -902,7 +970,7 @@ export default function App() {
         <div className="topbar-center">
           <span className={`source-pill source-${snapshot.source.mode}`}><span className="source-pulse" />{snapshot.source.mode === 'demo' ? 'Demo 知识库' : '本地知识库'}</span>
           <span className="topbar-separator">/</span>
-          <span className="graph-count">显示 {snapshot.concepts.length} / {snapshot.source.conceptCount} 个概念 · {snapshot.links.length} 条范围内关系</span>
+          <span className="graph-count">{domains.length} 个知识域 · 全库 {snapshot.source.conceptCount} 个概念</span>
         </div>
         <div className="topbar-actions">
           <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={refreshing || writeLocked || Boolean(attempt)} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
@@ -925,15 +993,26 @@ export default function App() {
         <div><strong>{demoEnabled ? '示例状态 · 非真实记忆' : '真实学习记录'}</strong><span>{demoEnabled ? '虚构重温间隔，拖动时间轴查看颜色变化' : '由你确认的学习与重温记录计算'}</span></div>
         <div className="mode-actions">{demoEnabled ? <button type="button" onClick={exportDemo}>导出模拟记录</button> : null}<button type="button" onClick={() => changeDemoMode(!demoEnabled)} disabled={Boolean(attempt) || busyAction !== null || sourceReloadPending}>{demoEnabled ? '查看真实记录' : '查看示例状态'}</button></div>
       </div>
+      <div className="domain-view-bar">
+        <DomainPicker domains={domains} value={domainId ?? ''} onChange={changeDomain} disabled={domainBusy} />
+        <span className="domain-view-summary">当前域 {domains.find((domain) => domain.id === domainId)?.conceptCount ?? 0} 个概念 · 图中 {visibleIds.length} 个节点{visibleExpandedIds.length > 0 ? `（含 ${visibleExpandedIds.length} 个跨域节点）` : ''}</span>
+        {visibleExpandedIds.length > 0 ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={() => {
+          setExpandedIds([]);
+          if (selectedConcept && domainIdOf(selectedConcept) !== domainId) {
+            setSelectedId(snapshot.concepts.find((concept) => domainIdOf(concept) === domainId)?.id ?? null);
+            setFocusRevision((revision) => revision + 1);
+          }
+        }}>收起跨域节点</button> : null}
+      </div>
       <main className={`workspace${attempt ? ' workspace-recall-hidden' : ''}`} aria-hidden={attempt ? true : undefined} inert={attempt ? true : undefined}>
         <aside className="left-panel">
           <div className="panel-heading"><div><span className="eyebrow">知识空间</span><h1>概念索引</h1></div><span className="count-chip">{filteredConcepts.length}</span></div>
-          <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索概念、别名或领域" aria-label="搜索概念" /><kbd>⌘ K</kbd></label>
+          <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索当前领域的概念或别名" aria-label="搜索概念" /><kbd>⌘ K</kbd></label>
           <div className="list-meta"><span>{search ? `匹配 ${filteredConcepts.length} 项` : '按时间状态排序'}</span><span className="pending-inline">{pendingWrites.length > 0 ? `待同步 ${pendingWrites.length}` : ''}</span></div>
           <div className="concept-list" aria-label="概念列表">
             {filteredConcepts.map((concept) => {
               const state = displaySnapshot.states[concept.id] ?? { status: 'unknown' as const };
-              return <button type="button" key={concept.id} className={`concept-row${selectedId === concept.id ? ' is-selected' : ''}`} onClick={() => selectConcept(concept.id)}><span className="row-status" style={{ '--status-color': STATUS_COLORS[state.status] } as React.CSSProperties}><span /></span><span className="row-content"><strong>{concept.title}</strong><small>{concept.domain}</small></span><span className="row-chevron">›</span></button>;
+              return <button type="button" key={concept.id} className={`concept-row${selectedId === concept.id ? ' is-selected' : ''}`} onClick={() => selectConcept(concept.id)}><span className="row-status" style={{ '--status-color': STATUS_COLORS[state.status] } as React.CSSProperties}><span /></span><span className="row-content"><strong>{concept.title}</strong><small>{domainLabel(domainIdOf(concept))}{domainIdOf(concept) !== domainId ? ' · 跨域' : ''}</small></span><span className="row-chevron">›</span></button>;
             })}
             {filteredConcepts.length === 0 ? <EmptyPanel title="没有匹配概念" text="试试名称、别名或领域。" /> : null}
           </div>
@@ -942,12 +1021,12 @@ export default function App() {
 
         <section className="graph-panel">
           <div className="graph-toolbar"><div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div><div className="graph-tools"><button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button><button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button><button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button></div></div>
-          {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={displaySnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
+          {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={viewSnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={displaySnapshot.concepts} states={displaySnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={displaySnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} onSelect={selectConcept} onLayoutChange={saveLayout} />}
             <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
-            <div className="graph-hint">{snapshot.links.length} 条关系 · 亮线连接选中概念 · 悬停看关系</div>
+            <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · 亮线连接选中概念 · 悬停看关系</div>
           </div>
           <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间预览</span><strong>{simulated ? `+${simDays} 天` : demoEnabled ? '初始模拟值' : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt) || sourceReloadPending} /><div className="range-labels"><span>{demoEnabled ? '模拟起点' : '现在'}</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimulatedDays(0)}>{demoEnabled ? '回到初始值' : '恢复实时'}</button> : null}</div>
         </section>
@@ -955,7 +1034,7 @@ export default function App() {
         <aside className="right-panel">
           {selectedConcept && selectedState ? (
             <>
-              <div className="detail-head"><div className="detail-domain">{selectedConcept.domain}</div><h2>{selectedConcept.title}</h2><div className="alias-row">{selectedConcept.aliases.slice(0, 3).map((alias) => <span key={alias}>{alias}</span>)}</div></div>
+              <div className="detail-head"><div className="detail-domain">{domainLabel(domainIdOf(selectedConcept))}</div><h2>{selectedConcept.title}</h2><div className="alias-row">{selectedConcept.aliases.slice(0, 3).map((alias) => <span key={alias}>{alias}</span>)}</div></div>
               <div className="detail-state"><div><span className="eyebrow">{demoEnabled ? '模拟时间状态' : '当前时间状态'}</span><div className="state-line"><StatusBadge status={selectedState.status} /></div></div><span className="state-asof">截至 {formatDate(displaySnapshot.asOf, true)}</span></div>
               <div className="state-metrics"><div><span>{demoEnabled ? '模拟重温间隔' : '距上次重温'}</span><strong>{formatElapsed(selectedState.elapsedDays)}</strong></div><div><span>{demoEnabled ? '模拟起点' : '时间起点'} {!demoEnabled && selectedState.anchor?.kind === 'estimated' ? <em className="estimate-badge">估计</em> : null}</span><strong>{formatDate(selectedState.anchor?.occurredAt)}</strong></div></div>
               <div className="time-indicator">时间指标 D <strong>{selectedState.decay === null ? '未知' : selectedState.decay.toFixed(3)}</strong><span>{demoEnabled ? '模拟值' : '时间推算'}</span></div>
@@ -963,6 +1042,7 @@ export default function App() {
               <p className="state-reason">{selectedState.reason ?? '状态由当前时间与最近确认事件投影。'}</p>
               <div className="detail-actions"><button type="button" className="primary-button" onClick={() => void submitReview('review')} disabled={writeLocked || busyAction === 'review'}>{busyAction === 'review' ? '保存中…' : '确认已重温'}</button><button type="button" className="secondary-button" onClick={() => { reviewEventRef.current = null; setEstimatedDate(new Date().toISOString().slice(0, 10)); setReviewDialogOpen(true); }} disabled={writeLocked || busyAction === 'review'}>补记过去重温</button></div>
               <button type="button" className="recall-button" onClick={startRecall} disabled={writeLocked || Boolean(attempt)}><span>✦</span>先想一句，再查看资料</button>
+              <CrossDomainPanel neighbors={crossDomainNeighbors} expandedIds={visibleExpandedIds} visibleIds={visibleIds} onToggle={toggleExpanded} onNavigate={changeDomain} disabled={domainBusy} canExpand={canExpand} />
               <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{sourceViewedIds.includes(selectedConcept.id) ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => markSourceViewed(selectedConcept.id)}><span>{sourceViewedIds.includes(selectedConcept.id) ? '资料已展开' : '打开来源与摘要'}</span><span>{sourceViewedIds.includes(selectedConcept.id) ? '✓' : '⌄'}</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{sourceViewedIds.includes(selectedConcept.id) ? <SourceBlock concept={selectedConcept} /> : null}</div>
             </>
           ) : <EmptyPanel title="选择一个概念" text="从左侧索引或图谱中选择节点，查看它的时间状态。" />}

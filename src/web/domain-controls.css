@@ -1,0 +1,227 @@
+.domain-picker-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(126, 155, 199, .16);
+  border-radius: 8px;
+  background: rgba(10, 20, 35, .78);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .16);
+}
+
+.domain-picker-label {
+  flex: 0 0 auto;
+  color: #9fb2ce;
+  font-size: 10px;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+
+.domain-picker-select {
+  min-width: 0;
+  max-width: min(260px, 42vw);
+  padding: 6px 26px 6px 9px;
+  border: 1px solid rgba(138, 174, 230, .28);
+  border-radius: 6px;
+  outline: 0;
+  background: #0b1626;
+  color: #dce9fb;
+  cursor: pointer;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.domain-picker-select:focus {
+  border-color: #78aaff;
+  box-shadow: 0 0 0 3px rgba(120, 170, 255, .1);
+}
+
+.domain-picker-select:disabled {
+  cursor: not-allowed;
+}
+
+.cross-domain-panel {
+  min-width: 0;
+  margin: 18px 24px 26px;
+  padding: 16px 0 0;
+  border-top: 1px solid rgba(126, 155, 199, .16);
+}
+
+.cross-domain-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 11px;
+}
+
+.cross-domain-heading h2 {
+  min-width: 0;
+  margin: 0;
+  color: #c6d7ee;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+.cross-domain-count {
+  color: #7388a8;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.cross-domain-empty {
+  margin: 0;
+  padding: 14px 12px;
+  border: 1px solid rgba(126, 155, 199, .12);
+  border-radius: 7px;
+  background: rgba(18, 31, 51, .35);
+  color: #7184a2;
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.cross-domain-list {
+  display: flex;
+  max-height: min(45vh, 430px);
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0 5px 1px 0;
+  overflow-y: auto;
+  scrollbar-color: #29405f transparent;
+  scrollbar-width: thin;
+}
+
+.cross-domain-item {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid rgba(126, 155, 199, .15);
+  border-radius: 8px;
+  background: rgba(16, 29, 48, .55);
+}
+
+.cross-domain-item-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cross-domain-title {
+  min-width: 0;
+  margin: 0;
+  color: #dce9fb;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.cross-domain-domain {
+  flex: 0 1 42%;
+  min-width: 0;
+  color: #82a7d6;
+  font-size: 9px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cross-domain-relations {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cross-domain-relation {
+  min-width: 0;
+  color: #8ea3c2;
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.cross-domain-relation::before {
+  margin-right: 5px;
+  color: #5d87bc;
+  content: '↳';
+}
+
+.cross-domain-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.cross-domain-toggle,
+.cross-domain-navigate {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(138, 174, 230, .24);
+  border-radius: 5px;
+  background: rgba(32, 54, 84, .42);
+  color: #abc1df;
+  cursor: pointer;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+.cross-domain-visible {
+  display: inline-flex;
+  align-items: center;
+  min-height: 27px;
+  padding: 6px 8px;
+  border: 1px solid rgba(92, 227, 208, .2);
+  border-radius: 5px;
+  color: #7bd5c8;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+.cross-domain-toggle:hover,
+.cross-domain-navigate:hover {
+  border-color: rgba(120, 170, 255, .68);
+  background: rgba(53, 86, 135, .5);
+  color: #e6f0ff;
+}
+
+.cross-domain-toggle:focus-visible,
+.cross-domain-navigate:focus-visible {
+  outline: 2px solid #78aaff;
+  outline-offset: 2px;
+}
+
+.cross-domain-toggle:disabled,
+.cross-domain-navigate:disabled {
+  cursor: not-allowed;
+}
+
+@media (max-width: 960px) {
+  .domain-picker-toolbar {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .domain-picker-select {
+    flex: 1;
+    max-width: none;
+  }
+
+  .cross-domain-panel {
+    margin-right: 20px;
+    margin-left: 20px;
+  }
+}

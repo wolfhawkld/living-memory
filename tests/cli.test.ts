@@ -55,7 +55,7 @@ async function reservePort(): Promise<number> {
   return port;
 }
 
-async function runningApp(): Promise<RunningApp> {
+async function runningApp(viewLimit?: number): Promise<RunningApp> {
   const source = fixture();
   const dataDir = mkdtempSync(join(tmpdir(), 'living-memory-cli-data-'));
   const stateDir = mkdtempSync(join(tmpdir(), 'living-memory-cli-state-'));
@@ -65,6 +65,7 @@ async function runningApp(): Promise<RunningApp> {
     root: source.root,
     dataDir,
     port,
+    limit: viewLimit,
     now: () => new Date(currentNow),
     staticDir: join(dataDir, 'no-dist'),
   });
@@ -138,6 +139,29 @@ test('show resolves full concepts and reports ambiguity with candidate IDs', asy
     assert.equal(result.state.status, 'unknown');
     assert.equal(result.incidentLinks.length, 1);
     assert.equal(result.incidentLinks[0].source, result.concept.id);
+  } finally {
+    await client.stop();
+  }
+});
+
+test('CLI query, show and confirmed review reach concepts outside the default display cap', async () => {
+  const client = await runningApp(1);
+  try {
+    const legacy = await fetch(`${client.url}/api/snapshot`).then((response) => response.json()) as { concepts: { title: string }[] };
+    assert.deepEqual(legacy.concepts.map((concept) => concept.title), ['Alpha']);
+    const query = await runCli(['query', 'Beta'], options(client)) as Record<string, any>;
+    assert.equal(query.scope.kind, 'all');
+    assert.equal(query.scope.viewLimit, 1);
+    assert.equal(query.hits[0].title, 'Beta');
+    const shown = await runCli(['show', 'Beta'], options(client)) as Record<string, any>;
+    assert.equal(shown.concept.title, 'Beta');
+    assert.equal(shown.incidentLinks.length, 1);
+    const before = await runCli(['status'], options(client)) as Record<string, any>;
+    assert.equal(before.counts.concepts, 2);
+    assert.equal(client.app.livingMemory.store.getAnchors().length, 0);
+    const review = await runCli(['review', 'Beta', '--confirm', '--event-id', 'outside-view', '--at', '2026-01-03T00:00:00.000Z'], options(client)) as Record<string, any>;
+    assert.equal(review.response.status, 'accepted');
+    assert.equal(client.app.livingMemory.store.getAnchors()[0].conceptId, shown.concept.id);
   } finally {
     await client.stop();
   }

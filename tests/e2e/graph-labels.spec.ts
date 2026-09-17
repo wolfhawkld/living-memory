@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { chooseDomain, domainIdOf } from '../../src/core/domain-view';
 import type { Snapshot } from '../../src/shared/types';
 
 const LONG_TITLE = '面向图谱标签回归的超长概念标题：记忆锚点、关系上下文与可读性验证版本 2026';
@@ -109,7 +110,12 @@ async function installSyntheticSnapshot(page: Page): Promise<{ getConceptId: () 
   await page.route('**/api/snapshot*', async (route) => {
     const response = await route.fetch();
     const snapshot = await response.json() as Snapshot;
-    const targetIndex = snapshot.concepts.length > 1 ? 1 : 0;
+    const initialDomainId = chooseDomain(snapshot);
+    const initialDomainIndices = snapshot.concepts
+      .map((concept, index) => domainIdOf(concept) === initialDomainId ? index : -1)
+      .filter((index) => index >= 0);
+    const initialDomainIndex = initialDomainIndices[1] ?? initialDomainIndices[0] ?? -1;
+    const targetIndex = initialDomainIndex >= 0 ? initialDomainIndex : 0;
     const target = snapshot.concepts[targetIndex];
     if (!target) {
       await route.fulfill({ response, json: snapshot });
