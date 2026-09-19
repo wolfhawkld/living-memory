@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { Concept, GraphLink, Layout, MemoryState, Snapshot } from '../shared/types';
 import { calculateNodeFocus } from './graph-focus';
+import { accommodateGraphOverview, calculateGraphOverview } from './graph-overview';
 import { createGraphLabels } from './graph-labels';
 import { readRotationStatus, rotateCameraClockwise, type IdleRotationClock, type RotationStatus } from './graph-rotation';
 
@@ -72,7 +73,7 @@ interface GraphInstance {
   onEngineStop: (callback: () => void) => GraphInstance;
   scene: () => THREE.Scene;
   camera: () => THREE.PerspectiveCamera;
-  controls: () => { target: THREE.Vector3 };
+  controls: () => { target: THREE.Vector3; maxDistance: number };
   renderer: () => THREE.WebGLRenderer;
   lights: (lights: THREE.Light[]) => GraphInstance;
   cameraPosition: (
@@ -80,7 +81,6 @@ interface GraphInstance {
     lookAt?: { x: number; y: number; z: number },
     transitionMs?: number,
   ) => { x: number; y: number; z: number } | GraphInstance;
-  zoomToFit: (durationMs?: number, padding?: number) => GraphInstance;
   pauseAnimation?: () => GraphInstance;
   resumeAnimation?: () => GraphInstance;
   d3ReheatSimulation?: () => GraphInstance;
@@ -253,16 +253,20 @@ function focusNode(graph: GraphInstance, node: GraphNode, twoDimensional: boolea
   graph.cameraPosition(focus.position, focus.target, transitionMs);
 }
 
-function fitOverview(graph: GraphInstance, transitionMs: number): void {
-  const startPosition = graph.camera().position.clone();
-  const startTarget = graph.controls().target.clone();
-  // Measure the engine's normal fit synchronously, then quarter the distance to
-  // its target for a roughly 4× larger overview. Only the final move is animated.
-  graph.zoomToFit(0, 40);
-  const target = graph.controls().target.clone();
-  const position = graph.camera().position.clone().sub(target).multiplyScalar(0.25).add(target);
-  graph.cameraPosition(startPosition, startTarget, 0);
-  graph.cameraPosition(position, target, transitionMs);
+function fitOverview(
+  graph: GraphInstance, nodes: GraphNode[], links: GraphLink[], host: HTMLElement,
+  twoDimensional: boolean, transitionMs: number,
+): boolean {
+  const camera = graph.camera();
+  const overview = calculateGraphOverview(nodes, links, {
+    position: camera.position, target: graph.controls().target, up: camera.up,
+    fov: camera.fov, zoom: camera.zoom, near: camera.near,
+    width: host.clientWidth, height: host.clientHeight, twoDimensional,
+  });
+  if (!overview) return false;
+  accommodateGraphOverview(camera, graph.controls(), overview);
+  graph.cameraPosition(overview.position, overview.target, transitionMs);
+  return true;
 }
 
 export function GraphView({
@@ -375,10 +379,21 @@ export function GraphView({
       const graph = new ForceGraph3D(host) as unknown as GraphInstance;
       const labels = createGraphLabels(host);
       let initialFitDone = false;
+      let layoutSettled = false;
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
       const transitionMs = reducedMotion.matches ? 0 : 550;
       graphRef.current = graph;
       nodesRef.current = graphData.nodes;
+      const fitInitialView = () => {
+        if (initialFitDone || !layoutSettled || !nodesRef.current.length || host.clientWidth <= 0 || host.clientHeight <= 0) return;
+        const requestedNode = focusRequestedRef.current ? nodesRef.current.find((node) => node.id === selectedIdRef.current) : undefined;
+        if (requestedNode) focusNode(graph, requestedNode, twoDimensionalRef.current, transitionMs);
+        else if (!fitOverview(graph, nodesRef.current, linksRef.current, host, twoDimensionalRef.current, transitionMs)) return;
+        initialFitDone = true;
+        graphReadyRef.current = true;
+        rotationNotBeforeRef.current = performance.now() + transitionMs;
+        host.dataset.layoutReady = 'true';
+      };
       // A scene background clears in the current render target's color space.
       // Relying only on renderer.clearColor can reuse the prior screen-space
       // clear value when the composer's RenderPass switches to a linear buffer.
@@ -432,15 +447,8 @@ export function GraphView({
         })
         .onEngineStop(() => {
           if (graphRef.current !== graph) return;
-          if (!initialFitDone) {
-            initialFitDone = true;
-            graphReadyRef.current = true;
-            const requestedNode = focusRequestedRef.current ? nodesRef.current.find((node) => node.id === selectedIdRef.current) : undefined;
-            if (requestedNode) focusNode(graph, requestedNode, twoDimensionalRef.current, transitionMs);
-            else if (nodesRef.current.length > 0) fitOverview(graph, transitionMs);
-            rotationNotBeforeRef.current = performance.now() + transitionMs;
-            host.dataset.layoutReady = 'true';
-          }
+          layoutSettled = true;
+          fitInitialView();
           scheduleLayoutSave();
         });
 
@@ -555,6 +563,9 @@ export function GraphView({
         width = host.clientWidth;
         height = host.clientHeight;
         graph.width(width).height(height);
+        // A hidden/zero-size host defers its first fit until it can be measured.
+        // Later resizes preserve the user's chosen view.
+        fitInitialView();
       });
       resizeObserver.observe(host);
       const onVisibility = () => {
