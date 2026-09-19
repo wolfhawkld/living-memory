@@ -24,6 +24,8 @@ import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
 import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
 import { CrossDomainPanel, DomainPicker } from './DomainControls';
+import { ConceptSearch } from './ConceptSearch';
+import { createIdleRotationClock, trackRotationActivity, type RotationStatus } from './graph-rotation';
 import type { ChangeNotification } from '../shared/types';
 import './styles.css';
 
@@ -174,10 +176,12 @@ export default function App() {
   const [demoSaved, setDemoSaved] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focusRevision, setFocusRevision] = useState(0);
-  const [search, setSearch] = useState('');
   const [simDays, setSimDays] = useState(0);
   const [twoDimensional, setTwoDimensional] = useState(false);
   const [glowEnabled, setGlowEnabled] = useState(true);
+  const [autoRotateEnabled, setAutoRotateEnabled] = useState(() => !window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const [rotationStatus, setRotationStatus] = useState<RotationStatus>({ kind: 'preparing', text: '等待图谱定位完成' });
+  const [rotationClock] = useState(createIdleRotationClock);
   const [listMode, setListMode] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -268,7 +272,7 @@ export default function App() {
     if (canApply && !canApply()) return null;
     setSnapshot(next);
     if (!changeUiRef.current.configOpen) setHalfLifeDraft(String(next.config.halfLifeDays));
-    setSelectedId((current) => (current && next.concepts.some((concept) => concept.id === current) ? current : next.concepts[0]?.id ?? null));
+    setSelectedId((current) => (current && next.concepts.some((concept) => concept.id === current) ? current : null));
     return next;
   }, []);
 
@@ -300,7 +304,8 @@ export default function App() {
       setActiveDomainId(initialDomain);
       setExpandedIds([]);
       setHalfLifeDraft(String(nextSnapshot.config.halfLifeDays));
-      setSelectedId(nextSnapshot.concepts.find((concept) => domainIdOf(concept) === initialDomain)?.id ?? null);
+      setSelectedId(null);
+      setFocusRevision(0);
       let initialDemo = createDemoRecord(nextSnapshot, currentSource);
       try {
         const storedDemo: unknown = JSON.parse(window.localStorage.getItem(`living-memory.demo-record.v1.${currentSource}`) ?? 'null');
@@ -500,6 +505,8 @@ export default function App() {
     void loadInitial();
   }, [loadInitial]);
 
+  useEffect(() => trackRotationActivity(document, window, rotationClock, () => performance.now()), [rotationClock]);
+
   useEffect(() => {
     const onPending = () => refreshPendingState();
     window.addEventListener('lm-pending-changed', onPending);
@@ -601,7 +608,11 @@ export default function App() {
   useEffect(() => {
     if (domainBusy || !viewSnapshot) return;
     if (activeDomainId !== domainId) setActiveDomainId(domainId);
-    if (!selectedId || !visibleIds.includes(selectedId)) setSelectedId(viewSnapshot.concepts[0]?.id ?? null);
+    // No selection is a valid overview state, not a request to pick the first node.
+    if (selectedId && !visibleIds.includes(selectedId)) {
+      setSelectedId(null);
+      setFocusRevision(0);
+    }
     if (expandedIds.length !== visibleExpandedIds.length || expandedIds.some((id) => !visibleExpandedIds.includes(id))) setExpandedIds(visibleExpandedIds);
   }, [activeDomainId, domainBusy, domainId, expandedIds, selectedId, viewSnapshot, visibleExpandedIds, visibleIds]);
 
@@ -612,21 +623,17 @@ export default function App() {
   }, [displaySnapshot, selectedId]);
   const crossDomainNeighbors = useMemo(() => snapshot && selectedId ? getCrossDomainNeighbors(snapshot, selectedId) : [], [selectedId, snapshot]);
 
-  const filteredConcepts = useMemo(() => {
+  const listedConcepts = useMemo(() => {
     if (!displaySnapshot) return [];
-    const query = search.trim().toLocaleLowerCase();
-    const matches = displaySnapshot.concepts.filter((concept) => {
-      if (domainIdOf(concept) !== domainId && !visibleExpandedIds.includes(concept.id)) return false;
-      if (!query) return true;
-      return [concept.title, concept.domain, concept.summary, ...concept.aliases].some((field) => field.toLocaleLowerCase().includes(query));
-    });
+    const matches = displaySnapshot.concepts.filter((concept) =>
+      domainIdOf(concept) === domainId || visibleExpandedIds.includes(concept.id));
     return matches.sort((left, right) => {
       const leftState = displaySnapshot.states[left.id];
       const rightState = displaySnapshot.states[right.id];
       const rank: Record<MemoryState['status'], number> = { stale: 0, revisit: 1, unknown: 2, pending: 3, recent: 4 };
       return (rank[leftState?.status ?? 'unknown'] - rank[rightState?.status ?? 'unknown']) || left.title.localeCompare(right.title, 'zh-CN');
     });
-  }, [displaySnapshot, domainId, search, visibleExpandedIds]);
+  }, [displaySnapshot, domainId, visibleExpandedIds]);
 
   const changeDomain = useCallback((nextDomainId: string, targetId?: string) => {
     if (domainBusy || !snapshot || !domains.some((domain) => domain.id === nextDomainId)) return;
@@ -634,14 +641,14 @@ export default function App() {
       window.clearTimeout(layoutWriteTimer.current);
       layoutWriteTimer.current = null;
     }
-    const target = snapshot.concepts.find((concept) => concept.id === targetId && domainIdOf(concept) === nextDomainId)
-      ?? snapshot.concepts.find((concept) => domainIdOf(concept) === nextDomainId);
+    const target = targetId
+      ? snapshot.concepts.find((concept) => concept.id === targetId && domainIdOf(concept) === nextDomainId)
+      : undefined;
     activeDomainRef.current = nextDomainId;
     setActiveDomainId(nextDomainId);
     setExpandedIds([]);
     setSelectedId(target?.id ?? null);
-    setSearch('');
-    setFocusRevision((revision) => targetId ? revision + 1 : 0);
+    setFocusRevision((revision) => target ? revision + 1 : 0);
     reviewEventRef.current = null;
     try { window.localStorage.setItem(`living-memory.domain.v1.${sourceId}`, nextDomainId); } catch {
       showNotice({ tone: 'info', text: '已切换知识域；浏览器未允许记住这次选择。' });
@@ -681,6 +688,22 @@ export default function App() {
     setSelectedId(conceptId);
     setFocusRevision((revision) => revision + 1);
   }, [attempt]);
+
+  const selectSearchResult = useCallback((conceptId: string) => {
+    if (domainBusy) return;
+    const concept = snapshot?.concepts.find((item) => item.id === conceptId);
+    if (!concept) return;
+    const targetDomain = domainIdOf(concept);
+    if (targetDomain !== domainId) changeDomain(targetDomain, conceptId);
+    else selectConcept(conceptId);
+  }, [changeDomain, domainBusy, domainId, selectConcept, snapshot]);
+
+  const clearSelection = useCallback(() => {
+    if (domainBusy) return;
+    setSelectedId(null);
+    setFocusRevision(0);
+    reviewEventRef.current = null;
+  }, [domainBusy]);
 
   const reloadRealSnapshot = useCallback(async () => {
     if (simulated) return;
@@ -999,34 +1022,49 @@ export default function App() {
         {visibleExpandedIds.length > 0 ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={() => {
           setExpandedIds([]);
           if (selectedConcept && domainIdOf(selectedConcept) !== domainId) {
-            setSelectedId(snapshot.concepts.find((concept) => domainIdOf(concept) === domainId)?.id ?? null);
-            setFocusRevision((revision) => revision + 1);
+            clearSelection();
           }
         }}>收起跨域节点</button> : null}
       </div>
       <main className={`workspace${attempt ? ' workspace-recall-hidden' : ''}`} aria-hidden={attempt ? true : undefined} inert={attempt ? true : undefined}>
         <aside className="left-panel">
-          <div className="panel-heading"><div><span className="eyebrow">知识空间</span><h1>概念索引</h1></div><span className="count-chip">{filteredConcepts.length}</span></div>
-          <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索当前领域的概念或别名" aria-label="搜索概念" /><kbd>⌘ K</kbd></label>
-          <div className="list-meta"><span>{search ? `匹配 ${filteredConcepts.length} 项` : '按时间状态排序'}</span><span className="pending-inline">{pendingWrites.length > 0 ? `待同步 ${pendingWrites.length}` : ''}</span></div>
+          <div className="panel-heading"><div><span className="eyebrow">知识空间</span><h1>概念索引</h1></div><span className="count-chip">{listedConcepts.length}</span></div>
+          <ConceptSearch key={sourceId} concepts={snapshot.concepts} currentDomainId={domainId} disabled={domainBusy} onSelect={selectSearchResult} />
+          <div className="list-meta"><span>当前领域 · 按时间状态排序</span><span className="pending-inline">{pendingWrites.length > 0 ? `待同步 ${pendingWrites.length}` : ''}</span></div>
           <div className="concept-list" aria-label="概念列表">
-            {filteredConcepts.map((concept) => {
+            {listedConcepts.map((concept) => {
               const state = displaySnapshot.states[concept.id] ?? { status: 'unknown' as const };
               return <button type="button" key={concept.id} className={`concept-row${selectedId === concept.id ? ' is-selected' : ''}`} onClick={() => selectConcept(concept.id)}><span className="row-status" style={{ '--status-color': STATUS_COLORS[state.status] } as React.CSSProperties}><span /></span><span className="row-content"><strong>{concept.title}</strong><small>{domainLabel(domainIdOf(concept))}{domainIdOf(concept) !== domainId ? ' · 跨域' : ''}</small></span><span className="row-chevron">›</span></button>;
             })}
-            {filteredConcepts.length === 0 ? <EmptyPanel title="没有匹配概念" text="试试名称、别名或领域。" /> : null}
+            {listedConcepts.length === 0 ? <EmptyPanel title="当前领域暂无概念" text="切换知识域，或搜索知识库中的其他概念。" /> : null}
           </div>
           <div className="left-footer"><span className={`sync-led${pendingWrites.length ? ' is-pending' : ''}`} /><span>{pendingWrites.length ? `${pendingWrites.length} 条记录等待同步` : '本地状态已同步'}</span>{pendingWrites.length ? <button type="button" className="sync-retry" onClick={() => void retryPending()} disabled={writeLocked || busyAction === 'pending'}>{busyAction === 'pending' ? '同步中…' : '重试同步'}</button> : null}</div>
         </aside>
 
         <section className="graph-panel">
-          <div className="graph-toolbar"><div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div><div className="graph-tools"><button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button><button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button><button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button></div></div>
+          <div className="graph-toolbar">
+            <div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div>
+            <div className="graph-tools">
+              {selectedId ? <button type="button" className="tool-button" disabled={domainBusy} onClick={clearSelection}>取消选中</button> : null}
+              <button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button>
+              <button type="button" className={`tool-button${autoRotateEnabled ? ' active' : ''}`} aria-pressed={autoRotateEnabled} disabled={twoDimensional || listMode} title="手动开启后立即旋转；后续操作暂停 2 分钟。系统要求减少动态效果时默认关闭。" onClick={() => {
+                if (!autoRotateEnabled) rotationClock.resume();
+                setAutoRotateEnabled((value) => !value);
+              }}>自动旋转</button>
+              <button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button>
+              <button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button>
+            </div>
+            <div className="rotation-status" aria-label="自动旋转状态">
+              {autoRotateEnabled && !listMode && !twoDimensional && (rotationStatus.kind === 'waiting' || rotationStatus.kind === 'holding') ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={() => rotationClock.resume()}>立即旋转</button> : null}
+              <span>{listMode ? '文字列表 · 旋转暂停' : rotationStatus.text}</span>
+            </div>
+          </div>
           {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={viewSnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
             <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
-            <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · 亮线连接选中概念 · 悬停看关系</div>
+            <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div>
           </div>
           <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间预览</span><strong>{simulated ? `+${simDays} 天` : demoEnabled ? '初始模拟值' : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt) || sourceReloadPending} /><div className="range-labels"><span>{demoEnabled ? '模拟起点' : '现在'}</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimulatedDays(0)}>{demoEnabled ? '回到初始值' : '恢复实时'}</button> : null}</div>
         </section>
@@ -1045,7 +1083,7 @@ export default function App() {
               <CrossDomainPanel neighbors={crossDomainNeighbors} expandedIds={visibleExpandedIds} visibleIds={visibleIds} onToggle={toggleExpanded} onNavigate={changeDomain} disabled={domainBusy} canExpand={canExpand} />
               <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{sourceViewedIds.includes(selectedConcept.id) ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => markSourceViewed(selectedConcept.id)}><span>{sourceViewedIds.includes(selectedConcept.id) ? '资料已展开' : '打开来源与摘要'}</span><span>{sourceViewedIds.includes(selectedConcept.id) ? '✓' : '⌄'}</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{sourceViewedIds.includes(selectedConcept.id) ? <SourceBlock concept={selectedConcept} /> : null}</div>
             </>
-          ) : <EmptyPanel title="选择一个概念" text="从左侧索引或图谱中选择节点，查看它的时间状态。" />}
+          ) : <EmptyPanel title="选择一个概念" text="点击图谱节点，或在左侧搜索后选择结果，查看概念与时间状态。" />}
         </aside>
       </main>
 

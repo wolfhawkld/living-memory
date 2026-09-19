@@ -1,7 +1,7 @@
 import { expect, test, type Page, type APIRequestContext } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createDemoRecord, projectDemoSnapshot, type DemoRecord } from '../../src/core/demo-snapshot';
-import { domainIdOf } from '../../src/core/domain-view';
+import { domainIdOf, domainLabel } from '../../src/core/domain-view';
 import type { ExportData, Snapshot } from '../../src/shared/types';
 
 type DemoExport = {
@@ -27,15 +27,14 @@ async function exported(request: APIRequestContext): Promise<ExportData> {
 }
 
 async function selectConcept(page: Page, title: string, domainId?: string) {
+  const search = page.getByRole('combobox', { name: '搜索概念', exact: true });
+  await search.fill(title);
+  const result = page.getByRole('listbox').getByRole('option').filter({ hasText: title }).first();
+  await expect(result).toBeVisible();
+  await result.click();
   if (domainId) {
-    const domainPicker = page.getByRole('combobox', { name: '知识域', exact: true });
-    if (await domainPicker.inputValue() !== domainId) {
-      await domainPicker.selectOption(domainId);
-      await expect(domainPicker).toHaveValue(domainId);
-    }
+    await expect(page.getByRole('combobox', { name: '知识域', exact: true })).toHaveValue(domainId);
   }
-  await page.getByRole('textbox', { name: '搜索概念' }).fill(title);
-  await page.locator('.concept-list button').filter({ has: page.locator('strong', { hasText: title }) }).first().click();
   await expect(page.locator('.detail-head h2')).toHaveText(title);
 }
 
@@ -231,13 +230,39 @@ test('demo export stays isolated and graph relations remain visible through time
 
   const canvas = page.locator('.graph-canvas');
   await expect(canvas).toHaveAttribute('data-edge-count', /\d+/);
-  await expect(canvas).toHaveAttribute('data-selected-edge-count', /\d+/);
+  await expect(canvas).toHaveAttribute('data-selected-edge-count', '0');
+  await expect(page.locator('.detail-head')).toHaveCount(0);
   const linkCount = Number(await canvas.getAttribute('data-edge-count'));
   expect(linkCount).toBeGreaterThan(0);
-  await selectConcept(page, '内积');
+
+  const sourceSnapshot = await snapshot(request);
+  const selectedConcept = sourceSnapshot.concepts.find((concept) => concept.title === '内积')!;
+  const search = page.getByRole('combobox', { name: '搜索概念', exact: true });
+  await search.fill(selectedConcept.title);
+  const result = page.getByRole('listbox').getByRole('option').filter({ hasText: selectedConcept.title }).first();
+  await expect(result).toContainText(selectedConcept.title);
+  await expect(result).toContainText(domainLabel(domainIdOf(selectedConcept)));
+  await expect(canvas).toHaveAttribute('data-selected-edge-count', '0');
+  await expect(page.locator('.detail-head')).toHaveCount(0);
+  await result.click();
+  await expect(page.locator('.detail-head h2')).toHaveText(selectedConcept.title);
   await expect(canvas).toHaveAttribute('data-selected-edge-count', /[1-9]\d*/);
   const highlightedCount = Number(await canvas.getAttribute('data-selected-edge-count'));
   expect(highlightedCount).toBeGreaterThan(0);
+
+  const selectedDomainId = domainIdOf(selectedConcept);
+  const otherDomainId = sourceSnapshot.concepts
+    .map((concept) => domainIdOf(concept))
+    .find((domainId) => domainId !== selectedDomainId);
+  expect(otherDomainId).toBeTruthy();
+  const domainPicker = page.getByRole('combobox', { name: '知识域', exact: true });
+  await domainPicker.selectOption(otherDomainId!);
+  await expect(domainPicker).toHaveValue(otherDomainId!);
+  await expect(canvas).toHaveAttribute('data-selected-edge-count', '0');
+  await expect(page.locator('.detail-head')).toHaveCount(0);
+
+  await selectConcept(page, selectedConcept.title, selectedDomainId);
+  await expect(canvas).toHaveAttribute('data-selected-edge-count', String(highlightedCount));
 
   const slider = page.getByRole('slider', { name: '模拟时间，单位天' });
   await slider.fill('7');
@@ -379,7 +404,7 @@ test('real WebGL, lookup, review, simulated time and reload form one persistent 
   await selectConcept(page, concept.title);
   await expect(page.locator('.right-panel .status-badge')).toHaveText('近期重温');
   expect((await snapshot(request)).states[concept.id].anchor?.eventId).toBe(anchor.eventId);
-  await page.getByRole('textbox', { name: '搜索概念' }).fill('');
+  await page.getByRole('combobox', { name: '搜索概念', exact: true }).fill('');
   await page.getByRole('button', { name: '文字列表', exact: true }).click();
   await expect(page.locator('.graph-stage canvas')).toBeHidden();
   await page.getByRole('button', { name: '返回图谱', exact: true }).click();
