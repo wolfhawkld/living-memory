@@ -90,7 +90,7 @@ interface GraphInstance {
 }
 
 const STATUS_COLORS: Record<MemoryState['status'], string> = {
-  unknown: '#6faef2',
+  unknown: '#4175af',
   recent: '#5ce3d0',
   revisit: '#f4bd70',
   stale: '#ff817d',
@@ -99,7 +99,7 @@ const STATUS_COLORS: Record<MemoryState['status'], string> = {
 
 // Relationship colors use a cool blue range, separate from the node memory-status
 // colors. This keeps the temporal signal on nodes while making graph structure legible.
-const LINK_COLOR = '#709fce';
+const LINK_COLOR = '#456b94';
 const LINK_MUTED_COLOR = '#3e5e80';
 const LINK_SELECTED_COLOR = '#b5edff';
 
@@ -209,7 +209,7 @@ function updateNodeVisual(node: GraphNode, glowEnabled = true, selected = false)
   visual.ring.material.opacity = selected ? 0.75 : 0.8;
   const haloMaterial = visual.halo.material as THREE.SpriteMaterial;
   haloMaterial.color.set(color);
-  haloMaterial.opacity = unknown ? 0.12 : 0.19;
+  haloMaterial.opacity = unknown ? 0.09 : 0.19;
   visual.halo.visible = glowEnabled;
   const size = nodeSize(node);
   visual.sphere.scale.setScalar(size);
