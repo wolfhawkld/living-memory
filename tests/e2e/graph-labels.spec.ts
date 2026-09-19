@@ -154,9 +154,9 @@ test('synthetic long titles use compact overview labels and bounded selected lab
     expect(label.text).not.toBe(LONG_TITLE);
   }
 
-  const search = page.getByRole('textbox', { name: '搜索概念' });
+  const search = page.getByRole('combobox', { name: '搜索概念', exact: true });
   await search.fill(LONG_TITLE);
-  const result = page.locator('.concept-list button').filter({ hasText: LONG_TITLE }).first();
+  const result = page.getByRole('listbox').getByRole('option').filter({ hasText: LONG_TITLE }).first();
   await expect(result).toBeVisible();
   await result.click();
   await expect(page.locator('.detail-head h2')).toHaveText(LONG_TITLE);
@@ -187,8 +187,6 @@ test('synthetic long titles use compact overview labels and bounded selected lab
   const afterSelection = await readCanvasGeometry(page);
   expectLabelGeometry(afterSelection);
 
-  await result.click();
-  await expect(page.locator('.detail-head h2')).toHaveText(LONG_TITLE);
   await expectSelectedAnchorCentered(page, syntheticConceptId);
   await page.screenshot({ path: 'test-results/p0-refined-labels.png', fullPage: true });
 
