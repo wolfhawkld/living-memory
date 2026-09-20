@@ -1024,7 +1024,7 @@ export default function App() {
         </div>
         <div className="topbar-actions">
           <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={refreshing || writeLocked || Boolean(attempt)} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
-          <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={demoEnabled || busyAction === 'export'} aria-label="导出学习数据">⇩<span>导出</span></button>
+          <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={demoEnabled || busyAction === 'export'} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；暂不支持导入恢复。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
           <button type="button" className={`config-button${configOpen ? ' is-open' : ''}`} onClick={() => setConfigOpen((open) => !open)} disabled={Boolean(attempt) || writeLocked}>H = {displaySnapshot.config.halfLifeDays} 天 <span>⌄</span></button>
           {configOpen ? (
             <div className="config-popover">
@@ -1080,7 +1080,10 @@ export default function App() {
                 setAutoRotateEnabled((value) => !value);
               }}>自动旋转</button>
               <button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button>
-              <button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} onClick={() => setTwoDimensional((value) => !value)}>{twoDimensional ? '2D 阅读' : '3D 纵深'}</button>
+              <div className="view-mode-toggle" role="group" aria-label="图谱维度">
+                <button type="button" className={`tool-button${!twoDimensional ? ' active' : ''}`} aria-pressed={!twoDimensional} disabled={listMode} onClick={() => setTwoDimensional(false)}>3D 纵深</button>
+                <button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} aria-pressed={twoDimensional} disabled={listMode} onClick={() => setTwoDimensional(true)}>2D 阅读</button>
+              </div>
             </div>
             <div className="rotation-status" aria-label="自动旋转状态">
               {autoRotateEnabled && !listMode && !twoDimensional && (rotationStatus.kind === 'waiting' || rotationStatus.kind === 'holding') ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={() => rotationClock.resume()}>立即旋转</button> : null}
