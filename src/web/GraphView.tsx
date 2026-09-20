@@ -3,9 +3,10 @@ import ForceGraph3D from '3d-force-graph';
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { inspectLayout, isFiniteLayoutPosition } from '../shared/layout';
-import type { Concept, GraphLink, Layout, LayoutPosition, MemoryState, Snapshot } from '../shared/types';
+import { inspectLayout } from '../shared/layout';
+import type { Concept, GraphLink, Layout, MemoryState, Snapshot } from '../shared/types';
 import { calculateNodeFocus } from './graph-focus';
+import { collectGraphLayout, graphNodePosition } from './graph-position';
 import { accommodateGraphOverview, calculateGraphOverview } from './graph-overview';
 import { createGraphLabels } from './graph-labels';
 import { readRotationStatus, rotateCameraClockwise, type IdleRotationClock, type RotationStatus } from './graph-rotation';
@@ -74,7 +75,7 @@ interface GraphInstance {
   onEngineStop: (callback: () => void) => GraphInstance;
   scene: () => THREE.Scene;
   camera: () => THREE.PerspectiveCamera;
-  controls: () => { target: THREE.Vector3; maxDistance: number };
+  controls: () => { target: THREE.Vector3; maxDistance: number; noRotate: boolean; mouseButtons: { LEFT: THREE.MOUSE } };
   renderer: () => THREE.WebGLRenderer;
   lights: (lights: THREE.Light[]) => GraphInstance;
   cameraPosition: (
@@ -84,7 +85,6 @@ interface GraphInstance {
   ) => { x: number; y: number; z: number } | GraphInstance;
   pauseAnimation?: () => GraphInstance;
   resumeAnimation?: () => GraphInstance;
-  d3ReheatSimulation?: () => GraphInstance;
   width: (value: number) => GraphInstance;
   height: (value: number) => GraphInstance;
   _destructor?: () => void;
@@ -247,11 +247,18 @@ function canUseWebGL(): boolean {
   }
 }
 
-function focusNode(graph: GraphInstance, node: GraphNode, twoDimensional: boolean, transitionMs: number): void {
-  const target = { x: node.x ?? 0, y: node.y ?? 0, z: node.z ?? 0 };
-  const camera = graph.cameraPosition() as { x: number; y: number; z: number };
-  const focus = calculateNodeFocus(camera, target, nodeSize(node), twoDimensional);
-  graph.cameraPosition(focus.position, focus.target, transitionMs);
+function focusNode(graph: GraphInstance, node: GraphNode, twoDimensional: boolean, transitionMs: number): boolean {
+  const target = graphNodePosition(node, twoDimensional);
+  const camera = graphNodePosition(graph.camera().position);
+  if (!target || !camera) return false;
+  try {
+    const focus = calculateNodeFocus(camera, target, nodeSize(node), twoDimensional);
+    graph.cameraPosition(focus.position, focus.target, transitionMs);
+    return true;
+  } catch (error) {
+    if (error instanceof RangeError) return false;
+    throw error;
+  }
 }
 
 function fitOverview(
@@ -270,7 +277,13 @@ function fitOverview(
   return true;
 }
 
-export function GraphView({
+export function GraphView(props: GraphViewProps) {
+  // A dimension change gets a fresh engine and camera. A live force simulation
+  // and its camera tween must not straddle incompatible 2D/3D coordinates.
+  return <GraphViewInstance key={props.twoDimensional ? '2d' : '3d'} {...props} />;
+}
+
+function GraphViewInstance({
   snapshot,
   layout,
   selectedId,
@@ -304,7 +317,6 @@ export function GraphView({
   const onRotationStatusRef = useRef(onRotationStatusChange);
   const pausedRef = useRef(paused);
   const animationPausedRef = useRef(false);
-  const dimensionsInitializedRef = useRef(false);
   const graphReadyRef = useRef(false);
   const focusRequestedRef = useRef(false);
   const rotationNotBeforeRef = useRef(0);
@@ -340,25 +352,19 @@ export function GraphView({
         ? safeLayout[concept.id]
         : undefined;
       const initial = stored ?? hashPosition(concept.id);
-      return { ...concept, state, x: initial.x, y: initial.y, z: initial.z };
+      return { ...concept, state, x: initial.x, y: initial.y, z: twoDimensional ? 0 : initial.z };
     });
     return { nodes, links: snapshot.links.map((link) => ({ ...link })) };
-  }, [layout, snapshot]);
+  }, [layout, snapshot, twoDimensional]);
 
   const saveLayout = () => {
-    if (!graphRef.current || simulatedRef.current || pausedRef.current) return;
-    const entries: Array<[string, LayoutPosition]> = [];
-    for (const node of nodesRef.current) {
-      const candidate = { x: node.x, y: node.y, z: node.z };
-      if (isFiniteLayoutPosition(candidate)) {
-        entries.push([node.id, candidate]);
-      }
-    }
-    onLayoutChangeRef.current(Object.fromEntries(entries));
+    if (!graphRef.current || simulatedRef.current || pausedRef.current || twoDimensionalRef.current) return;
+    const positions = collectGraphLayout(nodesRef.current, twoDimensionalRef.current);
+    if (Object.keys(positions).length) onLayoutChangeRef.current(positions);
   };
 
   const scheduleLayoutSave = () => {
-    if (!graphRef.current || simulatedRef.current || pausedRef.current) return;
+    if (!graphRef.current || simulatedRef.current || pausedRef.current || twoDimensionalRef.current) return;
     if (layoutTimerRef.current !== null) window.clearTimeout(layoutTimerRef.current);
     layoutTimerRef.current = window.setTimeout(() => {
       layoutTimerRef.current = null;
@@ -375,9 +381,8 @@ export function GraphView({
     }
 
     try {
-      // Each ForceGraph instance needs its own initialization guard. React development
-      // effect replay can construct, destroy, and construct the instance on one fiber.
-      dimensionsInitializedRef.current = false;
+      // React development effect replay can construct, destroy, and construct
+      // the instance on one fiber; reset its readiness state each time.
       graphReadyRef.current = false;
       focusRequestedRef.current = false;
       rotationNotBeforeRef.current = 0;
@@ -390,12 +395,19 @@ export function GraphView({
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
       const transitionMs = reducedMotion.matches ? 0 : 550;
       graphRef.current = graph;
+      // ForceGraph's default TrackballControls otherwise lets a flat graph turn
+      // edge-on or leave the camera plane after a drag. Pan and zoom stay enabled.
+      graph.controls().noRotate = twoDimensional;
+      if (twoDimensional) {
+        graph.controls().mouseButtons.LEFT = THREE.MOUSE.PAN;
+        graph.camera().up.set(0, 1, 0);
+      }
       nodesRef.current = graphData.nodes;
       const fitInitialView = () => {
         if (initialFitDone || !layoutSettled || !nodesRef.current.length || host.clientWidth <= 0 || host.clientHeight <= 0) return;
         const requestedNode = focusRequestedRef.current ? nodesRef.current.find((node) => node.id === selectedIdRef.current) : undefined;
-        if (requestedNode) focusNode(graph, requestedNode, twoDimensionalRef.current, transitionMs);
-        else if (!fitOverview(graph, nodesRef.current, linksRef.current, host, twoDimensionalRef.current, transitionMs)) return;
+        const focused = requestedNode && focusNode(graph, requestedNode, twoDimensionalRef.current, transitionMs);
+        if (!focused && !fitOverview(graph, nodesRef.current, linksRef.current, host, twoDimensionalRef.current, transitionMs)) return;
         initialFitDone = true;
         graphReadyRef.current = true;
         rotationNotBeforeRef.current = performance.now() + transitionMs;
@@ -449,7 +461,7 @@ export function GraphView({
         .onNodeDragEnd((node) => {
           node.fx = node.x;
           node.fy = node.y;
-          node.fz = node.z;
+          if (!twoDimensionalRef.current) node.fz = node.z;
           scheduleLayoutSave();
         })
         .onEngineStop(() => {
@@ -552,9 +564,12 @@ export function GraphView({
         for (const node of nodesRef.current) {
           const group = node.__mesh;
           if (!group) continue;
+          const position = graphNodePosition(node, twoDimensionalRef.current);
+          group.visible = position !== null;
+          if (!position) continue;
           const visual = group.userData.lmVisual as NodeVisual;
           visual.ring.quaternion.copy(camera.quaternion);
-          cameraSpace.set(node.x ?? 0, node.y ?? 0, node.z ?? 0).applyMatrix4(camera.matrixWorldInverse);
+          cameraSpace.set(position.x, position.y, position.z).applyMatrix4(camera.matrixWorldInverse);
           // Close foreground nodes retain their color without becoming giant
           // disks that obscure the selected node or its relationships.
           const pixelRadius = node.id === selectedIdRef.current ? 8 : 6;
@@ -562,6 +577,7 @@ export function GraphView({
           group.scale.setScalar(Math.min(1, maxWorldRadius / nodeSize(node)));
         }
         labels.update({ nodes: nodesRef.current, camera, width, height,
+          twoDimensional: twoDimensionalRef.current,
           selectedId: selectedIdRef.current, hoveredId: hoveredIdRef.current, neighborIds });
       };
       frame = window.requestAnimationFrame(updatePresentation);
@@ -687,19 +703,6 @@ export function GraphView({
     }
     if (selectedId && !selectedIdRef.current) selectedIdRef.current = selectedId;
   }, [graphData, selectedId]);
-
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    if (!dimensionsInitializedRef.current) {
-      // The initial dimension is already applied during graph construction. Reheating here
-      // would mark the engine as running before three-forcegraph has installed its layout.
-      dimensionsInitializedRef.current = true;
-      return;
-    }
-    graph.numDimensions(twoDimensional ? 2 : 3);
-    graph.d3ReheatSimulation?.();
-  }, [twoDimensional]);
 
   useEffect(() => {
     const graph = graphRef.current;

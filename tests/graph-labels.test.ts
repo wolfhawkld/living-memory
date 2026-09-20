@@ -56,3 +56,32 @@ test('projection rejects points behind the camera and returns layer pixels for v
   assert.ok(Math.abs(projected.x - 400) < 1e-9);
   assert.ok(Math.abs(projected.y - 200) < 1e-9);
 });
+
+test('2D projection accepts missing z and ignores stale 3D depth', () => {
+  const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 1000);
+  camera.position.set(0, 0, 10);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld();
+  camera.updateProjectionMatrix();
+
+  const missingZ = projectGraphLabelPoint({ x: 0, y: 0 }, camera, 800, 400, true);
+  const staleZ = projectGraphLabelPoint({ x: 0, y: 0, z: 700 }, camera, 800, 400, true);
+  assert.ok(missingZ);
+  assert.ok(staleZ);
+  assert.deepEqual(missingZ, staleZ);
+  assert.ok(Math.abs(missingZ.x - 400) < 1e-9);
+  assert.ok(Math.abs(missingZ.y - 200) < 1e-9);
+});
+
+test('2D projection skips invalid xy while 3D still rejects invalid z', () => {
+  const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 1000);
+  camera.position.set(0, 0, 10);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld();
+  camera.updateProjectionMatrix();
+
+  assert.equal(projectGraphLabelPoint({ x: Number.NaN, y: 0 }, camera, 800, 400, true), null);
+  assert.equal(projectGraphLabelPoint({ x: 0, y: Number.POSITIVE_INFINITY }, camera, 800, 400, true), null);
+  assert.equal(projectGraphLabelPoint({ x: 0, y: 0, z: Number.NaN }, camera, 800, 400), null);
+  assert.equal(projectGraphLabelPoint({ x: 0, y: 0 }, camera, 800, 400), null);
+});
