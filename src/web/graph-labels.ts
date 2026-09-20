@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { graphNodePosition } from './graph-position';
 
 /** A graph node shape accepted by the screen-label layer. */
 export interface GraphLabelNode {
@@ -20,6 +21,7 @@ export interface GraphLabelUpdate {
   selectedId?: string | null;
   hoveredId?: string | null;
   neighborIds?: Iterable<string>;
+  twoDimensional?: boolean;
 }
 
 export interface GraphLabelLayer {
@@ -254,10 +256,12 @@ export function projectGraphLabelPoint(
   camera: THREE.Camera,
   width: number,
   height: number,
+  twoDimensional = false,
 ): ProjectedGraphLabelPoint | null {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
-  if (!Number.isFinite(node.x) || !Number.isFinite(node.y) || !Number.isFinite(node.z)) return null;
-  const world = new THREE.Vector3(node.x, node.y, node.z);
+  const position = graphNodePosition(node, twoDimensional);
+  if (!position) return null;
+  const world = new THREE.Vector3(position.x, position.y, position.z);
   const cameraSpace = world.clone().applyMatrix4(camera.matrixWorldInverse);
   if (!Number.isFinite(cameraSpace.z) || cameraSpace.z >= 0) return null;
   const ndc = world.project(camera);
@@ -467,7 +471,7 @@ export function createGraphLabels(host: HTMLElement): GraphLabelLayer {
       const kind: GraphLabelKind = isSelected ? 'selected' : isHovered ? 'hovered' : isNeighbor ? 'neighbor' : 'context';
       const emphasized = kind === 'selected' || kind === 'hovered';
       const displayText = updateEntryText(entry, node, emphasized);
-      const projected = projectGraphLabelPoint(node, state.camera, width, height);
+      const projected = projectGraphLabelPoint(node, state.camera, width, height, state.twoDimensional);
       const baseSize = getEntrySize(entry, displayText, emphasized, measureContext);
       const size: LabelSize = {
         ...baseSize,
