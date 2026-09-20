@@ -7,8 +7,17 @@ import type {
   WriteReceipt,
 } from '../shared/types';
 import { createSessionRecovery, type LocalSession } from './session-recovery';
+import { inspectLayout } from '../shared/layout';
 
 export type SessionResponse = LocalSession;
+
+export interface PendingWriteError {
+  code: string;
+  status: number;
+  message: string;
+  retryable: boolean;
+  attemptedAt: string;
+}
 
 export interface PendingWrite {
   id: string;
@@ -19,6 +28,19 @@ export interface PendingWrite {
   conceptId: string | null;
   label: string;
   createdAt: string;
+  lastError?: PendingWriteError;
+}
+
+export interface PendingSyncFailure extends Omit<PendingWriteError, 'attemptedAt'> {
+  id: string;
+  label: string;
+}
+
+export interface PendingSyncResult {
+  sent: number;
+  failed: number;
+  failures: PendingSyncFailure[];
+  repairs?: { id: string; skippedPositions: number }[];
 }
 
 export class ApiRequestError extends Error {
@@ -37,6 +59,7 @@ export class ApiRequestError extends Error {
 
 const API_ROOT = '/api';
 const PENDING_KEY_PREFIX = 'living-memory.pending-writes.v1';
+const LAYOUT_RECOVERY_KEY_PREFIX = 'living-memory.layout-recovery.v1';
 
 type SessionRecoveryEvent = { kind: 'recovered'; session: LocalSession }
   | { kind: 'source-mismatch'; sourceId?: string };
@@ -89,21 +112,24 @@ function pendingKey(sourceId: string | null | undefined): string | null {
   return `${PENDING_KEY_PREFIX}.${encodeURIComponent(sourceId.trim())}`;
 }
 
+function validPendingEntries(entries: unknown[]): PendingWrite[] {
+  return entries.filter((item): item is PendingWrite => {
+    if (!item || typeof item !== 'object') return false;
+    const candidate = item as Record<string, unknown>;
+    return (
+      typeof candidate.id === 'string' &&
+      (candidate.method === 'POST' || candidate.method === 'PUT') &&
+      typeof candidate.path === 'string' &&
+      typeof candidate.createdAt === 'string'
+    );
+  });
+}
+
 function parsePending(value: string | null): PendingWrite[] {
   if (!value) return [];
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is PendingWrite => {
-      if (!item || typeof item !== 'object') return false;
-      const candidate = item as Record<string, unknown>;
-      return (
-        typeof candidate.id === 'string' &&
-        (candidate.method === 'POST' || candidate.method === 'PUT') &&
-        typeof candidate.path === 'string' &&
-        typeof candidate.createdAt === 'string'
-      );
-    });
+    return Array.isArray(parsed) ? validPendingEntries(parsed) : [];
   } catch {
     return [];
   }
@@ -120,6 +146,19 @@ export function getPendingWrites(sourceId: string | null | undefined): PendingWr
   }
 }
 
+function pendingEntriesForUpdate(key: string): unknown[] {
+  // A failed read must never be treated as an empty queue during a write.
+  // Preserve unrecognized entries as well as valid writes for later recovery.
+  const raw = window.localStorage.getItem(key);
+  const entries: unknown = raw === null ? [] : JSON.parse(raw);
+  if (!Array.isArray(entries)) throw new Error('待同步存储格式无效，原数据已保留。');
+  return entries;
+}
+
+function hasPendingId(entry: unknown, id: string): entry is { id: string } {
+  return entry !== null && typeof entry === 'object' && 'id' in entry && entry.id === id;
+}
+
 export function queuePendingWrite(sourceId: string | null | undefined, write: Omit<PendingWrite, 'id' | 'createdAt'> & { id?: string }): PendingWrite | null {
   const pending: PendingWrite = {
     ...write,
@@ -130,7 +169,7 @@ export function queuePendingWrite(sourceId: string | null | undefined, write: Om
   const key = pendingKey(sourceId);
   if (!key) return null;
   try {
-    const next = getPendingWrites(sourceId).filter((item) => item.id !== pending.id);
+    const next = pendingEntriesForUpdate(key).filter((item) => !hasPendingId(item, pending.id));
     next.push(pending);
     window.localStorage.setItem(key, JSON.stringify(next));
     window.dispatchEvent(new CustomEvent('lm-pending-changed'));
@@ -140,17 +179,64 @@ export function queuePendingWrite(sourceId: string | null | undefined, write: Om
   }
 }
 
-export function removePendingWrite(sourceId: string | null | undefined, id: string): void {
-  if (typeof window === 'undefined') return;
+export function removePendingWrite(sourceId: string | null | undefined, id: string): boolean {
+  if (typeof window === 'undefined') return false;
   const key = pendingKey(sourceId);
-  if (!key) return;
+  if (!key) return false;
   try {
-    const next = getPendingWrites(sourceId).filter((item) => item.id !== id);
+    const next = pendingEntriesForUpdate(key).filter((item) => !hasPendingId(item, id));
+    window.localStorage.setItem(key, JSON.stringify(next));
+    window.dispatchEvent(new CustomEvent('lm-pending-changed'));
+    return true;
+  } catch {
+    // A server acknowledgment is not enough to claim the local queue is clear.
+    return false;
+  }
+}
+
+function savePendingError(sourceId: string, id: string, error: PendingWriteError): void {
+  const key = pendingKey(sourceId);
+  if (!key || typeof window === 'undefined') return;
+  try {
+    const next = pendingEntriesForUpdate(key).map((write) => hasPendingId(write, id) ? { ...write, lastError: error } : write);
     window.localStorage.setItem(key, JSON.stringify(next));
     window.dispatchEvent(new CustomEvent('lm-pending-changed'));
   } catch {
-    // If storage has become unavailable, keep the current form open for a manual retry.
+    // The caller still receives the error when browser storage is unavailable.
   }
+}
+
+function preparePendingLayout(write: PendingWrite, sourceId: string): { write: PendingWrite; skippedPositions: number } {
+  if (write.method !== 'PUT' || write.path !== '/layout') return { write, skippedPositions: 0 };
+  const inspected = inspectLayout(write.payload);
+  // Only a recognizable layout with invalid positions can be repaired. Other
+  // validation failures must remain visible, with the original request intact.
+  if (!inspected || inspected.invalidIds.length === 0) return { write, skippedPositions: 0 };
+  try {
+    const key = `${LAYOUT_RECOVERY_KEY_PREFIX}.${encodeURIComponent(sourceId)}`;
+    const backups = pendingEntriesForUpdate(key);
+    let existing = false;
+    for (const entry of backups) {
+      if (entry !== null && typeof entry === 'object' && 'write' in entry && hasPendingId(entry.write, write.id)) {
+        if (!('payload' in entry.write) || JSON.stringify(entry.write.payload) !== JSON.stringify(write.payload)) {
+          throw new Error('Conflicting layout backup');
+        }
+        existing = true;
+        break;
+      }
+    }
+    if (!existing) {
+      backups.push({ write, invalidIds: inspected.invalidIds, repairedAt: new Date().toISOString() });
+      window.localStorage.setItem(key, JSON.stringify(backups));
+    }
+  } catch {
+    throw new ApiRequestError('旧布局尚未备份，未执行修复同步。请允许此页面保存本地数据后重试。', {
+      code: 'PENDING_LAYOUT_BACKUP_FAILED', retryable: true,
+    });
+  }
+  // Keep the queued request unchanged until acknowledgment and successful
+  // cleanup. PUT /layout merges positions; {} preserves the server's layout.
+  return { write: { ...write, payload: inspected.layout }, skippedPositions: inspected.invalidIds.length };
 }
 
 export function clearPendingWrites(sourceId: string | null | undefined): void {
@@ -248,11 +334,16 @@ export const api = {
       body: JSON.stringify(payload),
     }, writeToken, sourceId),
   getLayout: (sourceId?: string) => requestJson<Layout>('/layout', sourceId ? { headers: { 'x-lm-source-id': sourceId } } : {}),
-  putLayout: (payload: Layout, writeToken: string, sourceId: string) =>
-    authenticatedJson<Layout>('/layout', {
+  putLayout: async (payload: Layout, writeToken: string, sourceId: string) => {
+    const inspected = inspectLayout(payload);
+    if (!inspected || inspected.invalidIds.length > 0) {
+      throw new ApiRequestError('布局包含无效坐标，尚未保存。', { code: 'INVALID_LAYOUT' });
+    }
+    return authenticatedJson<Layout>('/layout', {
       method: 'PUT',
       body: JSON.stringify(payload),
-    }, writeToken, sourceId),
+    }, writeToken, sourceId);
+  },
   refresh: (writeToken: string, sourceId: string) => writeJson<{ status: string }>('/refresh', {}, writeToken, sourceId),
   exportData: (writeToken: string, sourceId: string) => withSession(writeToken, sourceId, (headers) => requestBlob('/export', { headers })),
   sendPending: async (write: PendingWrite, writeToken: string, sourceId: string): Promise<void> => {
@@ -264,19 +355,59 @@ export const api = {
   },
 };
 
-export async function flushPendingWrites(writeToken: string, sourceId: string | null | undefined): Promise<{ sent: number; failed: number }> {
-  if (!sourceId) return { sent: 0, failed: 0 };
+const pendingFlushes = new Map<string, Promise<PendingSyncResult>>();
+
+async function sendPendingBatch(writeToken: string, sourceId: string): Promise<PendingSyncResult> {
   let sent = 0;
-  let failed = 0;
-  for (const write of getPendingWrites(sourceId)) {
+  const failures: PendingSyncFailure[] = [];
+  const repairs: NonNullable<PendingSyncResult['repairs']> = [];
+  let writes: PendingWrite[];
+  try {
+    writes = validPendingEntries(pendingEntriesForUpdate(pendingKey(sourceId)!));
+  } catch {
+    throw new ApiRequestError('无法读取浏览器中的待同步记录，原数据未改动。请允许此页面访问本地数据后重试。', {
+      code: 'PENDING_STORAGE_UNAVAILABLE', retryable: true,
+    });
+  }
+  for (const write of writes) {
     try {
-      await api.sendPending(write, writeToken, sourceId);
-      removePendingWrite(sourceId, write.id);
+      const prepared = preparePendingLayout(write, sourceId);
+      await api.sendPending(prepared.write, writeToken, sourceId);
+      if (!removePendingWrite(sourceId, write.id)) {
+        throw new ApiRequestError('记录已写入服务，但浏览器未能清理待同步标记。请允许此页面保存本地数据后重试。', {
+          code: 'PENDING_STORAGE_FAILED', retryable: true,
+        });
+      }
       sent += 1;
-    } catch {
-      failed += 1;
-      // Keep the original id and payload. A later retry may be idempotently accepted.
+      if (prepared.skippedPositions > 0) repairs.push({ id: write.id, skippedPositions: prepared.skippedPositions });
+    } catch (error) {
+      const detail: PendingWriteError = {
+        code: error instanceof ApiRequestError ? error.code : 'PENDING_SYNC_ERROR',
+        status: error instanceof ApiRequestError ? error.status : 0,
+        message: error instanceof Error ? error.message : '这条记录同步失败，请稍后重试。',
+        retryable: error instanceof ApiRequestError && error.retryable,
+        attemptedAt: new Date().toISOString(),
+      };
+      savePendingError(sourceId, write.id, detail);
+      const { attemptedAt: _attemptedAt, ...failure } = detail;
+      failures.push({ ...failure, id: write.id, label: typeof write.label === 'string' && write.label.trim() ? write.label : '待同步记录' });
+      // Keep the original id, payload and timestamps, including on non-retryable
+      // conflicts. Showing the rejection is safer than silently rewriting history.
     }
   }
-  return { sent, failed };
+  return { sent, failed: failures.length, failures, ...(repairs.length ? { repairs } : {}) };
+}
+
+export function flushPendingWrites(writeToken: string, sourceId: string | null | undefined): Promise<PendingSyncResult> {
+  const source = sourceId?.trim();
+  if (!source) return Promise.resolve({ sent: 0, failed: 0, failures: [] });
+  const existing = pendingFlushes.get(source);
+  if (existing) return existing;
+  // Manual retry and an online event can arrive together. Share one batch per
+  // source so a non-idempotent settings update is not sent twice by this page.
+  const operation = Promise.resolve().then(() => sendPendingBatch(writeToken, source)).finally(() => {
+    if (pendingFlushes.get(source) === operation) pendingFlushes.delete(source);
+  });
+  pendingFlushes.set(source, operation);
+  return operation;
 }

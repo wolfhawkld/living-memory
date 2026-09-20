@@ -3,7 +3,8 @@ import ForceGraph3D from '3d-force-graph';
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import type { Concept, GraphLink, Layout, MemoryState, Snapshot } from '../shared/types';
+import { inspectLayout, isFiniteLayoutPosition } from '../shared/layout';
+import type { Concept, GraphLink, Layout, LayoutPosition, MemoryState, Snapshot } from '../shared/types';
 import { calculateNodeFocus } from './graph-focus';
 import { accommodateGraphOverview, calculateGraphOverview } from './graph-overview';
 import { createGraphLabels } from './graph-labels';
@@ -323,6 +324,8 @@ export function GraphView({
   pausedRef.current = paused;
 
   const graphData = useMemo(() => {
+    const inspectedLayout = inspectLayout(layout);
+    const safeLayout = inspectedLayout?.layout ?? {};
     const nodes: GraphNode[] = snapshot.concepts.map((concept) => {
       const state = snapshot.states[concept.id] ?? {
         conceptId: concept.id,
@@ -333,7 +336,10 @@ export function GraphView({
         reason: '尚无个人重温历史',
         asOf: snapshot.asOf,
       };
-      const initial = layout[concept.id] ?? hashPosition(concept.id);
+      const stored = Object.prototype.hasOwnProperty.call(safeLayout, concept.id)
+        ? safeLayout[concept.id]
+        : undefined;
+      const initial = stored ?? hashPosition(concept.id);
       return { ...concept, state, x: initial.x, y: initial.y, z: initial.z };
     });
     return { nodes, links: snapshot.links.map((link) => ({ ...link })) };
@@ -341,13 +347,14 @@ export function GraphView({
 
   const saveLayout = () => {
     if (!graphRef.current || simulatedRef.current || pausedRef.current) return;
-    const positions: Layout = {};
+    const entries: Array<[string, LayoutPosition]> = [];
     for (const node of nodesRef.current) {
-      if (typeof node.x === 'number' && typeof node.y === 'number' && typeof node.z === 'number') {
-        positions[node.id] = { x: node.x, y: node.y, z: node.z };
+      const candidate = { x: node.x, y: node.y, z: node.z };
+      if (isFiniteLayoutPosition(candidate)) {
+        entries.push([node.id, candidate]);
       }
     }
-    onLayoutChangeRef.current(positions);
+    onLayoutChangeRef.current(Object.fromEntries(entries));
   };
 
   const scheduleLayoutSave = () => {

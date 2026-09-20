@@ -1,0 +1,121 @@
+.pending-writes-panel {
+  flex: 0 0 auto;
+  margin: 0 9px 10px;
+  padding: 9px 10px 8px;
+  border: 1px solid rgba(244, 189, 112, .22);
+  border-radius: 8px;
+  background: rgba(23, 31, 45, .76);
+  color: #cbd8eb;
+}
+
+.pending-writes-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.pending-writes-title {
+  color: #d9e5f6;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.pending-writes-count {
+  min-width: 18px;
+  padding: 2px 5px;
+  border: 1px solid rgba(244, 189, 112, .3);
+  border-radius: 4px;
+  color: #f4bd70;
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.pending-writes-list {
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 3px;
+  scrollbar-color: #40516b transparent;
+  scrollbar-width: thin;
+}
+
+.pending-writes-item {
+  padding: 7px 0;
+  border-top: 1px solid rgba(126, 155, 199, .12);
+}
+
+.pending-writes-item:first-child {
+  padding-top: 4px;
+  border-top: 0;
+}
+
+.pending-writes-item:last-child {
+  padding-bottom: 3px;
+}
+
+.pending-writes-item-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pending-writes-item-label {
+  min-width: 0;
+  overflow: hidden;
+  color: #d8e5f7;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-writes-item-time {
+  flex: 0 0 auto;
+  color: #778ba8;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pending-writes-waiting {
+  margin-top: 3px;
+  color: #9aabc3;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.pending-writes-error {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 6px;
+  margin-top: 3px;
+  color: #ffb5a9;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.pending-writes-error-label {
+  color: #ff8f85;
+  font-weight: 600;
+}
+
+.pending-writes-error-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pending-writes-error-code {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  color: #c88d8b;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
