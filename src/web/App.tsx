@@ -17,6 +17,7 @@ import {
   queuePendingWrite,
   subscribeToSessionRecovery,
   type PendingWrite,
+  type PendingSyncResult,
 } from './api';
 import { GraphFallbackList, GraphView, STATUS_COLORS } from './GraphView';
 import { createDemoRecord, extendDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
@@ -25,8 +26,10 @@ import { createDeferredChangeController, subscribeToChanges } from './change-syn
 import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
 import { CrossDomainPanel, DomainPicker } from './DomainControls';
 import { ConceptSearch } from './ConceptSearch';
+import { PendingWritesPanel } from './PendingWritesPanel';
 import { createIdleRotationClock, trackRotationActivity, type RotationStatus } from './graph-rotation';
 import type { ChangeNotification } from '../shared/types';
+import { inspectLayout } from '../shared/layout';
 import './styles.css';
 
 const DAY_MS = 86_400_000;
@@ -39,6 +42,17 @@ const STATUS_LABELS: Record<MemoryState['status'], string> = {
 };
 
 type Notice = { tone: 'info' | 'success' | 'error'; text: string } | null;
+
+function pendingSyncNotice(result: PendingSyncResult): Notice {
+  const skipped = result.repairs?.reduce((sum, repair) => sum + repair.skippedPositions, 0) ?? 0;
+  const repairNotice = skipped > 0 ? `已备份并修复旧布局，跳过 ${skipped} 个无效位置，保留这些节点的现有布局。` : '';
+  const failure = result.failures[0];
+  if (failure) {
+    const progress = result.sent > 0 ? `已同步 ${result.sent} 条，另有 ${result.failed} 条未完成。` : '';
+    return { tone: 'error', text: `${progress}${repairNotice}${failure.label}：${failure.message}` };
+  }
+  return result.sent > 0 ? { tone: 'success', text: `已同步 ${result.sent} 条待处理记录。${repairNotice}` } : null;
+}
 
 type RecallAttempt = {
   conceptId: string;
@@ -563,17 +577,23 @@ export default function App() {
   useEffect(() => {
     if (writeLocked || !writeToken || !sourceId || pendingWrites.length === 0) return undefined;
     const retry = () => {
-      void flushPendingWrites(writeToken, sourceId).then(({ sent }) => {
+      void flushPendingWrites(writeToken, sourceId).then(async (result) => {
+        if (sourceIdRef.current !== sourceId) return;
         refreshPendingState();
-        if (sent > 0) {
-          setNotice({ tone: 'success', text: `已同步 ${sent} 条待处理记录。` });
-          void loadSnapshot();
+        const notice = pendingSyncNotice(result);
+        showNotice(notice);
+        if (result.sent > 0) {
+          try { await loadSnapshot(); } catch (error) {
+            showNotice({ tone: 'error', text: `${notice?.text ?? ''} 页面状态刷新失败：${errorMessage(error)}` });
+          }
         }
+      }).catch((error) => {
+        showNotice({ tone: 'error', text: `重试未完成：${errorMessage(error)}` });
       });
     };
     window.addEventListener('online', retry);
     return () => window.removeEventListener('online', retry);
-  }, [loadSnapshot, pendingWrites.length, refreshPendingState, sourceId, writeLocked, writeToken]);
+  }, [loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, writeLocked, writeToken]);
 
   useEffect(() => {
     return () => {
@@ -881,13 +901,15 @@ export default function App() {
 
   const saveLayout = useCallback((next: Layout) => {
     if (writeLockedRef.current || !writeToken || activeDomainRef.current !== domainId) return;
-    const merged = mergeLayout(layoutRef.current, next);
+    const inspected = inspectLayout(next);
+    if (!inspected || Object.keys(inspected.layout).length === 0) return;
+    const payload = inspected.layout;
+    const merged = mergeLayout(layoutRef.current, payload);
     layoutRef.current = merged;
     setLayout(merged);
     if (layoutWriteTimer.current !== null) window.clearTimeout(layoutWriteTimer.current);
     layoutWriteTimer.current = window.setTimeout(() => {
       if (writeLockedRef.current || sourceIdRef.current !== sourceId || activeDomainRef.current !== domainId || !writeTokenRef.current) return;
-      const payload = next;
       const currentToken = writeTokenRef.current;
       void writeWithRetry({ path: '/layout', method: 'PUT', payload, eventId: null, conceptId: null, label: '保存图谱布局', send: () => api.putLayout(payload, currentToken, sourceId) });
     }, 1_200);
@@ -917,15 +939,20 @@ export default function App() {
   const retryPending = useCallback(async () => {
     if (!writeToken || !sourceId || writeLocked || pendingWrites.length === 0) return;
     setBusyAction('pending');
-    const result = await flushPendingWrites(writeToken, sourceId);
-    refreshPendingState();
-    setBusyAction(null);
-    if (result.sent > 0) {
-      showNotice({ tone: 'success', text: `已同步 ${result.sent} 条待处理记录。` });
-      await loadSnapshot();
-    } else if (result.failed > 0) {
-      showNotice({ tone: 'error', text: '待同步记录仍未写入，请确认本地服务后重试。' });
-    }
+    try {
+      const result = await flushPendingWrites(writeToken, sourceId);
+      if (sourceIdRef.current !== sourceId) return;
+      refreshPendingState();
+      const notice = pendingSyncNotice(result);
+      showNotice(notice);
+      if (result.sent > 0) {
+        try { await loadSnapshot(); } catch (error) {
+          showNotice({ tone: 'error', text: `${notice?.text ?? ''} 页面状态刷新失败：${errorMessage(error)}` });
+        }
+      }
+    } catch (error) {
+      showNotice({ tone: 'error', text: `重试未完成：${errorMessage(error)}` });
+    } finally { setBusyAction(null); }
   }, [loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, writeLocked, writeToken]);
 
   const setSimulatedDays = (value: number) => {
@@ -1038,6 +1065,7 @@ export default function App() {
             })}
             {listedConcepts.length === 0 ? <EmptyPanel title="当前领域暂无概念" text="切换知识域，或搜索知识库中的其他概念。" /> : null}
           </div>
+          <PendingWritesPanel writes={pendingWrites} />
           <div className="left-footer"><span className={`sync-led${pendingWrites.length ? ' is-pending' : ''}`} /><span>{pendingWrites.length ? `${pendingWrites.length} 条记录等待同步` : '本地状态已同步'}</span>{pendingWrites.length ? <button type="button" className="sync-retry" onClick={() => void retryPending()} disabled={writeLocked || busyAction === 'pending'}>{busyAction === 'pending' ? '同步中…' : '重试同步'}</button> : null}</div>
         </aside>
 

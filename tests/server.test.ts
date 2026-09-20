@@ -215,3 +215,40 @@ test('refresh preserves old anchor and marks changed source content pending', as
     assert.equal(after.states[nextConcept.id].status, 'pending');
   } finally { await client.stop(); }
 });
+
+test('layout rejects invalid serialized coordinates, merges partial repairs, and treats empty writes as no-op', async () => {
+  const client = await running();
+  try {
+    const token = await session(client);
+    const snapshot = (await client.request('/api/snapshot')).json<any>();
+    const [first, second] = snapshot.concepts;
+    const headers = tokenHeaders(token.writeToken);
+    const initial = {
+      [first.id]: { x: 1, y: 2, z: 3 },
+      [second.id]: { x: -4, y: 5, z: -6 },
+    };
+    assert.equal((await client.request('/api/layout', { method: 'PUT', headers, body: initial })).status, 200);
+    assert.deepEqual((await client.request('/api/layout')).json(), initial);
+
+    // The request harness JSON-serializes non-finite numbers as null before HTTP.
+    const invalidLayouts = [
+      { [first.id]: { x: null, y: 2, z: 3 } },
+      { [first.id]: { x: Number.NaN, y: 2, z: 3 } },
+      { [first.id]: { x: 1, y: Number.POSITIVE_INFINITY, z: 3 } },
+    ];
+    for (const invalid of invalidLayouts) {
+      const response = await client.request('/api/layout', { method: 'PUT', headers, body: invalid });
+      assert.equal(response.status, 400);
+      assert.equal(response.json<{ error: { code: string } }>().error.code, 'INVALID_LAYOUT');
+      assert.deepEqual((await client.request('/api/layout')).json(), initial);
+    }
+
+    const repair = { [first.id]: { x: 10, y: 11, z: 12 } };
+    assert.equal((await client.request('/api/layout', { method: 'PUT', headers, body: repair })).status, 200);
+    const merged = { ...initial, ...repair };
+    assert.deepEqual((await client.request('/api/layout')).json(), merged);
+
+    assert.equal((await client.request('/api/layout', { method: 'PUT', headers, body: {} })).status, 200);
+    assert.deepEqual((await client.request('/api/layout')).json(), merged);
+  } finally { await client.stop(); }
+});
