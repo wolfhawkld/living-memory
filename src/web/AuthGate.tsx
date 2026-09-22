@@ -1,6 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import type { AccountDirectory, AccountStatus, AccountUser } from '../shared/accounts';
 import { api } from './api';
+import { ThemeProvider } from './ThemeProvider';
+import { ThemeSelector } from './ThemeSelector';
 
 const AUTH_CHANGED_KEY = 'living-memory.auth-changed.v1';
 const AUTH_CHANGED_MESSAGE = 'changed';
@@ -130,8 +132,8 @@ async function readAuthStatus(): Promise<AccountStatus> {
 
 function announceAuthChange(): void {
   if (typeof window === 'undefined') return;
-  // Only an opaque timestamp crosses tabs; user identity and credentials stay
-  // in the authenticated session and never enter browser storage.
+  // Only an opaque timestamp announces an auth change. Credentials stay in the
+  // authenticated session; browser preferences never establish account identity.
   try { window.localStorage.setItem(AUTH_CHANGED_KEY, String(Date.now())); } catch { /* private storage may be unavailable */ }
   try {
     if (typeof BroadcastChannel !== 'undefined') {
@@ -219,6 +221,7 @@ function LoginForm({ setup, busy, error, onSubmit }: {
           <button type="submit" className="auth-primary-button" disabled={busy}>{busy ? '处理中…' : setup ? '创建账户并进入' : '登录'}</button>
         </form>
         <p className="auth-footnote">用户名 3–32 个 ASCII 字符；密码 12–256 个字符。</p>
+        <div className="auth-theme-row"><ThemeSelector /></div>
       </section>
     </main>
   );
@@ -519,24 +522,30 @@ export function AuthGate(): ReactElement {
 
   useAuthStatusEvents(checkStatus, authRequired);
 
+  const account = view === 'authenticated' && status?.user?.enabled ? status.user : null;
+  let content: ReactElement;
   if (view === 'legacy') {
-    return <Suspense fallback={<main className="auth-shell"><section className="auth-card auth-loading" role="status"><strong>正在加载知识空间…</strong></section></main>}><LegacyApp /></Suspense>;
-  }
-  if (view === 'checking') return <main className="auth-shell"><section className="auth-card auth-loading" role="status"><div className="auth-brand"><span className="auth-mark" aria-hidden="true"><i /><i /><i /></span><span>Living Memory</span></div><strong>正在检查账户会话…</strong></section></main>;
-  if (view === 'error') return <main className="auth-shell"><section className="auth-card" role="alert"><div className="auth-brand"><span className="auth-mark" aria-hidden="true"><i /><i /><i /></span><span>Living Memory</span></div><h1>无法检查账户</h1><p className="auth-intro">{error ?? '认证服务暂时不可用。'}</p><button type="button" className="auth-primary-button" onClick={() => void checkStatus({ initial: true })} disabled={busy}>重新检查</button></section></main>;
-  if (view === 'setup' || view === 'login') return <LoginForm setup={view === 'setup'} busy={busy} error={error} onSubmit={(username, password) => void submitCredentials(username, password)} />;
-
-  const account = status?.user;
-  if (!account) return <LoginForm setup={false} busy={busy} error={error ?? '当前会话没有可用账户，请重新登录。'} onSubmit={(username, password) => void submitCredentials(username, password)} />;
-  return (
-    <>
+    content = <Suspense fallback={<AuthLoading text="正在加载知识空间…" />}><LegacyApp /></Suspense>;
+  } else if (view === 'checking') {
+    content = <AuthLoading text="正在检查账户会话…" />;
+  } else if (view === 'error') {
+    content = <main className="auth-shell"><section className="auth-card" role="alert"><div className="auth-brand"><span className="auth-mark" aria-hidden="true"><i /><i /><i /></span><span>Living Memory</span></div><h1>无法检查账户</h1><p className="auth-intro">{error ?? '认证服务暂时不可用。'}</p><button type="button" className="auth-primary-button" onClick={() => void checkStatus({ initial: true })} disabled={busy}>重新检查</button><div className="auth-theme-row"><ThemeSelector /></div></section></main>;
+  } else if (view === 'setup' || view === 'login' || !account) {
+    content = <LoginForm setup={view === 'setup'} busy={busy} error={error ?? (view === 'authenticated' ? '当前会话没有可用账户，请重新登录。' : null)} onSubmit={(username, password) => void submitCredentials(username, password)} />;
+  } else {
+    content = <>
       <div className="auth-app-frame" inert={adminOpen ? true : undefined} aria-hidden={adminOpen ? true : undefined}>
-        <Suspense fallback={<main className="auth-shell"><section className="auth-card auth-loading" role="status"><strong>正在加载私人知识空间…</strong></section></main>}><AccountApp key={`${account.id}:${account.accessRevision}`} account={account} onLogout={() => void logout()} onManageAccounts={openAdmin} /></Suspense>
+        <Suspense fallback={<AuthLoading text="正在加载私人知识空间…" />}><AccountApp key={`${account.id}:${account.accessRevision}`} account={account} onLogout={() => void logout()} onManageAccounts={openAdmin} /></Suspense>
       </div>
       <AdminDialog open={adminOpen} user={account} onClose={() => setAdminOpen(false)} onAuthRequired={authRequired} />
       {error ? <div className="auth-session-warning" role="alert">{error}<button type="button" onClick={() => void checkStatus({ force: true })}>重新检查</button></div> : null}
-    </>
-  );
+    </>;
+  }
+  return <ThemeProvider userId={account?.id ?? null}>{content}</ThemeProvider>;
+}
+
+function AuthLoading({ text }: { text: string }) {
+  return <main className="auth-shell"><section className="auth-card auth-loading" role="status"><div className="auth-brand"><span className="auth-mark" aria-hidden="true"><i /><i /><i /></span><span>Living Memory</span></div><strong>{text}</strong><div className="auth-theme-row"><ThemeSelector /></div></section></main>;
 }
 
 export default AuthGate;

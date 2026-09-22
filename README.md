@@ -32,7 +32,7 @@ npm start
 
 ## 从这里开始
 
-- [浅色主题 TODO](docs/planning/light-theme-todo.md)：六项任务逐项实施；已完成统一配色基础，下一项为主题入口与偏好，当前继续使用深色界面。
+- [浅色主题 TODO](docs/planning/light-theme-todo.md)：已完成配色基础与主题选择/本机偏好；登录页和控件先支持浅色，下一项适配工作区与阅读层。
 - [私人账号与知识域](docs/development/private-accounts.md)：登录、创建成员、私人知识源隔离、旧记录保留、CLI 设备身份及未来共享边界。
 - [场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)：当前优先迭代，记录从场景想起知识的表现，比较事前信心与核对结果，支持本人固定保持和手动恢复衰减。
 - [演示后的迭代 TODO（2026-09-22）](docs/planning/iteration-todo-2026-09-22.md)：当前完成范围、原有待办入口，以及学习历史、少量复习和场景调用的后续顺序。
