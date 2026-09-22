@@ -27,10 +27,14 @@ import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDom
 import { CrossDomainPanel, DomainPicker } from './DomainControls';
 import { ConceptSearch } from './ConceptSearch';
 import { PendingWritesPanel } from './PendingWritesPanel';
+import { ConceptHistoryPanel } from './ConceptHistoryPanel';
+import { useConceptHistory } from './useConceptHistory';
+import { parseSourceExposure, sourceExposureKey, SOURCE_EXPOSURE_STORAGE_KEY } from './source-exposure';
 import { createIdleRotationClock, trackRotationActivity, type RotationStatus } from './graph-rotation';
 import type { ChangeNotification } from '../shared/types';
 import { inspectLayout } from '../shared/layout';
 import './styles.css';
+import './concept-history.css';
 
 const DAY_MS = 86_400_000;
 const STATUS_LABELS: Record<MemoryState['status'], string> = {
@@ -202,7 +206,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingWrites, setPendingWrites] = useState<PendingWrite[]>([]);
-  const [sourceViewedIds, setSourceViewedIds] = useState<string[]>([]);
+  const [sourceViewedKeys, setSourceViewedKeys] = useState<string[]>([]);
   const [attempt, setAttempt] = useState<RecallAttempt | null>(null);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [estimatedDate, setEstimatedDate] = useState('');
@@ -334,15 +338,7 @@ export default function App() {
       }
       setDemoRecord(initialDemo);
       try {
-        const storedViewed = window.sessionStorage.getItem('living-memory.source-viewed.v0');
-        if (storedViewed) {
-          try {
-            const parsed: unknown = JSON.parse(storedViewed);
-            if (Array.isArray(parsed)) setSourceViewedIds(parsed.filter((id): id is string => typeof id === 'string'));
-          } catch {
-            // A stale session marker is harmless.
-          }
-        }
+        setSourceViewedKeys(parseSourceExposure(window.sessionStorage.getItem(SOURCE_EXPOSURE_STORAGE_KEY)));
       } catch {
         // Private browsing may deny sessionStorage; the in-memory marker still works.
       }
@@ -637,6 +633,13 @@ export default function App() {
   }, [activeDomainId, domainBusy, domainId, expandedIds, selectedId, viewSnapshot, visibleExpandedIds, visibleIds]);
 
   const selectedConcept = useMemo(() => snapshot?.concepts.find((concept) => concept.id === selectedId) ?? null, [selectedId, snapshot]);
+  const selectedSourceViewed = Boolean(selectedConcept && sourceViewedKeys.includes(sourceExposureKey(sourceId, selectedConcept)));
+  const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !sourceReloadPending);
+  const conceptHistory = useConceptHistory({
+    sourceId, conceptId: selectedConcept?.id ?? '', sourceRevision: selectedConcept?.source.revision ?? '',
+  }, historyEnabled, snapshot);
+  const pendingLearningCount = pendingWrites.filter((write) => write.conceptId === selectedId
+    && (write.path === '/reviews' || write.path === '/observations')).length;
   const selectedState = useMemo(() => {
     if (!selectedId || !displaySnapshot) return null;
     return displaySnapshot.states[selectedId] ?? null;
@@ -688,17 +691,20 @@ export default function App() {
   }, [canExpand, crossDomainNeighbors, domainBusy, visibleExpandedIds]);
 
   const markSourceViewed = useCallback((conceptId: string) => {
-    setSourceViewedIds((current) => {
-      if (current.includes(conceptId)) return current;
-      const next = [...current, conceptId];
+    const concept = snapshot?.concepts.find((item) => item.id === conceptId);
+    if (!concept || !sourceId) return;
+    const key = sourceExposureKey(sourceId, concept);
+    setSourceViewedKeys((current) => {
+      if (current.includes(key)) return current;
+      const next = [...current, key];
       try {
-        window.sessionStorage.setItem('living-memory.source-viewed.v0', JSON.stringify(next));
+        window.sessionStorage.setItem(SOURCE_EXPOSURE_STORAGE_KEY, JSON.stringify(next));
       } catch {
         showNotice({ tone: 'info', text: '本次查看已在当前页面标记；浏览器未允许保存会话标记。' });
       }
       return next;
     });
-  }, [showNotice]);
+  }, [showNotice, snapshot, sourceId]);
 
   const selectConcept = useCallback((conceptId: string) => {
     if (attempt && attempt.conceptId !== conceptId) {
@@ -829,12 +835,12 @@ export default function App() {
       configRevision: null,
       anchorEventId: selectedState.anchor?.eventId ?? null,
       sourceRevision: selectedConcept.source.revision,
-      sourceViewedBefore: sourceViewedIds.includes(selectedConcept.id),
+      sourceViewedBefore: selectedSourceViewed,
       stage: 'answer',
       rating: null,
-      exposure: sourceViewedIds.includes(selectedConcept.id) ? 'exposed' : 'unknown',
+      exposure: selectedSourceViewed ? 'exposed' : 'unknown',
     });
-  }, [attempt, selectedConcept, selectedState, snapshot, sourceViewedIds, writeLocked]);
+  }, [attempt, selectedConcept, selectedState, selectedSourceViewed, snapshot, writeLocked]);
 
   const submitRecallAnswer = useCallback(() => {
     if (!attempt || !snapshot || attempt.stage !== 'answer') return;
@@ -1111,8 +1117,13 @@ export default function App() {
               <p className="state-reason">{selectedState.reason ?? '状态由当前时间与最近确认事件投影。'}</p>
               <div className="detail-actions"><button type="button" className="primary-button" onClick={() => void submitReview('review')} disabled={writeLocked || busyAction === 'review'}>{busyAction === 'review' ? '保存中…' : '确认已重温'}</button><button type="button" className="secondary-button" onClick={() => { reviewEventRef.current = null; setEstimatedDate(new Date().toISOString().slice(0, 10)); setReviewDialogOpen(true); }} disabled={writeLocked || busyAction === 'review'}>补记过去重温</button></div>
               <button type="button" className="recall-button" onClick={startRecall} disabled={writeLocked || Boolean(attempt)}><span>✦</span>先想一句，再查看资料</button>
+              {historyEnabled && selectedConcept ? <ConceptHistoryPanel
+                key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}
+                {...conceptHistory} pendingCount={pendingLearningCount} simulated={simulated}
+                onRevealAnswer={() => markSourceViewed(selectedConcept.id)}
+              /> : <p className="source-hint">{attempt ? '回忆任务期间隐藏学习历史与旧回答。' : demoEnabled ? '示例模式不展示真实学习历史；关闭示例后可查看已保存记录。' : '知识源正在切换，学习历史暂时隐藏。'}</p>}
               <CrossDomainPanel neighbors={crossDomainNeighbors} expandedIds={visibleExpandedIds} visibleIds={visibleIds} onToggle={toggleExpanded} onNavigate={changeDomain} disabled={domainBusy} canExpand={canExpand} />
-              <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{sourceViewedIds.includes(selectedConcept.id) ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => markSourceViewed(selectedConcept.id)}><span>{sourceViewedIds.includes(selectedConcept.id) ? '资料已展开' : '打开来源与摘要'}</span><span>{sourceViewedIds.includes(selectedConcept.id) ? '✓' : '⌄'}</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{sourceViewedIds.includes(selectedConcept.id) ? <SourceBlock concept={selectedConcept} /> : null}</div>
+              <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{selectedSourceViewed ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => markSourceViewed(selectedConcept.id)}><span>{selectedSourceViewed ? '资料已展开' : '打开来源与摘要'}</span><span>{selectedSourceViewed ? '✓' : '⌄'}</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{selectedSourceViewed ? <SourceBlock concept={selectedConcept} /> : null}</div>
             </>
           ) : <EmptyPanel title="选择一个概念" text="点击图谱节点，或在左侧搜索后选择结果，查看概念与时间状态。" />}
         </aside>

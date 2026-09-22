@@ -4,6 +4,8 @@ import { DatabaseSync } from 'node:sqlite';
 import type {
   AnchorEvent,
   Concept,
+  ConceptHistory,
+  ConceptHistoryEntry,
   ExportData,
   Layout,
   MemoryState,
@@ -34,6 +36,14 @@ export interface StoredAnchor extends AnchorEvent {
 }
 
 export type StoreWriteResult = { status: 'accepted' | 'duplicate'; eventId: string };
+
+interface ConceptHistoryCursor {
+  namespace: string;
+  conceptId: string;
+  eventAt: string;
+  recordedAt: string;
+  eventId: string;
+}
 
 export class StoreError extends Error {
   readonly code: string;
@@ -100,6 +110,53 @@ function safeSqliteMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
   if (/UNIQUE|constraint/i.test(message)) return '数据已存在或与已有事件冲突。';
   return '本地学习记录暂时无法保存，请稍后重试。';
+}
+
+function invalidHistoryCursor(): never {
+  throw new StoreError('INVALID_HISTORY_CURSOR', '历史分页游标无效，请重新读取历史。');
+}
+
+function encodeHistoryCursor(cursor: ConceptHistoryCursor): string {
+  return Buffer.from(JSON.stringify({
+    version: 1,
+    namespace: cursor.namespace,
+    conceptId: cursor.conceptId,
+    eventAt: cursor.eventAt,
+    recordedAt: cursor.recordedAt,
+    eventId: cursor.eventId,
+  }), 'utf8').toString('base64url');
+}
+
+function decodeHistoryCursor(value: string): ConceptHistoryCursor {
+  if (!/^[A-Za-z0-9_-]{1,2048}$/.test(value)) invalidHistoryCursor();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+  } catch {
+    invalidHistoryCursor();
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) invalidHistoryCursor();
+  const record = parsed as Record<string, unknown>;
+  if (record.version !== 1) invalidHistoryCursor();
+  const namespace = record.namespace;
+  const conceptId = record.conceptId;
+  const eventId = record.eventId;
+  const eventAt = record.eventAt;
+  const recordedAt = record.recordedAt;
+  if (typeof namespace !== 'string' || !namespace.trim()
+      || typeof conceptId !== 'string' || !conceptId.trim()
+      || typeof eventId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(eventId)
+      || typeof eventAt !== 'string' || !isValidInstant(eventAt)
+      || typeof recordedAt !== 'string' || !isValidInstant(recordedAt)) {
+    invalidHistoryCursor();
+  }
+  return {
+    namespace,
+    conceptId,
+    eventAt: new Date(Date.parse(eventAt)).toISOString(),
+    recordedAt: new Date(Date.parse(recordedAt)).toISOString(),
+    eventId,
+  };
 }
 
 export class Store {
@@ -175,6 +232,10 @@ export class Store {
         ON anchors(namespace, concept_id, occurred_at, recorded_at);
       CREATE INDEX IF NOT EXISTS observations_by_concept
         ON observations(namespace, concept_id, observed_at);
+      CREATE INDEX IF NOT EXISTS anchors_by_concept_history
+        ON anchors(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
+      CREATE INDEX IF NOT EXISTS observations_by_concept_history
+        ON observations(namespace, concept_id, observed_at DESC, recorded_at DESC, event_id DESC);
     `);
     const createdAt = iso(this.now());
     this.db.prepare('INSERT OR IGNORE INTO namespaces(namespace, created_at) VALUES (?, ?)').run(this.namespace, createdAt);
@@ -420,6 +481,137 @@ export class Store {
   countObservations(): number {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM observations WHERE namespace = ?').get(this.namespace) as { count: number };
     return row.count;
+  }
+
+  getConceptHistory(concept: Concept, asOf: string, limit: number, rawCursor?: string): ConceptHistory {
+    const normalizedAsOf = normalizeDate(asOf, 'INVALID_HISTORY_AS_OF');
+    const cursor = rawCursor === undefined ? null : decodeHistoryCursor(rawCursor);
+    if (cursor && (cursor.namespace !== this.namespace || cursor.conceptId !== concept.id)) invalidHistoryCursor();
+
+    type HistoryRow = {
+      event_type: 'anchor' | 'observation';
+      event_id: string;
+      concept_id: string;
+      source_revision: string;
+      event_at: string;
+      recorded_at: string;
+      kind: 'review' | 'estimated' | null;
+      config_revision: number | null;
+      half_life_days: number | null;
+      anchor_event_id: string | null;
+      elapsed_days: number | null;
+      decay: number | null;
+      answer: string | null;
+      rating: RecallRating | null;
+      exposure: 'unexposed' | 'exposed' | 'unknown' | null;
+      observed_exposure: number | null;
+    };
+
+    const keyset = cursor ? `
+      WHERE event_at < ?
+         OR (event_at = ? AND recorded_at < ?)
+         OR (event_at = ? AND recorded_at = ? AND event_id < ?)` : '';
+    const queryParameters: Array<string | number> = [this.namespace, concept.id, this.namespace, concept.id];
+    if (cursor) {
+      queryParameters.push(
+        cursor.eventAt,
+        cursor.eventAt,
+        cursor.recordedAt,
+        cursor.eventAt,
+        cursor.recordedAt,
+        cursor.eventId,
+      );
+    }
+    queryParameters.push(limit + 1);
+    const rows = this.db.prepare(`
+      WITH history AS (
+        SELECT 'anchor' AS event_type, event_id, concept_id, source_revision,
+          occurred_at AS event_at, recorded_at, kind,
+          NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
+          NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
+          NULL AS exposure, NULL AS observed_exposure
+        FROM anchors
+        WHERE namespace = ? AND concept_id = ?
+        UNION ALL
+        SELECT 'observation' AS event_type, event_id, concept_id, source_revision,
+          observed_at AS event_at, recorded_at, NULL AS kind,
+          config_revision, half_life_days, anchor_event_id,
+          elapsed_days, decay, answer, rating, exposure, observed_exposure
+        FROM observations
+        WHERE namespace = ? AND concept_id = ?
+      )
+      SELECT event_type, event_id, concept_id, source_revision, event_at, recorded_at,
+        kind, config_revision, half_life_days, anchor_event_id, elapsed_days, decay,
+        answer, rating, exposure, observed_exposure
+      FROM history
+      ${keyset}
+      ORDER BY event_at DESC, recorded_at DESC, event_id DESC
+      LIMIT ?
+    `).all(...queryParameters) as HistoryRow[];
+
+    const totalRow = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM anchors WHERE namespace = ? AND concept_id = ?)
+        + (SELECT COUNT(*) FROM observations WHERE namespace = ? AND concept_id = ?) AS total
+    `).get(this.namespace, concept.id, this.namespace, concept.id) as { total: number };
+
+    const hasNext = rows.length > limit;
+    const page = hasNext ? rows.slice(0, limit) : rows;
+    const entries: ConceptHistoryEntry[] = page.map((row) => {
+      if (row.event_type === 'anchor') {
+        return {
+          type: 'anchor',
+          event: {
+            eventId: row.event_id,
+            conceptId: row.concept_id,
+            sourceRevision: row.source_revision,
+            occurredAt: row.event_at,
+            recordedAt: row.recorded_at,
+            kind: row.kind as 'review' | 'estimated',
+          },
+        };
+      }
+      return {
+        type: 'observation',
+        event: {
+          eventId: row.event_id,
+          conceptId: row.concept_id,
+          sourceRevision: row.source_revision,
+          observedAt: row.event_at,
+          recordedAt: row.recorded_at,
+          configRevision: row.config_revision as number,
+          halfLifeDays: row.half_life_days as number,
+          anchorEventId: row.anchor_event_id,
+          elapsedDays: row.elapsed_days,
+          decay: row.decay,
+          answer: row.answer as string,
+          rating: row.rating as RecallRating,
+          exposure: row.exposure as 'unexposed' | 'exposed' | 'unknown',
+          observedExposure: Boolean(row.observed_exposure),
+        },
+      };
+    });
+    const last = page.at(-1);
+    const nextCursor = hasNext && last ? encodeHistoryCursor({
+      namespace: this.namespace,
+      conceptId: concept.id,
+      eventAt: last.event_at,
+      recordedAt: last.recorded_at,
+      eventId: last.event_id,
+    }) : null;
+    const states = this.getStates([concept], normalizedAsOf);
+    const state = states[concept.id];
+    if (!state) throw new StoreError('HISTORY_STATE_FAILED', '无法生成概念当前状态。', 500);
+    return {
+      sourceId: this.namespace,
+      conceptId: concept.id,
+      sourceRevision: concept.source.revision,
+      asOf: normalizedAsOf,
+      state,
+      entries,
+      total: totalRow.total,
+      nextCursor,
+    };
   }
 
   getStates(concepts: Concept[], asOf: string): Record<string, MemoryState> {

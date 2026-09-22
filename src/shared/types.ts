@@ -66,6 +66,22 @@ export interface Observation {
   observedExposure: boolean;
 }
 
+export type ConceptHistoryEntry =
+  | { type: 'anchor'; event: AnchorEvent }
+  | { type: 'observation'; event: Observation };
+
+/** Real persisted history, ordered by event time, recorded time, then event ID descending. */
+export interface ConceptHistory {
+  sourceId: string;
+  conceptId: string;
+  sourceRevision: string;
+  asOf: string;
+  state: MemoryState;
+  entries: ConceptHistoryEntry[];
+  total: number;
+  nextCursor: string | null;
+}
+
 export interface KnowledgeGraph {
   concepts: Concept[];
   links: GraphLink[];

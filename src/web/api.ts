@@ -1,4 +1,5 @@
 import type {
+  ConceptHistory,
   Layout,
   ModelConfig,
   ObservationRequest,
@@ -318,6 +319,14 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 
 export const api = {
   getSession,
+  getConceptHistory: (conceptId: string, sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) => {
+    if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
+    const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
+    if (options.cursor) params.set('cursor', options.cursor);
+    return requestJson<ConceptHistory>(`/concepts/${encodeURIComponent(conceptId)}/history?${params}`, {
+      headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
+    });
+  },
   getSnapshot: (asOf?: string, sourceId?: string, scope?: 'all') => {
     const params = new URLSearchParams();
     if (asOf) params.set('asOf', asOf);

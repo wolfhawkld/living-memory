@@ -1,0 +1,338 @@
+.concept-history-panel {
+  min-width: 0;
+  margin: 18px 24px 26px;
+  padding: 16px 0 0;
+  border-top: 1px solid rgba(126, 155, 199, .16);
+  color: #cbd9eb;
+}
+
+.concept-history-heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.concept-history-heading h2 {
+  margin: 4px 0 0;
+  color: #dce9fb;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.concept-history-kicker {
+  color: #7489a8;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.concept-history-total {
+  flex: 0 0 auto;
+  color: #8094b3;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.concept-history-pending,
+.concept-history-simulated,
+.concept-history-error,
+.concept-history-loading,
+.concept-history-empty {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(126, 155, 199, .15);
+  border-radius: 6px;
+  background: rgba(16, 29, 48, .5);
+  color: #91a5c2;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.concept-history-pending {
+  border-color: rgba(244, 189, 112, .27);
+  background: rgba(86, 59, 25, .2);
+  color: #e2bd80;
+}
+
+.concept-history-simulated {
+  border-color: rgba(120, 170, 255, .2);
+  color: #9ebce3;
+}
+
+.concept-history-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  border-color: rgba(255, 129, 125, .3);
+  background: rgba(105, 39, 45, .2);
+  color: #f0b3b0;
+}
+
+.concept-history-error-is-initial {
+  display: block;
+}
+
+.concept-history-error p {
+  margin: 0 0 8px;
+}
+
+.concept-history-error button,
+.concept-history-load-more,
+.concept-history-answer-toggle {
+  padding: 5px 8px;
+  border: 1px solid rgba(138, 174, 230, .28);
+  border-radius: 5px;
+  background: rgba(32, 54, 84, .42);
+  color: #b8cceb;
+  cursor: pointer;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+.concept-history-error button:hover,
+.concept-history-load-more:hover,
+.concept-history-answer-toggle:hover {
+  border-color: rgba(120, 170, 255, .68);
+  background: rgba(53, 86, 135, .5);
+  color: #eef6ff;
+}
+
+.concept-history-error button:focus-visible,
+.concept-history-load-more:focus-visible,
+.concept-history-answer-toggle:focus-visible {
+  outline: 2px solid #78aaff;
+  outline-offset: 2px;
+}
+
+.concept-history-error button:disabled,
+.concept-history-load-more:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.concept-history-anchor {
+  margin-bottom: 13px;
+  padding: 10px 11px;
+  border: 1px solid rgba(92, 227, 208, .22);
+  border-radius: 7px;
+  background: rgba(20, 61, 64, .22);
+}
+
+.concept-history-anchor-is-pending {
+  border-color: rgba(244, 189, 112, .35);
+  background: rgba(86, 59, 25, .2);
+}
+
+.concept-history-anchor-heading,
+.concept-history-entry-heading,
+.concept-history-anchor-main,
+.concept-history-secondary,
+.concept-history-metrics {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.concept-history-anchor-heading {
+  justify-content: space-between;
+}
+
+.concept-history-anchor-heading strong {
+  color: #93e0d1;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.concept-history-anchor-is-pending .concept-history-anchor-heading strong {
+  color: #edc17e;
+}
+
+.concept-history-anchor-main {
+  margin-top: 6px;
+  color: #e0edfc;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.concept-history-anchor-main span,
+.concept-history-secondary,
+.concept-history-anchor-detail {
+  color: #8ca2c1;
+  font-size: 9px;
+  font-weight: 400;
+}
+
+.concept-history-anchor-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 5px;
+}
+
+.concept-history-anchor-note,
+.concept-history-old-note {
+  margin: 7px 0 0;
+  color: #c5a36e;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.concept-history-old-note {
+  color: #c28f95;
+}
+
+.concept-history-timeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0 0 2px 13px;
+  list-style: none;
+}
+
+.concept-history-timeline::before {
+  position: absolute;
+  top: 8px;
+  bottom: 9px;
+  left: 3px;
+  width: 1px;
+  background: rgba(126, 155, 199, .22);
+  content: '';
+}
+
+.concept-history-entry {
+  position: relative;
+  min-width: 0;
+}
+
+.concept-history-dot {
+  position: absolute;
+  top: 12px;
+  left: -13px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid #6c96c5;
+  border-radius: 50%;
+  background: #0b1626;
+  box-sizing: content-box;
+}
+
+.concept-history-entry-anchor .concept-history-dot {
+  border-color: #6ed4c6;
+}
+
+.concept-history-entry-is-old .concept-history-dot {
+  border-color: #bc7f88;
+}
+
+.concept-history-entry-card {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(126, 155, 199, .14);
+  border-radius: 7px;
+  background: rgba(16, 29, 48, .5);
+}
+
+.concept-history-entry-heading {
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.concept-history-entry-heading strong {
+  color: #d9e8fb;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.concept-history-current-badge,
+.concept-history-rating {
+  flex: 0 0 auto;
+  color: #7dd8ca;
+  font-size: 9px;
+}
+
+.concept-history-rating {
+  color: #b2c9e6;
+}
+
+.concept-history-event-time {
+  display: block;
+  color: #d2e2f6;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.concept-history-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.concept-history-secondary span,
+.concept-history-anchor-detail span {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.concept-history-metrics {
+  flex-wrap: wrap;
+  margin-top: 7px;
+  color: #9eb4d2;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.concept-history-metrics span {
+  padding: 2px 5px;
+  border: 1px solid rgba(126, 155, 199, .14);
+  border-radius: 4px;
+  background: rgba(10, 20, 35, .5);
+}
+
+.concept-history-answer-toggle {
+  margin-top: 8px;
+}
+
+.concept-history-answer {
+  margin-top: 8px;
+  padding: 8px 9px;
+  border-left: 2px solid #6c96c5;
+  background: rgba(9, 19, 33, .65);
+}
+
+.concept-history-answer-label {
+  color: #829bc0;
+  font-size: 9px;
+}
+
+.concept-history-answer p {
+  margin: 5px 0 0;
+  color: #dce9fb;
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.concept-history-load-more {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.concept-history-loading-more {
+  display: block;
+  margin-top: 6px;
+  color: #8298b8;
+  font-size: 9px;
+  text-align: center;
+}
