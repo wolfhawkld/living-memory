@@ -22,7 +22,8 @@ import {
   type PendingWrite,
   type PendingSyncResult,
 } from './api';
-import { GraphFallbackList, GraphView, STATUS_COLORS } from './GraphView';
+import { GraphFallbackList, GraphView } from './GraphView';
+import { DARK_THEME } from './theme-palette';
 import { createDemoRecord, extendDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
 import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
@@ -141,7 +142,7 @@ function Curve({ state, halfLifeDays }: { state: MemoryState; halfLifeDays: numb
   const currentY = Math.pow(2, -currentT / halfLifeDays);
   const markerX = padding.left + (currentT / maxDays) * plotWidth;
   const markerY = padding.top + (1 - currentY) * plotHeight;
-  const markerColor = STATUS_COLORS[state.status];
+  const markerColor = DARK_THEME.memory[state.status];
   return (
     <div className="curve-card">
       <div className="curve-heading">
@@ -1147,7 +1148,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           <div className="concept-list" aria-label="概念列表">
             {listedConcepts.map((concept) => {
               const state = displaySnapshot.states[concept.id] ?? { status: 'unknown' as const };
-              return <button type="button" key={concept.id} className={`concept-row${selectedId === concept.id ? ' is-selected' : ''}`} onClick={() => selectConcept(concept.id)}><span className="row-status" style={{ '--status-color': STATUS_COLORS[state.status] } as React.CSSProperties}><span /></span><span className="row-content"><strong>{concept.title}</strong><small>{domainLabel(domainIdOf(concept))}{domainIdOf(concept) !== domainId ? ' · 跨域' : ''}</small></span><span className="row-chevron">›</span></button>;
+              return <button type="button" key={concept.id} className={`concept-row${selectedId === concept.id ? ' is-selected' : ''}`} onClick={() => selectConcept(concept.id)}><span className="row-status" style={{ '--status-color': DARK_THEME.memory[state.status] } as React.CSSProperties}><span /></span><span className="row-content"><strong>{concept.title}</strong><small>{domainLabel(domainIdOf(concept))}{domainIdOf(concept) !== domainId ? ' · 跨域' : ''}</small></span><span className="row-chevron">›</span></button>;
             })}
             {listedConcepts.length === 0 ? <EmptyPanel title={snapshot.concepts.length ? '当前领域暂无概念' : '知识空间还没有概念'} text={snapshot.concepts.length ? '切换知识域，或搜索知识库中的其他概念。' : '请先将知识 Markdown 放入此账号的知识目录，再点击刷新知识源。'} /> : null}
           </div>
@@ -1180,7 +1181,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
             {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt) || scenarioOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
-            <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown', ...(!demoEnabled ? ['retained' as const] : [])] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
+            <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown', ...(!demoEnabled ? ['retained' as const] : [])] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': DARK_THEME.memory[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
             <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div>
           </div>
           <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间预览</span><strong>{simulated ? `+${simDays} 天` : demoEnabled ? '初始模拟值' : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt) || sourceReloadPending} /><div className="range-labels"><span>{demoEnabled ? '模拟起点' : '现在'}</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimulatedDays(0)}>{demoEnabled ? '回到初始值' : '恢复实时'}</button> : null}</div>

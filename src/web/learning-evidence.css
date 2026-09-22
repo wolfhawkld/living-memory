@@ -1,4 +1,4 @@
-.status-badge.status-retained .status-dot { color: #b49aea; }
+.status-badge.status-retained .status-dot { color: var(--memory-badge-retained); }
 .retention-button { width: 100%; margin: 8px 0; padding: 10px 12px; border: 1px solid #76649e66; border-radius: 9px; background: #b49aea0d; color: #c7b4ed; text-align: left; cursor: pointer; }
 .retention-button:disabled { opacity: .45; cursor: default; }
 .retention-fixed-note { padding: 16px; border-radius: 10px; background: #b49aea0b; border: 1px solid #b49aea33; color: #c7b4ed; font-size: 12px; line-height: 1.9; }

@@ -11,6 +11,7 @@ import { accommodateGraphOverview, calculateGraphOverview } from './graph-overvi
 import { createIsolatedNodeForce } from './graph-isolation';
 import { createGraphLabels } from './graph-labels';
 import { readRotationStatus, rotateCameraClockwise, type IdleRotationClock, type RotationStatus } from './graph-rotation';
+import { DARK_THEME } from './theme-palette';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -92,21 +93,6 @@ interface GraphInstance {
   _destructor?: () => void;
 }
 
-const STATUS_COLORS: Record<MemoryState['status'], string> = {
-  unknown: '#4175af',
-  recent: '#5ce3d0',
-  revisit: '#f4bd70',
-  stale: '#ff817d',
-  pending: '#a4a9b6',
-  retained: '#b49aea',
-};
-
-// Relationship colors use a cool blue range, separate from the node memory-status
-// colors. This keeps the temporal signal on nodes while making graph structure legible.
-const LINK_COLOR = '#456b94';
-const LINK_MUTED_COLOR = '#3e5e80';
-const LINK_SELECTED_COLOR = '#b5edff';
-
 function hashPosition(id: string): { x: number; y: number; z: number } {
   let hash = 2166136261;
   for (let index = 0; index < id.length; index += 1) {
@@ -176,7 +162,7 @@ function glowTexture(): THREE.Texture {
   const context = canvas.getContext('2d');
   if (context) {
     const gradient = context.createRadialGradient(64, 64, 2, 64, 64, 64);
-    // Tint only the material so a later time-state change cannot retain the old hue.
+    // White is a neutral alpha mask, not a theme color; tint comes from the material.
     gradient.addColorStop(0, '#ffffffee');
     gradient.addColorStop(0.16, '#ffffff88');
     gradient.addColorStop(0.48, '#ffffff2e');
@@ -202,18 +188,22 @@ interface NodeVisual {
 function updateNodeVisual(node: GraphNode, glowEnabled = true, selected = false): void {
   const visual = node.__mesh?.userData.lmVisual as NodeVisual | undefined;
   if (!visual) return;
-  const color = STATUS_COLORS[node.state.status];
+  const color = DARK_THEME.memory[node.state.status];
   visual.sphere.material.color.set(color);
   visual.sphere.material.emissive.set(color);
-  visual.sphere.material.emissiveIntensity = glowEnabled ? 0.32 : 0.06;
+  visual.sphere.material.emissiveIntensity = glowEnabled
+    ? DARK_THEME.graph.node.emissiveWithGlow
+    : DARK_THEME.graph.node.emissiveWithoutGlow;
   const unknown = node.state.status === 'unknown';
   visual.sphere.visible = !unknown;
   visual.ring.visible = unknown || selected;
-  visual.ring.material.color.set(selected ? '#cbefff' : color);
-  visual.ring.material.opacity = selected ? 0.75 : 0.8;
+  visual.ring.material.color.set(selected ? DARK_THEME.graph.node.selectedRing : color);
+  visual.ring.material.opacity = selected
+    ? DARK_THEME.graph.node.selectedRingOpacity
+    : DARK_THEME.graph.node.ringOpacity;
   const haloMaterial = visual.halo.material as THREE.SpriteMaterial;
   haloMaterial.color.set(color);
-  haloMaterial.opacity = unknown ? 0.09 : 0.19;
+  haloMaterial.opacity = unknown ? DARK_THEME.graph.node.unknownHaloOpacity : DARK_THEME.graph.node.haloOpacity;
   visual.halo.visible = glowEnabled;
   const size = nodeSize(node);
   visual.sphere.scale.setScalar(size);
@@ -419,9 +409,9 @@ function GraphViewInstance({
       // A scene background clears in the current render target's color space.
       // Relying only on renderer.clearColor can reuse the prior screen-space
       // clear value when the composer's RenderPass switches to a linear buffer.
-      graph.scene().background = new THREE.Color('#070c18');
+      graph.scene().background = new THREE.Color(DARK_THEME.graph.background);
       graph
-        .backgroundColor('#070c18')
+        .backgroundColor(DARK_THEME.graph.background)
         .showNavInfo(false)
         .enableNodeDrag(true)
         .cooldownTicks(150)
@@ -439,18 +429,18 @@ function GraphViewInstance({
         })
         .linkColor((link) => {
           const selected = selectedIdRef.current;
-          if (!selected) return LINK_COLOR;
-          return isIncidentLink(link, selected) ? LINK_SELECTED_COLOR : LINK_MUTED_COLOR;
+          if (!selected) return DARK_THEME.graph.link;
+          return isIncidentLink(link, selected) ? DARK_THEME.graph.linkSelected : DARK_THEME.graph.linkMuted;
         })
-        .linkOpacity(0.65)
+        .linkOpacity(DARK_THEME.graph.linkOpacity)
         // Native lines keep a one-pixel footprint while zooming; world-space
         // cylinders and persistent arrows grew into large bars in close views.
         .linkWidth(0)
         .linkDirectionalArrowLength((link) => hoveredIdRef.current && isIncidentLink(link, hoveredIdRef.current) ? 1.4 : 0)
         .linkDirectionalArrowColor((link) => {
           const selected = selectedIdRef.current;
-          if (!selected) return LINK_COLOR;
-          return isIncidentLink(link, selected) ? LINK_SELECTED_COLOR : LINK_MUTED_COLOR;
+          if (!selected) return DARK_THEME.graph.link;
+          return isIncidentLink(link, selected) ? DARK_THEME.graph.linkSelected : DARK_THEME.graph.linkMuted;
         })
         .linkDirectionalArrowRelPos(0.84)
         .linkHoverPrecision(6)
@@ -486,9 +476,9 @@ function GraphViewInstance({
       try {
         bloomPass = new UnrealBloomPass(
           new THREE.Vector2(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight)),
-          0.85,
-          0.45,
-          0.3,
+          DARK_THEME.graph.bloom.strength,
+          DARK_THEME.graph.bloom.radius,
+          DARK_THEME.graph.bloom.threshold,
         );
         // The built-in composer only has RenderPass. Keep the final color-space
         // conversion after Bloom so the dark background retains its original color.
@@ -511,8 +501,14 @@ function GraphViewInstance({
         outputPassRef.current = null;
       }
 
-      const ambient = new THREE.AmbientLight('#ffffff', 1.6);
-      const point = new THREE.DirectionalLight('#ecf5ff', 2);
+      const ambient = new THREE.AmbientLight(
+        DARK_THEME.graph.ambientLight.color,
+        DARK_THEME.graph.ambientLight.intensity,
+      );
+      const point = new THREE.DirectionalLight(
+        DARK_THEME.graph.directionalLight.color,
+        DARK_THEME.graph.directionalLight.intensity,
+      );
       point.position.set(0, 80, 140);
       graph.lights([ambient, point]);
 
@@ -667,7 +663,11 @@ function GraphViewInstance({
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    const linkColor = (link: GraphLink) => !selectedId ? LINK_COLOR : isIncidentLink(link, selectedId) ? LINK_SELECTED_COLOR : LINK_MUTED_COLOR;
+    const linkColor = (link: GraphLink) => (
+      !selectedId
+        ? DARK_THEME.graph.link
+        : isIncidentLink(link, selectedId) ? DARK_THEME.graph.linkSelected : DARK_THEME.graph.linkMuted
+    );
     graph.linkColor(linkColor).linkDirectionalArrowColor(linkColor);
     for (const node of nodesRef.current) updateNodeVisual(node, glowEnabledRef.current, node.id === selectedId);
   }, [selectedId]);
@@ -787,7 +787,7 @@ export function GraphFallbackList({
             key={concept.id}
             onClick={() => onSelect(concept.id)}
           >
-            <span className="status-dot" style={{ backgroundColor: STATUS_COLORS[state?.status ?? 'unknown'] }} />
+            <span className="status-dot" style={{ backgroundColor: DARK_THEME.memory[state?.status ?? 'unknown'] }} />
             <span>{concept.title}</span>
           </button>
         );
@@ -795,5 +795,3 @@ export function GraphFallbackList({
     </div>
   );
 }
-
-export { STATUS_COLORS };
