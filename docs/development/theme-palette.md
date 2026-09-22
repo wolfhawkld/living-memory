@@ -1,6 +1,8 @@
 # 主题配色基础（THEME-01）
 
-更新：2026-09-22。对应[浅色主题计划](../planning/light-theme-todo.md)的第一项，当前仍只启用深色主题。协作任务：[Issue #29](https://github.com/wolfhawkld/living-memory/issues/29)。
+更新：2026-09-22。对应[浅色主题计划](../planning/light-theme-todo.md)的第一项，该项交付时仍只启用深色主题。协作任务：[Issue #29](https://github.com/wolfhawkld/living-memory/issues/29)。
+
+后续状态：THEME-02 已加入[主题入口与本机偏好](theme-preferences.md)，并让登录壳和控件先支持浅色。下文保留 THEME-01 交付时的范围与验证记录。
 
 ## 配色来源与接入方式
 

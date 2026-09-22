@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import AuthGate from './AuthGate';
 import './styles.css';
 import './account.css';
+import './theme-controls.css';
 
 const root = document.getElementById('root');
 

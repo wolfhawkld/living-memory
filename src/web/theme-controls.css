@@ -1,0 +1,75 @@
+.theme-selector {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.theme-selector select {
+  min-width: 86px;
+  padding: 4px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--panel-raised);
+  cursor: pointer;
+}
+
+.theme-selector select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-selector > span { color: var(--muted); }
+.theme-selector .theme-resolved { color: var(--muted); font-size: 10px; }
+.auth-theme-row { margin-top: 20px; }
+
+/* Keep native controls consistent with the still-dark workspace until THEME-03. */
+.app-shell { color-scheme: dark; }
+:root[data-theme="light"] .theme-selector { color-scheme: light; }
+
+/* THEME-02 enables the login/initialization shell first. Full workspace styles
+   and graph scene colors remain separate THEME-03/04 tasks. */
+:root[data-theme="light"] .auth-shell {
+  color: var(--text);
+  background: var(--bg);
+}
+
+:root[data-theme="light"] .auth-shell .auth-card {
+  border-color: var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+:root[data-theme="light"] .auth-shell :is(.auth-brand, h1, .auth-form label) { color: var(--text); }
+:root[data-theme="light"] .auth-shell :is(.auth-intro, .auth-footnote, .auth-loading) { color: var(--muted); }
+:root[data-theme="light"] .auth-shell .auth-kicker { color: var(--accent); }
+:root[data-theme="light"] .auth-shell .auth-error { color: var(--error); }
+:root[data-theme="light"] .auth-shell .auth-mark { border-color: var(--line-strong); background: var(--panel-soft); }
+:root[data-theme="light"] .auth-shell .auth-mark i { background: var(--accent); box-shadow: none; }
+
+:root[data-theme="light"] .auth-shell .auth-form input {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background: var(--panel-raised);
+}
+
+:root[data-theme="light"] .auth-shell .auth-form input:focus {
+  border-color: var(--accent);
+  box-shadow: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+:root[data-theme="light"] .auth-shell .auth-primary-button {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: none;
+}

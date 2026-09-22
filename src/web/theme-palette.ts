@@ -16,6 +16,8 @@ export interface ThemePalette {
     textMuted: string;
     textSubtle: string;
     accent: string;
+    onAccent: string;
+    error: string;
     shadow: string;
   }>;
   readonly memory: MemoryColors;
@@ -67,6 +69,8 @@ export const DARK_THEME: ThemePalette = {
     textMuted: '#8496b5',
     textSubtle: '#596b89',
     accent: '#78aaff',
+    onAccent: '#07111e',
+    error: '#ff817d',
     shadow: '0 24px 80px rgba(0, 0, 0, .32)',
   },
   memory: darkMemory,
@@ -107,11 +111,28 @@ export const DARK_THEME: ThemePalette = {
   },
 };
 
-/** Shared by the initial stylesheet and, later, the runtime theme controller. */
-export function themeCssVariables(theme: ThemePalette): Record<`--${string}`, string> {
-  const { ui, memory, memoryBadge } = theme;
-  const variables: Record<`--${string}`, string> = {
+// THEME-02 first enables the login shell and selector. The workspace and graph
+// will adopt the light palette separately in THEME-03/04.
+export const LIGHT_UI: ThemePalette['ui'] = {
+  background: '#eef2f7',
+  panel: '#ffffff',
+  panelRaised: '#f7f9fc',
+  panelSoft: '#e6edf6',
+  border: '#d4ddea',
+  borderStrong: '#a7b8ce',
+  text: '#24344c',
+  textMuted: '#50637c',
+  textSubtle: '#61728a',
+  accent: '#285eaa',
+  onAccent: '#ffffff',
+  error: '#b13d40',
+  shadow: '0 24px 80px rgba(35, 54, 81, .12)',
+};
+
+export function themeUiCssVariables(ui: ThemePalette['ui']): Record<`--${string}`, string> {
+  return {
     '--bg': ui.background,
+    '--page-backdrop': ui.background,
     '--panel': ui.panel,
     '--panel-raised': ui.panelRaised,
     '--panel-soft': ui.panelSoft,
@@ -121,7 +142,17 @@ export function themeCssVariables(theme: ThemePalette): Record<`--${string}`, st
     '--muted': ui.textMuted,
     '--subtle': ui.textSubtle,
     '--accent': ui.accent,
+    '--on-accent': ui.onAccent,
+    '--error': ui.error,
     '--shadow': ui.shadow,
+  };
+}
+
+/** Shared by the initial stylesheet and, later, the runtime theme controller. */
+export function themeCssVariables(theme: ThemePalette): Record<`--${string}`, string> {
+  const { ui, memory, memoryBadge } = theme;
+  const variables: Record<`--${string}`, string> = {
+    ...themeUiCssVariables(ui),
     // Compatibility aliases until the full component CSS migration (THEME-03).
     '--mint': memory.recent,
     '--amber': memory.revisit,
@@ -137,5 +168,9 @@ export function themeCssVariables(theme: ThemePalette): Record<`--${string}`, st
 
 /** Only serialize trusted, repository-owned palettes, never user-provided CSS. */
 export function themeRootCss(theme: ThemePalette): string {
-  return `:root {\n${Object.entries(themeCssVariables(theme)).map(([key, value]) => `  ${key}: ${value};`).join('\n')}\n}`;
+  return themeCssRule(':root', themeCssVariables(theme));
+}
+
+export function themeCssRule(selector: string, variables: Record<`--${string}`, string>): string {
+  return `${selector} {\n${Object.entries(variables).map(([key, value]) => `  ${key}: ${value};`).join('\n')}\n}`;
 }

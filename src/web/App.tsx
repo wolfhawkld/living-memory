@@ -24,6 +24,7 @@ import {
 } from './api';
 import { GraphFallbackList, GraphView } from './GraphView';
 import { DARK_THEME } from './theme-palette';
+import { ThemeSelector } from './ThemeSelector';
 import { createDemoRecord, extendDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
 import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
@@ -1128,7 +1129,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
       <div className={`mode-bar${demoEnabled ? ' is-demo' : ''}`}>
         <div><strong>{demoEnabled ? '示例状态 · 非真实记忆' : '真实学习记录'}</strong><span>{demoEnabled ? '虚构重温间隔，拖动时间轴查看颜色变化' : '由你确认的学习与重温记录计算'}</span></div>
-        <div className="mode-actions">{demoEnabled ? <button type="button" onClick={exportDemo}>导出模拟记录</button> : null}<button type="button" onClick={() => changeDemoMode(!demoEnabled)} disabled={Boolean(attempt) || busyAction !== null || sourceReloadPending}>{demoEnabled ? '查看真实记录' : '查看示例状态'}</button></div>
+        <div className="mode-actions"><ThemeSelector />{demoEnabled ? <button type="button" onClick={exportDemo}>导出模拟记录</button> : null}<button type="button" onClick={() => changeDemoMode(!demoEnabled)} disabled={Boolean(attempt) || busyAction !== null || sourceReloadPending}>{demoEnabled ? '查看真实记录' : '查看示例状态'}</button></div>
       </div>
       <div className="domain-view-bar">
         <DomainPicker domains={domains} value={domainId ?? ''} onChange={changeDomain} disabled={domainBusy} />
