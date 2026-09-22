@@ -96,6 +96,7 @@ const STATUS_COLORS: Record<MemoryState['status'], string> = {
   revisit: '#f4bd70',
   stale: '#ff817d',
   pending: '#a4a9b6',
+  retained: '#b49aea',
 };
 
 // Relationship colors use a cool blue range, separate from the node memory-status

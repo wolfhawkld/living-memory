@@ -65,12 +65,13 @@ function oldRevisionLabel(event: { sourceRevision: string }, history: ConceptHis
 }
 
 function statusLabel(state: MemoryState): string {
+  if (state.status === 'retained') return '保留的时间起点 · 衰减暂停';
   if (state.status === 'pending') return '最新起点 · 待确认';
   return '当前有效起点';
 }
 
 function eventDate(entry: ConceptHistoryEntry): string {
-  return entry.type === 'anchor' ? entry.event.occurredAt : entry.event.observedAt;
+  return entry.type === 'observation' ? entry.event.observedAt : entry.event.occurredAt;
 }
 
 /** An answer is inserted only after the user explicitly asks to reveal it. */
@@ -93,8 +94,10 @@ export function HistoryObservationAnswer({ event, onRevealAnswer }: HistoryObser
   }
   return (
     <div className="concept-history-answer" aria-live="polite">
+      {event.learning?.scenario ? <p className="concept-history-scenario">场景：{event.learning.scenario}</p> : null}
       <span className="concept-history-answer-label">原始回答</span>
       <p>{event.answer || '（空白回答）'}</p>
+      {event.learning?.applicability ? <p className="concept-history-scenario">核对补充：{event.learning.applicability}</p> : null}
     </div>
   );
 }
@@ -164,8 +167,8 @@ function ObservationEntry({
       <span className="concept-history-dot" aria-hidden="true" />
       <div className="concept-history-entry-card">
         <div className="concept-history-entry-heading">
-          <strong>学习观察</strong>
-          <span className="concept-history-rating">{ratingLabel(event.rating)}</span>
+          <strong>{event.learning?.task === 'scenario' ? '场景调用观察' : '学习观察'}</strong>
+          <span className="concept-history-rating">{event.learning?.task === 'scenario' ? { success: '适用', partial: '部分适用', failure: '未成功', unverified: '未核对' }[event.learning.outcome] : ratingLabel(event.rating)}</span>
         </div>
         <time className="concept-history-event-time" dateTime={event.observedAt}>{formatDate(event.observedAt)}</time>
         <div className="concept-history-secondary">
@@ -180,6 +183,11 @@ function ObservationEntry({
           <span>{exposureLabel(event)}</span>
         </div>
         {oldRevision ? <p className="concept-history-old-note">{oldRevision}</p> : null}
+        {event.learning ? <div className="concept-history-learning">
+          <div>事前信心：{event.learning.confidence === null ? '未预测' : `${event.learning.confidence}%`}</div>
+          <div>作答方式：{{ independent: '独立作答', hinted: '借助提示', lookup: '查阅后作答', unknown: '不确定' }[event.learning.cue]}</div>
+          <div>核对结果：{{ success: '成功', partial: '部分成功', failure: '未成功', unverified: '尚未核对' }[event.learning.outcome]} · {{ 'self-check': '自己对照资料', application: '实际应用核对', unknown: '依据未记录' }[event.learning.basis]}</div>
+        </div> : null}
         <HistoryObservationAnswer event={event} onRevealAnswer={onRevealAnswer} />
       </div>
     </li>
@@ -191,6 +199,16 @@ function HistoryEntry({ entry, history, onRevealAnswer }: {
   history: ConceptHistory;
   onRevealAnswer: () => void;
 }): ReactElement {
+  if (entry.type === 'retention') return <li className="concept-history-entry">
+    <span className="concept-history-dot" aria-hidden="true" />
+    <div className="concept-history-entry-card">
+      <strong>{entry.event.active ? '长期保持（本人确认）' : '手动恢复时间衰减'}</strong>
+      <time className="concept-history-event-time" dateTime={entry.event.occurredAt}>{formatDate(entry.event.occurredAt)}</time>
+      <div className="concept-history-secondary"><span>记录于 {formatDate(entry.event.recordedAt)}</span><span>来源版本 {entry.event.sourceRevision}</span></div>
+      <p className="concept-history-old-note">{entry.event.active ? '固定保持，直到本人手动解除；未新增复习起点。' : '沿用原有重温起点；未新增复习起点。'}</p>
+      {entry.event.sourceRevision !== history.sourceRevision ? <p className="concept-history-old-note">资料版本已变化，长期保持设置仍按本人最近一次选择执行。</p> : null}
+    </div>
+  </li>;
   return entry.type === 'anchor'
     ? <AnchorEntry entry={entry} history={history} />
     : <ObservationEntry entry={entry} history={history} onRevealAnswer={onRevealAnswer} />;

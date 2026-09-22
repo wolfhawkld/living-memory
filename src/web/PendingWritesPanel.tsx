@@ -6,6 +6,7 @@ const PATH_LABELS: Record<string, string> = {
   '/config': '模型参数',
   '/reviews': '确认重温',
   '/observations': '回忆观察',
+  '/retentions': '长期保持状态',
 };
 
 function writeLabel(write: PendingWrite): string {

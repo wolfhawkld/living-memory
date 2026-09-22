@@ -436,7 +436,7 @@ function resolveSelector(snapshot: Snapshot, selector: string): SelectedConcept 
 }
 
 function stateCounts(snapshot: Snapshot): Record<MemoryState['status'], number> {
-  const counts: Record<MemoryState['status'], number> = { unknown: 0, recent: 0, revisit: 0, stale: 0, pending: 0 };
+  const counts: Record<MemoryState['status'], number> = { unknown: 0, recent: 0, revisit: 0, stale: 0, pending: 0, retained: 0 };
   for (const state of Object.values(snapshot.states)) counts[state.status] += 1;
   return counts;
 }

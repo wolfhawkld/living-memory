@@ -13,6 +13,7 @@ test('the same rendered material is available in normal reading and after submit
   assert.equal(canShowConceptReader(request, 'source-a', concept, null, false), true);
   assert.equal(canShowConceptReader(request, 'source-a', concept, 'feedback', false), true);
   assert.equal(canShowConceptReader(request, 'source-a', concept, 'answer', false), false);
+  assert.equal(canShowConceptReader(request, 'source-a', concept, 'prediction', false), false);
 });
 
 test('an open reader cannot expose a different concept, source or revision, including while reconnecting', () => {

@@ -15,7 +15,7 @@ export function DemoPanel({ record, snapshot, saved, labels, onSelect }: Props) 
   const counts = Object.values(snapshot.states).reduce((result, state) => {
     result[state.status] += 1;
     return result;
-  }, { recent: 0, revisit: 0, stale: 0, unknown: 0, pending: 0 });
+  }, { recent: 0, revisit: 0, stale: 0, unknown: 0, pending: 0, retained: 0 });
   const concepts = new Map(snapshot.concepts.map((concept) => [concept.id, concept]));
   return (
     <div className="demo-panel">

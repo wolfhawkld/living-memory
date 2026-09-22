@@ -9,6 +9,7 @@ import { loadKnowledgeGraph, KnowledgeSourceError, type KnowledgeSource } from '
 import { createChangeFeed } from './changes.js';
 import {
   parseObservationRequest,
+  parseRetentionRequest,
   parseReviewRequest,
   Store,
   StoreError,
@@ -312,9 +313,25 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     }
     const observedAt = parseAsOf(observation.observedAt, now());
     if (Date.parse(observedAt) > now().getTime()) throw new StoreError('FUTURE_OBSERVATION', '观察时间不能晚于服务当前时间。');
-    const expectedAnchor = store.getAnchor(observation.conceptId, observedAt);
+    const anchor = store.getAnchor(observation.conceptId, observedAt);
+    // A source refresh invalidates an old anchor for the new observation
+    // version. Allow an explicit current-version observation with no anchor so
+    // it remains honest (decay is null); a stale non-null anchor still fails in
+    // Store.addObservation with ANCHOR_CONFLICT.
+    const expectedAnchor = anchor && anchor.sourceRevision === observation.sourceRevision ? anchor : null;
     const receipt = store.addObservation({ ...observation, observedAt }, expectedAnchor?.eventId ?? null);
     if (receipt.status === 'accepted') changes.publish('observation');
+    res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
+  }));
+  app.post('/api/retentions', requireWrite, asyncRoute((req, res) => {
+    const retention = parseRetentionRequest(req.body);
+    if (!store.hasEvent(retention.eventId)) {
+      const concept = conceptById(source, retention.conceptId);
+      if (retention.sourceRevision !== concept.source.revision) throw new StoreError('SOURCE_REVISION_MISMATCH', '概念内容已变化，请先刷新知识源后重新确认。', 409);
+    }
+    const expectedPreviousEventId = store.getRetention(retention.conceptId)?.eventId ?? null;
+    const receipt = store.addRetention(retention, expectedPreviousEventId);
+    if (receipt.status === 'accepted') changes.publish('retention');
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.put('/api/config', requireWrite, asyncRoute((req, res) => {

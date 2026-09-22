@@ -34,7 +34,44 @@ export interface AnchorEvent {
   kind: 'review' | 'estimated';
 }
 
-export type MemoryStatus = 'unknown' | 'recent' | 'revisit' | 'stale' | 'pending';
+export type MemoryStatus = 'unknown' | 'recent' | 'revisit' | 'stale' | 'pending' | 'retained';
+
+export interface RetentionRequest {
+  eventId: string;
+  conceptId: string;
+  sourceRevision: string;
+  occurredAt: string;
+  active: boolean;
+  previousEventId: string | null;
+}
+
+export interface RetentionEvent extends RetentionRequest { recordedAt: string }
+
+/** User-reported evidence; confidence is captured before the answer is submitted. */
+export interface LearningEvidence {
+  task: 'concept' | 'scenario';
+  scenario?: string;
+  applicability?: string;
+  /** Percentage, integer 0..100; null means no prospective prediction. */
+  confidence: number | null;
+  confidenceAt: string | null;
+  cue: 'independent' | 'hinted' | 'lookup' | 'unknown';
+  outcome: 'success' | 'partial' | 'failure' | 'unverified';
+  basis: 'self-check' | 'application' | 'unknown';
+}
+
+export interface CalibrationSummary {
+  count: number;
+  meanConfidence: number | null;
+  successRate: number | null;
+  gap: number | null;
+  brier: number | null;
+}
+
+export interface LearningSummary {
+  scenario: { total: number; independentSuccess: number; assisted: number; partial: number; failure: number; unverified: number };
+  calibration: { concept: CalibrationSummary; scenario: CalibrationSummary };
+}
 
 export interface MemoryState {
   conceptId: string;
@@ -44,6 +81,7 @@ export interface MemoryState {
   anchor: AnchorEvent | null;
   reason: string | null;
   asOf: string;
+  retention?: RetentionEvent | null;
 }
 
 export type RecallRating = 'clear' | 'partial' | 'blank';
@@ -64,10 +102,12 @@ export interface Observation {
   rating: RecallRating;
   exposure: Exposure;
   observedExposure: boolean;
+  learning?: LearningEvidence;
 }
 
 export type ConceptHistoryEntry =
   | { type: 'anchor'; event: AnchorEvent }
+  | { type: 'retention'; event: RetentionEvent }
   | { type: 'observation'; event: Observation };
 
 /** Real persisted history, ordered by event time, recorded time, then event ID descending. */
@@ -80,6 +120,7 @@ export interface ConceptHistory {
   entries: ConceptHistoryEntry[];
   total: number;
   nextCursor: string | null;
+  learning?: LearningSummary;
 }
 
 export interface KnowledgeGraph {
@@ -122,6 +163,7 @@ export interface ObservationRequest {
   rating: RecallRating;
   exposure: Exposure;
   observedExposure: boolean;
+  learning?: LearningEvidence;
 }
 
 export interface WriteReceipt {
@@ -133,7 +175,7 @@ export interface WriteReceipt {
 export interface ChangeNotification {
   sourceId: string;
   revision: number;
-  reason: 'connected' | 'source' | 'review' | 'observation' | 'config';
+  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention';
 }
 
 export interface LayoutPosition { x: number; y: number; z: number }
@@ -148,5 +190,6 @@ export interface ExportData {
   configHistory: ModelConfig[];
   anchors: AnchorEvent[];
   observations: Observation[];
+  retentions?: RetentionEvent[];
   layout: Layout;
 }

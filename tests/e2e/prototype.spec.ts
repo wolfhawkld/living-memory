@@ -137,7 +137,7 @@ test('demo mode shows the seeded time stages and persists its source-scoped prev
     const status = demoProjection.states[concept.id]?.status;
     if (status) counts[status] += 1;
     return counts;
-  }, { recent: 0, revisit: 0, stale: 0, unknown: 0, pending: 0 });
+  }, { recent: 0, revisit: 0, stale: 0, unknown: 0, pending: 0, retained: 0 });
   const statusLabels = { recent: '近期重温', revisit: '建议再看', stale: '较久未重温', unknown: '尚未评估', pending: '待确认' } as const;
   for (const status of Object.keys(statusLabels) as Array<keyof typeof statusLabels>) {
     const row = demoPanel.locator(`.demo-count[data-status="${status}"]`);
