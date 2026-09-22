@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { graphNodePosition } from './graph-position';
+import { DARK_THEME } from './theme-palette';
 
 /** A graph node shape accepted by the screen-label layer. */
 export interface GraphLabelNode {
@@ -328,11 +329,12 @@ function styleLabel(entry: LabelEntry, size: LabelSize, kind: GraphLabelKind, ho
   element.style.maxWidth = `${SELECTED_LABEL_MAX_WIDTH}px`;
   element.style.height = `${size.height}px`;
   element.style.padding = '4px 6px';
-  element.style.border = emphasized ? '1px solid rgba(132, 211, 255, 0.72)' : '1px solid rgba(132, 167, 211, 0.24)';
+  const palette = emphasized ? DARK_THEME.graph.labelEmphasized : DARK_THEME.graph.label;
+  element.style.border = `1px solid ${palette.border}`;
   element.style.borderRadius = '4px';
-  element.style.background = emphasized ? 'rgba(5, 15, 31, 0.9)' : 'rgba(7, 14, 27, 0.76)';
-  element.style.boxShadow = emphasized ? '0 3px 14px rgba(0, 0, 0, 0.28)' : '0 2px 8px rgba(0, 0, 0, 0.18)';
-  element.style.color = emphasized ? '#edf7ff' : '#cfddf2';
+  element.style.background = palette.background;
+  element.style.boxShadow = palette.shadow;
+  element.style.color = palette.text;
   element.style.fontFamily = LABEL_FONT_FAMILY;
   element.style.fontSize = emphasized ? '12px' : '11px';
   element.style.fontWeight = emphasized ? '600' : '500';

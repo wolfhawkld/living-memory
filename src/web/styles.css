@@ -3,21 +3,7 @@
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --bg: #060a13;
-  --panel: rgba(11, 18, 31, 0.92);
-  --panel-raised: rgba(18, 29, 48, 0.96);
-  --panel-soft: rgba(23, 38, 62, 0.62);
-  --line: rgba(126, 155, 199, 0.16);
-  --line-strong: rgba(138, 174, 230, 0.28);
-  --text: #ecf3ff;
-  --muted: #8496b5;
-  --subtle: #596b89;
-  --accent: #78aaff;
-  --mint: #5ce3d0;
-  --amber: #f4bd70;
-  --coral: #ff817d;
-  --unknown: #7f8da9;
-  --shadow: 0 24px 80px rgba(0, 0, 0, .32);
+  /* Palette variables come from theme-palette.ts via Vite's initial HTML. */
 }
 
 * { box-sizing: border-box; }
@@ -209,11 +195,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .detail-state { justify-content: space-between; align-items: flex-end; padding: 19px 24px 10px; }
 .state-line { margin-top: 8px; }
 .status-badge { display: inline-flex; align-items: center; gap: 7px; color: #dce9fb; font-size: 12px; font-weight: 600; }
-.status-badge.status-recent .status-dot { color: var(--mint); }
-.status-badge.status-revisit .status-dot { color: var(--amber); }
-.status-badge.status-stale .status-dot { color: var(--coral); }
-.status-badge.status-unknown .status-dot { color: var(--unknown); box-shadow: none; }
-.status-badge.status-pending .status-dot { color: #a7adbd; box-shadow: none; }
+.status-badge.status-recent .status-dot { color: var(--memory-badge-recent); }
+.status-badge.status-revisit .status-dot { color: var(--memory-badge-revisit); }
+.status-badge.status-stale .status-dot { color: var(--memory-badge-stale); }
+.status-badge.status-unknown .status-dot { color: var(--memory-badge-unknown); box-shadow: none; }
+.status-badge.status-pending .status-dot { color: var(--memory-badge-pending); box-shadow: none; }
 .state-asof { color: var(--subtle); font-size: 9px; text-align: right; }
 .state-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 24px 14px; }
 .state-metrics > div { padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: rgba(17, 30, 50, .48); }
