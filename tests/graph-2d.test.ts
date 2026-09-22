@@ -38,8 +38,16 @@ function installThreeWindow(): () => void {
   };
 }
 
-async function flushGraphUpdate(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+function flushGraphUpdate(graph: ForceGraph): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('three-forcegraph did not finish its graphData update within 1 second'));
+    }, 1_000);
+    graph.onFinishUpdate(() => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
 }
 
 async function buildGraph(
@@ -54,17 +62,19 @@ async function buildGraph(
     .warmupTicks(0)
     .cooldownTicks(180)
     .cooldownTime(30_000)
-    .d3AlphaDecay(0.06)
-    .graphData({ nodes, links });
-  await flushGraphUpdate();
+    .d3AlphaDecay(0.06);
+  const updateFinished = flushGraphUpdate(graph);
+  graph.graphData({ nodes, links });
+  await updateFinished;
   for (let tick = 0; tick < 240; tick += 1) graph.tickFrame();
   graph.updateMatrixWorld(true);
   return graph;
 }
 
 async function disposeGraph(graph: ForceGraph): Promise<void> {
+  const updateFinished = flushGraphUpdate(graph);
   graph.graphData({ nodes: [], links: [] });
-  await flushGraphUpdate();
+  await updateFinished;
 }
 
 function assertFiniteVector(vector: THREE.Vector3): void {
