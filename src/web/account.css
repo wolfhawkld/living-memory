@@ -182,7 +182,10 @@
 .auth-loading .auth-brand { margin-bottom: 10px; }
 
 .auth-app-frame {
-  min-height: 100vh;
+  /* Preserve the definite #root -> app-shell height used by the graph viewport.
+     A minimum height alone lets long concept lists stretch the canvas offscreen. */
+  height: 100%;
+  min-height: 0;
 }
 
 .auth-session-warning {
