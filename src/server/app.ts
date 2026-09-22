@@ -154,6 +154,26 @@ function parseSnapshotScope(value: unknown): 'default' | 'all' {
   throw new StoreError('INVALID_SCOPE', 'scope 只能是 all。');
 }
 
+function parseHistoryLimit(value: unknown): number {
+  if (value === undefined) return 20;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    throw new StoreError('INVALID_HISTORY_LIMIT', 'limit 必须是 1 到 100 的整数。');
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 100) {
+    throw new StoreError('INVALID_HISTORY_LIMIT', 'limit 必须是 1 到 100 的整数。');
+  }
+  return parsed;
+}
+
+function parseHistoryCursor(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !value) {
+    throw new StoreError('INVALID_HISTORY_CURSOR', '历史分页游标无效，请重新读取历史。');
+  }
+  return value;
+}
+
 function conceptById(source: KnowledgeSource, id: string) {
   const concept = source.index.concepts.find((item) => item.id === id);
   if (!concept) throw new StoreError('CONCEPT_NOT_FOUND', '找不到对应概念，请先刷新知识源。', 404);
@@ -257,6 +277,15 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       observationsCount: store.countObservations(),
     };
     res.json(snapshot);
+  }));
+  app.get('/api/concepts/:conceptId/history', asyncRoute((req, res) => {
+    const conceptId = req.params.conceptId;
+    if (typeof conceptId !== 'string') throw new StoreError('CONCEPT_NOT_FOUND', '找不到对应概念，请先刷新知识源。', 404);
+    const concept = conceptById(source, conceptId);
+    const limit = parseHistoryLimit(req.query.limit);
+    const cursor = parseHistoryCursor(req.query.cursor);
+    const history = store.getConceptHistory(concept, now().toISOString(), limit, cursor);
+    res.set('Cache-Control', 'no-store').json(history);
   }));
   app.post('/api/reviews', requireWrite, asyncRoute((req, res) => {
     const review = parseReviewRequest(req.body);
