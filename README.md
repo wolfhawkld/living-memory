@@ -26,10 +26,13 @@ npm start
 
 打开 `http://127.0.0.1:4317`，默认使用仓库内的合成知识源。接入自己的知识库、数据位置与试用方式见[运行说明](docs/development/p0-running.md)，知识域行为见[知识域视图](docs/development/domain-views.md)，检查范围见[验证记录](docs/development/p0-validation.md)。
 
+首次打开页面需要创建管理员账号，该账号保留原有知识和学习记录。管理员可创建成员；每位成员有自己的知识域、学习记录和记忆状态。新成员的 Markdown 接入目录及 CLI 认证方式见[私人账号与知识域](docs/development/private-accounts.md)。当前仍是本机服务，在线部署与知识共享属于后续范围。
+
 服务启动后，可用 `npm run --silent lm -- query "概念关键词"` 查询完整知识索引，或在实际完成重温后执行 `npm run --silent lm -- review "概念选择器" --confirm`。CLI、Web 与 progressive-kg 收尾钩子使用同一份学习记录；查询和生成只刷新状态。安装方式、来源核对与失败重试见 [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)。
 
 ## 从这里开始
 
+- [私人账号与知识域](docs/development/private-accounts.md)：登录、创建成员、私人知识源隔离、旧记录保留、CLI 设备身份及未来共享边界。
 - [场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)：当前优先迭代，记录从场景想起知识的表现，比较事前信心与核对结果，支持本人固定保持和手动恢复衰减。
 - [演示后的迭代 TODO（2026-09-22）](docs/planning/iteration-todo-2026-09-22.md)：当前完成范围、原有待办入口，以及学习历史、少量复习和场景调用的后续顺序。
 - [逐概念学习历史](docs/development/concept-history.md)：查看重温、补记与回忆观察，区分当前起点、旧版本、冻结观察值和待同步记录。
@@ -73,4 +76,4 @@ npm start
 
 本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。项目许可证将在未来开源前确定。
 
-状态：2026-09-22，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)及 [Markdown 大窗阅读、图片附件与 Mermaid 渲染](docs/development/markdown-reader.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。本轮已增加[场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)，217 项 Node 测试及构建通过，浏览器视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，语音链路及 Obsidian 宿主属于后续范围。
+状态：2026-09-22，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)及 [Markdown 大窗阅读、图片附件与 Mermaid 渲染](docs/development/markdown-reader.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。已完成[场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)，本轮补充[私人多账号](docs/development/private-accounts.md)，230 项 Node 测试及构建通过，浏览器视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，在线共享、语音链路及 Obsidian 宿主属于后续范围。

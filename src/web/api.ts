@@ -10,8 +10,9 @@ import type {
 } from '../shared/types';
 import { createSessionRecovery, type LocalSession } from './session-recovery';
 import { inspectLayout } from '../shared/layout';
+import type { AccountUser } from '../shared/accounts';
 
-export type SessionResponse = LocalSession;
+export type SessionResponse = LocalSession & { user?: AccountUser };
 
 export interface PendingWriteError {
   code: string;
@@ -75,8 +76,8 @@ export function subscribeToSessionRecovery(listener: (event: SessionRecoveryEven
   return () => { sessionListeners.delete(listener); };
 }
 
-async function getSession(): Promise<LocalSession> {
-  const session = await requestJson<LocalSession>('/session', { cache: 'no-store' });
+async function getSession(): Promise<SessionResponse> {
+  const session = await requestJson<SessionResponse>('/session', { cache: 'no-store' });
   if (!session || typeof session.writeToken !== 'string' || !session.writeToken.trim()
       || typeof session.sourceId !== 'string' || !session.sourceId.trim()) {
     throw new ApiRequestError('无法取得有效的本地会话，请重新连接。', { code: 'SESSION_INVALID' });
@@ -265,6 +266,9 @@ async function parseError(response: Response): Promise<ApiRequestError> {
     }
   } catch {
     // Some infrastructure errors return an empty body. The HTTP status remains useful.
+  }
+  if ((code === 'AUTH_REQUIRED' || code === 'SOURCE_MISMATCH') && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('lm-auth-required'));
   }
   return new ApiRequestError(message, {
     code,

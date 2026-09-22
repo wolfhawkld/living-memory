@@ -18,6 +18,7 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isValidInstant } from '../core/time-model.js';
+import { readDeviceSession } from './device-session.js';
 import type { Concept, MemoryState, ReviewRequest, Snapshot } from '../shared/types.js';
 
 const DEFAULT_TIMEOUT_MS = 8_000;
@@ -310,11 +311,13 @@ class ApiClient {
   readonly fetchImpl: FetchImplementation;
   private token: string | undefined;
   private sourceId: string | undefined;
+  private readonly deviceSession: string | undefined;
 
-  constructor(options: { baseUrl: string; timeoutMs: number; fetchImpl: FetchImplementation }) {
+  constructor(options: { baseUrl: string; timeoutMs: number; fetchImpl: FetchImplementation; deviceSession?: string }) {
     this.baseUrl = options.baseUrl;
     this.timeoutMs = options.timeoutMs;
     this.fetchImpl = options.fetchImpl;
+    this.deviceSession = options.deviceSession;
   }
 
   private endpoint(path: string): string {
@@ -323,6 +326,7 @@ class ApiClient {
 
   async json<T>(path: string, init: { method?: string; body?: unknown; write?: boolean } = {}): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' };
+    if (this.deviceSession) headers.Authorization = `Bearer ${this.deviceSession}`;
     if (init.body !== undefined) headers['Content-Type'] = 'application/json';
     if (init.write) {
       if (!this.token) throw new CliError('SESSION_REQUIRED', '写入请求缺少本地会话令牌。');
@@ -819,7 +823,12 @@ export async function runCli(argv: string[], runner: CliRunnerOptions = {}): Pro
   const options = requestOptions(parsed.options, runner, runner.env ?? process.env);
   const timeoutMs = runner.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1) throw new CliError('INVALID_ARGUMENT', 'timeoutMs 必须是正数。');
-  const client = new ApiClient({ baseUrl: options.baseUrl, timeoutMs, fetchImpl: runner.fetchImpl ?? fetch });
+  const env = runner.env ?? process.env;
+  const credentialPath = env.LM_CLI_SESSION_FILE ?? join(env.LM_DATA_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../data/local'), 'cli-session.json');
+  let deviceSession: string | undefined;
+  try { deviceSession = runner.fetchImpl && !env.LM_CLI_SESSION_FILE ? undefined : readDeviceSession(credentialPath, options.baseUrl); }
+  catch (error) { throw new CliError('CLI_AUTH_INVALID', errorMessage(error)); }
+  const client = new ApiClient({ baseUrl: options.baseUrl, timeoutMs, fetchImpl: runner.fetchImpl ?? fetch, deviceSession });
   const root = options.sourceRoot;
   const stateDir = options.stateDir;
   const now = runner.now ?? (() => new Date());
