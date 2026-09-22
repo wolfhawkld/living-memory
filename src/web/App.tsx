@@ -8,6 +8,8 @@ import type {
   Snapshot,
   ObservationRequest,
   ReviewRequest,
+  RetentionRequest,
+  LearningEvidence,
 } from '../shared/types';
 import {
   ApiRequestError,
@@ -28,6 +30,10 @@ import { CrossDomainPanel, DomainPicker } from './DomainControls';
 import { ConceptSearch } from './ConceptSearch';
 import { PendingWritesPanel } from './PendingWritesPanel';
 import { ConceptHistoryPanel } from './ConceptHistoryPanel';
+import { LearningSummaryPanel } from './LearningSummaryPanel';
+import { ConfidenceInput, LearningEvidenceFields } from './LearningEvidenceFields';
+import { ScenarioPractice } from './ScenarioPractice';
+import { RetentionConfirmation } from './RetentionConfirmation';
 import { useConceptHistory } from './useConceptHistory';
 import { parseSourceExposure, sourceExposureKey, SOURCE_EXPOSURE_STORAGE_KEY } from './source-exposure';
 import { ConceptReader } from './ConceptReader';
@@ -43,6 +49,8 @@ import './markdown-content.css';
 import './concept-reader.css';
 import './markdown-image.css';
 import './mermaid-diagram.css';
+import './learning-evidence.css';
+import './scenario-practice.css';
 
 const DAY_MS = 86_400_000;
 const STATUS_LABELS: Record<MemoryState['status'], string> = {
@@ -51,6 +59,7 @@ const STATUS_LABELS: Record<MemoryState['status'], string> = {
   revisit: '建议再看',
   stale: '较久未重温',
   pending: '待确认',
+  retained: '长期保持（本人确认）',
 };
 
 type Notice = { tone: 'info' | 'success' | 'error'; text: string } | null;
@@ -76,9 +85,11 @@ type RecallAttempt = {
   anchorEventId: string | null;
   sourceRevision: string;
   sourceViewedBefore: boolean;
-  stage: 'answer' | 'feedback';
+  stage: 'prediction' | 'answer' | 'feedback';
   rating: RecallRating | null;
   exposure: Exposure;
+  learning: LearningEvidence;
+  submittedPayload?: ObservationRequest;
 };
 
 function newEventId(): string {
@@ -207,6 +218,9 @@ export default function App() {
   const [sourceViewedKeys, setSourceViewedKeys] = useState<string[]>([]);
   const [readerRequest, setReaderRequest] = useState<ReaderRequest | null>(null);
   const [attempt, setAttempt] = useState<RecallAttempt | null>(null);
+  const [scenarioOpen, setScenarioOpen] = useState(false);
+  const [scenarioReader, setScenarioReader] = useState<Concept | null>(null);
+  const [retentionConfirmation, setRetentionConfirmation] = useState<RetentionRequest | null>(null);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [estimatedDate, setEstimatedDate] = useState('');
   const [configOpen, setConfigOpen] = useState(false);
@@ -263,8 +277,8 @@ export default function App() {
     hidden: typeof document !== 'undefined' && document.hidden,
     demoEnabled,
     simulated,
-    attempt: Boolean(attempt),
-    reviewDialogOpen,
+    attempt: Boolean(attempt) || scenarioOpen,
+    reviewDialogOpen: reviewDialogOpen || Boolean(retentionConfirmation),
     configOpen,
     busyAction,
     refreshing,
@@ -511,7 +525,7 @@ export default function App() {
 
   useEffect(() => {
     changeHandlersRef.current.flush();
-  }, [attempt, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
+  }, [attempt, scenarioOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
 
   useEffect(() => {
     void loadInitial();
@@ -607,7 +621,8 @@ export default function App() {
     const states = { ...snapshot.states };
     for (const conceptId of pendingConceptIds) {
       const current = states[conceptId];
-      if (current) states[conceptId] = { ...current, status: 'pending', reason: '本地记录等待同步' };
+      if (current) states[conceptId] = { ...current, status: current.status === 'retained' ? 'retained' : 'pending',
+        reason: current.status === 'retained' ? '本地记录等待同步；已确认的长期保持继续有效，直到恢复衰减操作成功同步。' : '本地记录等待同步' };
     }
     return { ...snapshot, states };
   }, [demoEnabled, demoRecord, pendingConceptIds, simDays, snapshot]);
@@ -619,7 +634,7 @@ export default function App() {
     : displaySnapshot, [displaySnapshot, domainId, expandedIds, selectedId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
-  const domainBusy = Boolean(attempt) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const domainBusy = Boolean(attempt) || scenarioOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
 
   // Source refreshes may remove a domain or a relation. Reconcile only when no
   // answer/dialog is active, and never turn a view change into a learning event.
@@ -640,12 +655,12 @@ export default function App() {
     if (readerRequest && !readerVisible) setReaderRequest(null);
   }, [readerRequest, readerVisible]);
   const selectedSourceViewed = Boolean(selectedConcept && sourceViewedKeys.includes(sourceExposureKey(sourceId, selectedConcept)));
-  const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !sourceReloadPending);
+  const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !scenarioOpen && !sourceReloadPending);
   const conceptHistory = useConceptHistory({
     sourceId, conceptId: selectedConcept?.id ?? '', sourceRevision: selectedConcept?.source.revision ?? '',
   }, historyEnabled, snapshot);
   const pendingLearningCount = pendingWrites.filter((write) => write.conceptId === selectedId
-    && (write.path === '/reviews' || write.path === '/observations')).length;
+    && (write.path === '/reviews' || write.path === '/observations' || write.path === '/retentions')).length;
   const selectedState = useMemo(() => {
     if (!selectedId || !displaySnapshot) return null;
     return displaySnapshot.states[selectedId] ?? null;
@@ -659,7 +674,7 @@ export default function App() {
     return matches.sort((left, right) => {
       const leftState = displaySnapshot.states[left.id];
       const rightState = displaySnapshot.states[right.id];
-      const rank: Record<MemoryState['status'], number> = { stale: 0, revisit: 1, unknown: 2, pending: 3, recent: 4 };
+      const rank: Record<MemoryState['status'], number> = { stale: 0, revisit: 1, unknown: 2, pending: 3, recent: 4, retained: 5 };
       return (rank[leftState?.status ?? 'unknown'] - rank[rightState?.status ?? 'unknown']) || left.title.localeCompare(right.title, 'zh-CN');
     });
   }, [displaySnapshot, domainId, visibleExpandedIds]);
@@ -713,7 +728,7 @@ export default function App() {
   }, [showNotice, snapshot, sourceId]);
 
   const openReader = useCallback((section: ReaderSection = 'body') => {
-    if (!selectedConcept || !sourceId || sourceReloadPending || attempt?.stage === 'answer') return;
+    if (!selectedConcept || !sourceId || sourceReloadPending || (attempt && attempt.stage !== 'feedback')) return;
     markSourceViewed(selectedConcept.id);
     setReaderRequest({ sourceId, conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision, section });
   }, [selectedConcept, sourceId, sourceReloadPending, attempt?.stage, markSourceViewed]);
@@ -773,7 +788,7 @@ export default function App() {
   }, [attempt, loadSnapshot, showNotice, sourceId, writeLocked, writeToken]);
 
   const writeWithRetry = useCallback(async (options: {
-    path: '/reviews' | '/observations' | '/config' | '/layout';
+    path: '/reviews' | '/observations' | '/retentions' | '/config' | '/layout';
     method: 'POST' | 'PUT';
     payload: unknown;
     eventId: string | null;
@@ -787,11 +802,14 @@ export default function App() {
       return { ok: true, result };
     } catch (writeError) {
       const retryable = writeError instanceof ApiRequestError && writeError.retryable;
-      if (retryable) {
+      const changedObservationSource = options.path === '/observations' && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
+      if (retryable || changedObservationSource) {
         const queued = queuePendingWrite(sourceId, { method: options.method, path: options.path, payload: options.payload, eventId: options.eventId, conceptId: options.conceptId, label: options.label });
         if (queued) {
           refreshPendingState();
-          showNotice({ tone: 'info', text: '网络暂时不可用，原记录已保存到待同步队列。' });
+          showNotice({ tone: 'info', text: changedObservationSource
+            ? '知识源已变化，原记录已保存在原知识源的待同步队列；重新连接原知识源后可重试。'
+            : '网络暂时不可用，原记录已保存到待同步队列。' });
           return { ok: false, queued: true };
         }
         showNotice({ tone: 'error', text: '网络暂时不可用，这条记录尚未保存；请保持当前页面并重试。' });
@@ -847,10 +865,11 @@ export default function App() {
       startedAt: new Date().toISOString(),
       observedAt: null,
       configRevision: null,
-      anchorEventId: selectedState.anchor?.eventId ?? null,
+      anchorEventId: selectedState.anchor?.sourceRevision === selectedConcept.source.revision ? selectedState.anchor.eventId : null,
       sourceRevision: selectedConcept.source.revision,
       sourceViewedBefore: selectedSourceViewed,
-      stage: 'answer',
+      stage: 'prediction',
+      learning: { task: 'concept', confidence: null, confidenceAt: null, cue: 'unknown', outcome: 'unverified', basis: 'unknown' },
       rating: null,
       exposure: selectedSourceViewed ? 'exposed' : 'unknown',
     });
@@ -870,7 +889,7 @@ export default function App() {
   const saveObservation = useCallback(async () => {
     if (!attempt || !selectedConcept || !snapshot || !writeToken || writeLocked || attempt.stage !== 'feedback' || !attempt.rating || !attempt.observedAt) return;
     const eventId = attempt.eventId ?? newEventId();
-    const payload: ObservationRequest = {
+    const payload: ObservationRequest = attempt.submittedPayload ?? {
       eventId,
       conceptId: selectedConcept.id,
       sourceRevision: attempt.sourceRevision,
@@ -881,7 +900,9 @@ export default function App() {
       rating: attempt.rating,
       exposure: attempt.exposure,
       observedExposure: attempt.sourceViewedBefore,
+      learning: attempt.learning,
     };
+    setAttempt({ ...attempt, eventId, submittedPayload: payload });
     setBusyAction('observation');
     const result = await writeWithRetry({
       path: '/observations',
@@ -892,7 +913,8 @@ export default function App() {
       label: '回忆观察',
       send: () => api.postObservation(payload, writeToken, sourceId),
     });
-    if (!result.ok) setAttempt({ ...attempt, eventId });
+    if (!result.ok && !result.queued) setAttempt({ ...attempt, eventId, submittedPayload: payload });
+    if (result.queued) setAttempt(null);
     setBusyAction(null);
     if (result.ok) {
       setAttempt(null);
@@ -918,6 +940,43 @@ export default function App() {
       await reloadRealSnapshot();
     }
   }, [attempt, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
+
+  const saveScenarioObservation = async (payload: ObservationRequest): Promise<boolean> => {
+    if (sourceReloadPending && sourceId) {
+      const queued = queuePendingWrite(sourceId, { path: '/observations', method: 'POST', payload,
+        eventId: payload.eventId, conceptId: payload.conceptId, label: '场景调用观察（等待原知识源）' });
+      if (!queued) throw new Error('知识源已变化，浏览器也未允许保存记录。请保留当前页面和回答后重试。');
+      refreshPendingState();
+      showNotice({ tone: 'info', text: '场景记录已保存在原知识源的待同步队列；重新连接原知识源后可重试。' });
+      return true;
+    }
+    if (!writeToken || writeLocked || busyAction) return false;
+    setBusyAction('scenario');
+    const result = await writeWithRetry({ path: '/observations', method: 'POST', payload,
+      eventId: payload.eventId, conceptId: payload.conceptId, label: '场景调用观察',
+      send: () => api.postObservation(payload, writeToken, sourceId) });
+    setBusyAction(null);
+    if (result.ok) {
+      showNotice({ tone: 'success', text: '场景调用与事前信心已保存，可在关联节点的学习历史中查看。' });
+      await reloadRealSnapshot();
+    }
+    return result.ok || Boolean(result.queued);
+  };
+
+  const saveRetention = async () => {
+    if (!retentionConfirmation || !writeToken || writeLocked || busyAction) return;
+    const payload = retentionConfirmation;
+    setBusyAction('retention');
+    const result = await writeWithRetry({ path: '/retentions', method: 'POST', payload,
+      eventId: payload.eventId, conceptId: payload.conceptId, label: payload.active ? '确认长期保持' : '恢复时间衰减',
+      send: () => api.postRetention(payload, writeToken, sourceId) });
+    setBusyAction(null);
+    if (result.ok || result.queued) setRetentionConfirmation(null);
+    if (result.ok) {
+      showNotice({ tone: 'success', text: payload.active ? '已固定为长期保持，直到你手动恢复衰减。' : '已恢复时间衰减，沿用原有重温起点。' });
+      await reloadRealSnapshot();
+    }
+  };
 
   const saveLayout = useCallback((next: Layout) => {
     if (writeLockedRef.current || !writeToken || activeDomainRef.current !== domainId) return;
@@ -1043,6 +1102,7 @@ export default function App() {
           <span className="graph-count">{domains.length} 个知识域 · 全库 {snapshot.source.conceptCount} 个概念</span>
         </div>
         <div className="topbar-actions">
+          <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => { setReaderRequest(null); setScenarioOpen(true); }}>场景调用练习</button>
           <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={refreshing || writeLocked || Boolean(attempt)} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
           <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={demoEnabled || busyAction === 'export'} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；暂不支持导入恢复。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
           <button type="button" className={`config-button${configOpen ? ' is-open' : ''}`} onClick={() => setConfigOpen((open) => !open)} disabled={Boolean(attempt) || writeLocked}>H = {displaySnapshot.config.halfLifeDays} 天 <span>⌄</span></button>
@@ -1057,7 +1117,7 @@ export default function App() {
         </div>
       </header>
 
-      {sourceReloadPending ? <div className="mode-bar source-reload-banner" role="alert"><div><strong>知识源已变化</strong><span>请完成当前输入后重新加载页面。</span></div></div> : null}
+      {sourceReloadPending ? <div className="mode-bar source-reload-banner" role="alert"><div><strong>知识源已变化</strong><span>请完成当前输入后重新加载页面。</span></div><button type="button" disabled={Boolean(attempt) || scenarioOpen || Boolean(retentionConfirmation) || Boolean(busyAction)} onClick={() => window.location.reload()}>重新加载页面</button></div> : null}
 
       <div className={`mode-bar${demoEnabled ? ' is-demo' : ''}`}>
         <div><strong>{demoEnabled ? '示例状态 · 非真实记忆' : '真实学习记录'}</strong><span>{demoEnabled ? '虚构重温间隔，拖动时间轴查看颜色变化' : '由你确认的学习与重温记录计算'}</span></div>
@@ -1073,7 +1133,7 @@ export default function App() {
           }
         }}>收起跨域节点</button> : null}
       </div>
-      <main className={`workspace${attempt ? ' workspace-recall-hidden' : ''}`} aria-hidden={attempt ? true : undefined} inert={attempt ? true : undefined}>
+      <main className={`workspace${attempt || scenarioOpen ? ' workspace-recall-hidden' : ''}`} aria-hidden={attempt || scenarioOpen ? true : undefined} inert={attempt || scenarioOpen ? true : undefined}>
         <aside className="left-panel">
           <div className="panel-heading"><div><span className="eyebrow">知识空间</span><h1>概念索引</h1></div><span className="count-chip">{listedConcepts.length}</span></div>
           <ConceptSearch key={sourceId} concepts={snapshot.concepts} currentDomainId={domainId} disabled={domainBusy} onSelect={selectSearchResult} />
@@ -1113,8 +1173,8 @@ export default function App() {
           {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={viewSnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt) || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
-            <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
+            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt) || scenarioOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown', ...(!demoEnabled ? ['retained' as const] : [])] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
             <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div>
           </div>
           <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间预览</span><strong>{simulated ? `+${simDays} 天` : demoEnabled ? '初始模拟值' : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt) || sourceReloadPending} /><div className="range-labels"><span>{demoEnabled ? '模拟起点' : '现在'}</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimulatedDays(0)}>{demoEnabled ? '回到初始值' : '恢复实时'}</button> : null}</div>
@@ -1125,13 +1185,15 @@ export default function App() {
             <>
               <div className="detail-head"><div className="detail-domain">{domainLabel(domainIdOf(selectedConcept))}</div><h2>{selectedConcept.title}</h2><div className="alias-row">{selectedConcept.aliases.slice(0, 3).map((alias) => <span key={alias}>{alias}</span>)}</div></div>
               <div className="detail-state"><div><span className="eyebrow">{demoEnabled ? '模拟时间状态' : '当前时间状态'}</span><div className="state-line"><StatusBadge status={selectedState.status} /></div></div><span className="state-asof">截至 {formatDate(displaySnapshot.asOf, true)}</span></div>
-              <div className="state-metrics"><div><span>{demoEnabled ? '模拟重温间隔' : '距上次重温'}</span><strong>{formatElapsed(selectedState.elapsedDays)}</strong></div><div><span>{demoEnabled ? '模拟起点' : '时间起点'} {!demoEnabled && selectedState.anchor?.kind === 'estimated' ? <em className="estimate-badge">估计</em> : null}</span><strong>{formatDate(selectedState.anchor?.occurredAt)}</strong></div></div>
+              {selectedState.status !== 'retained' ? <><div className="state-metrics"><div><span>{demoEnabled ? '模拟重温间隔' : '距上次重温'}</span><strong>{formatElapsed(selectedState.elapsedDays)}</strong></div><div><span>{demoEnabled ? '模拟起点' : '时间起点'} {!demoEnabled && selectedState.anchor?.kind === 'estimated' ? <em className="estimate-badge">估计</em> : null}</span><strong>{formatDate(selectedState.anchor?.occurredAt)}</strong></div></div>
               <div className="time-indicator">时间指标 D <strong>{selectedState.decay === null ? '未知' : selectedState.decay.toFixed(3)}</strong><span>{demoEnabled ? '模拟值' : '时间推算'}</span></div>
-              <Curve state={selectedState} halfLifeDays={displaySnapshot.config.halfLifeDays} />
+              <Curve state={selectedState} halfLifeDays={displaySnapshot.config.halfLifeDays} /></> : <div className="retention-fixed-note">长期保持 · 本人确认于 {formatDate(selectedState.retention?.occurredAt)}<br />固定显示，不随时间衰减。</div>}
               <p className="state-reason">{selectedState.reason ?? '状态由当前时间与最近确认事件投影。'}</p>
+              <button type="button" className="retention-button" disabled={writeLocked || Boolean(busyAction) || pendingLearningCount > 0} onClick={() => setRetentionConfirmation({ eventId: newEventId(), conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision, occurredAt: new Date().toISOString(), active: !snapshot.states[selectedConcept.id]?.retention?.active, previousEventId: snapshot.states[selectedConcept.id]?.retention?.eventId ?? null })}>{snapshot.states[selectedConcept.id]?.retention?.active ? '恢复时间衰减…' : '设为长期保持…'}</button>
               <div className="detail-actions"><button type="button" className="primary-button" onClick={() => void submitReview('review')} disabled={writeLocked || busyAction === 'review'}>{busyAction === 'review' ? '保存中…' : '确认已重温'}</button><button type="button" className="secondary-button" onClick={() => { reviewEventRef.current = null; setEstimatedDate(new Date().toISOString().slice(0, 10)); setReviewDialogOpen(true); }} disabled={writeLocked || busyAction === 'review'}>补记过去重温</button></div>
               <button type="button" className="recall-button" onClick={startRecall} disabled={writeLocked || Boolean(attempt)}><span>✦</span>先想一句，再查看资料</button>
               <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{selectedSourceViewed ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => openReader()} disabled={sourceReloadPending}><span>打开大窗阅读</span><span aria-hidden="true">↗</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{selectedSourceViewed ? <SourceBlock concept={selectedConcept} sourceId={sourceId} onOpen={openReader} /> : null}</div>
+              {historyEnabled ? <LearningSummaryPanel summary={conceptHistory.history?.learning} /> : null}
               {historyEnabled && selectedConcept ? <ConceptHistoryPanel
                 key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}
                 {...conceptHistory} pendingCount={pendingLearningCount} simulated={simulated}
@@ -1145,7 +1207,37 @@ export default function App() {
 
       {reviewDialogOpen && selectedConcept ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setReviewDialogOpen(false); }}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="review-dialog-title"><div className="modal-kicker">补记历史 · 估计时间</div><h2 id="review-dialog-title">你大约在什么时候重温过？</h2><p>这条记录会标记为估计事件，只作为时间起点参考，不会伪装成精确测量。</p><label htmlFor="estimated-date">日期</label><input id="estimated-date" type="date" value={estimatedDate} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setEstimatedDate(event.target.value)} /><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setReviewDialogOpen(false)}>取消</button><button type="button" className="primary-button" onClick={() => void submitReview('estimated', estimatedDate)} disabled={writeLocked || !estimatedDate || busyAction === 'review'}>保存估计记录</button></div></div></div> : null}
 
-      {attempt && selectedConcept && selectedConcept.id === attempt.conceptId ? <div className="recall-overlay"><div className="recall-card" role="dialog" aria-modal="true" aria-labelledby="recall-title"><div className="recall-topline"><span className="eyebrow">主动回忆 · {attempt.stage === 'answer' ? '先回答' : '核对与自评'}</span><button type="button" className="icon-button" onClick={() => setAttempt(null)} aria-label="取消回忆">×</button></div><h2 id="recall-title">{selectedConcept.title}</h2>{attempt.stage === 'answer' ? <><p className="recall-prompt">先用自己的话写下你记得的核心原理、关键条件或一个应用场景。资料会在提交后显示。</p><textarea autoFocus value={attempt.answer} onChange={(event) => setAttempt({ ...attempt, answer: event.target.value })} placeholder="我记得……" aria-label="回忆答案" /><div className="recall-actions"><button type="button" className="secondary-button" onClick={() => setAttempt(null)}>取消</button><button type="button" className="primary-button" onClick={submitRecallAnswer}>提交回答，查看资料</button></div></> : <><div className="answer-echo"><span>你的回答</span><p>{attempt.answer || '（空白）'}</p></div><SourceBlock concept={selectedConcept} sourceId={sourceId} onOpen={openReader} /><div className="self-rating"><span className="eyebrow">这次回忆感觉如何？</span><div className="rating-options">{(['clear', 'partial', 'blank'] as const).map((rating) => <button type="button" key={rating} className={attempt.rating === rating ? 'is-selected' : ''} onClick={() => setAttempt({ ...attempt, rating })}>{rating === 'clear' ? '能解释' : rating === 'partial' ? '有些模糊' : '想不起'}</button>)}</div></div><div className="exposure-options"><span>提交前是否看过资料？</span><select value={attempt.exposure} onChange={(event) => setAttempt({ ...attempt, exposure: event.target.value as Exposure })}><option value="unknown">不确定</option><option value="unexposed">没有</option><option value="exposed">看过</option></select></div><div className="recall-actions"><button type="button" className="secondary-button" onClick={() => setAttempt(null)}>取消，不保存</button><button type="button" className="primary-button" onClick={() => void saveObservation()} disabled={!attempt.rating || busyAction === 'observation' || writeLocked}>{busyAction === 'observation' ? '保存中…' : '保存这次观察'}</button></div><p className="recall-footnote">观察只用于了解时间提示是否符合体验，暂时不会改变曲线。</p></>}</div></div> : null}
+      {attempt && selectedConcept && selectedConcept.id === attempt.conceptId ? <div className="recall-overlay"><div className="recall-card" role="dialog" aria-modal="true" aria-labelledby="recall-title">
+        <div className="recall-topline"><span className="eyebrow">主动回忆 · {attempt.stage === 'prediction' ? '事前预测' : attempt.stage === 'answer' ? '先回答' : '核对与自评'}</span><button type="button" className="icon-button" disabled={busyAction === 'observation'} onClick={() => setAttempt(null)} aria-label="取消回忆">×</button></div>
+        <h2 id="recall-title">{selectedConcept.title}</h2>
+        {attempt.stage === 'prediction' ? <>
+          <ConfidenceInput value={attempt.learning.confidence} onChange={(confidence) => setAttempt({ ...attempt, learning: { ...attempt.learning, confidence } })} />
+          <button type="button" className="primary-button" onClick={() => setAttempt({ ...attempt, stage: 'answer', learning: { ...attempt.learning, confidenceAt: attempt.learning.confidence === null ? null : new Date().toISOString() } })}>开始作答</button>
+        </> : attempt.stage === 'answer' ? <>
+          <p className="recall-prompt">先用自己的话写下核心原理和关键条件。资料会在提交后显示。</p>
+          <p className="source-hint">事前信心：{attempt.learning.confidence === null ? '未预测' : `${attempt.learning.confidence}%`}</p>
+          <textarea autoFocus value={attempt.answer} onChange={(event) => setAttempt({ ...attempt, answer: event.target.value })} placeholder="我记得……" aria-label="回忆答案" />
+          <div className="recall-actions"><button type="button" className="secondary-button" onClick={() => setAttempt(null)}>取消</button><button type="button" className="primary-button" onClick={submitRecallAnswer}>提交回答，查看资料</button></div>
+        </> : <>
+          <div className="answer-echo"><span>你的回答 · 事前信心 {attempt.learning.confidence === null ? '未预测' : `${attempt.learning.confidence}%`}</span><p>{attempt.answer || '（空白）'}</p></div>
+          <SourceBlock concept={selectedConcept} sourceId={sourceId} onOpen={openReader} />
+          <fieldset className="recall-feedback-fields" disabled={Boolean(attempt.submittedPayload) || busyAction === 'observation'}>
+            <div className="self-rating"><span className="eyebrow">这次回忆感觉如何？</span><div className="rating-options">{(['clear', 'partial', 'blank'] as const).map((rating) => <button type="button" key={rating} className={attempt.rating === rating ? 'is-selected' : ''} onClick={() => setAttempt({ ...attempt, rating })}>{rating === 'clear' ? '能解释' : rating === 'partial' ? '有些模糊' : '想不起'}</button>)}</div></div>
+            <div className="exposure-options"><span>提交前是否看过资料？</span><select disabled={attempt.sourceViewedBefore} value={attempt.exposure} onChange={(event) => setAttempt({ ...attempt, exposure: event.target.value as Exposure })}><option value="unknown">不确定</option><option value="unexposed">没有</option><option value="exposed">看过</option></select></div>
+            <LearningEvidenceFields value={attempt.learning} onChange={(learning) => setAttempt({ ...attempt, learning })} />
+          </fieldset>
+          <div className="recall-actions"><button type="button" className="secondary-button" disabled={busyAction === 'observation'} onClick={() => setAttempt(null)}>关闭</button><button type="button" className="primary-button" onClick={() => void saveObservation()} disabled={!attempt.rating || busyAction === 'observation' || writeLocked || (attempt.learning.outcome !== 'unverified' && attempt.learning.basis === 'unknown')}>{busyAction === 'observation' ? '保存中…' : attempt.submittedPayload ? '重试原记录' : '保存这次观察'}</button></div>
+          <p className="recall-footnote">保存作答与核对结果，供信心比较；不会自动重置重温时间。</p>
+        </>}
+      </div></div> : null}
+
+      {scenarioOpen ? <ScenarioPractice key={sourceId} snapshot={snapshot} sourceId={sourceId} busy={busyAction === 'scenario'}
+        onClose={() => { setScenarioOpen(false); setScenarioReader(null); }} onSave={saveScenarioObservation}
+        wasSourceViewed={(concept) => sourceViewedKeys.includes(sourceExposureKey(sourceId, concept))}
+        onSourceExposed={(concept) => markSourceViewed(concept.id)}
+        onReadSource={(concept) => { markSourceViewed(concept.id); setScenarioReader(concept); }} /> : null}
+      {scenarioOpen && scenarioReader ? <ConceptReader key={`scenario:${sourceId}:${scenarioReader.id}`} concept={scenarioReader} sourceId={sourceId} initialSection="body" onClose={() => setScenarioReader(null)} /> : null}
+      {retentionConfirmation ? <RetentionConfirmation active={retentionConfirmation.active} busy={busyAction === 'retention'} onClose={() => setRetentionConfirmation(null)} onConfirm={() => void saveRetention()} /> : null}
 
       {readerVisible && readerRequest && selectedConcept ? <ConceptReader key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`} concept={selectedConcept} sourceId={sourceId} initialSection={readerRequest.section} onClose={closeReader} /> : null}
 

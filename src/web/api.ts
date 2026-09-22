@@ -4,6 +4,7 @@ import type {
   ModelConfig,
   ObservationRequest,
   ReviewRequest,
+  RetentionRequest,
   Snapshot,
   WriteReceipt,
 } from '../shared/types';
@@ -335,6 +336,8 @@ export const api = {
   },
   postReview: (payload: ReviewRequest, writeToken: string, sourceId: string) =>
     writeJson<WriteReceipt>('/reviews', payload, writeToken, sourceId),
+  postRetention: (payload: RetentionRequest, writeToken: string, sourceId: string) =>
+    writeJson<WriteReceipt>('/retentions', payload, writeToken, sourceId),
   postObservation: (payload: ObservationRequest, writeToken: string, sourceId: string) =>
     writeJson<WriteReceipt>('/observations', payload, writeToken, sourceId),
   putConfig: (payload: Pick<ModelConfig, 'halfLifeDays' | 'revision'>, writeToken: string, sourceId: string) =>

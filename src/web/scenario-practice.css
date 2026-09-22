@@ -39,6 +39,7 @@
 .scenario-answer .scenario-practice-actions { margin-top: 22px; }
 .scenario-feedback-columns { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(230px, .65fr); gap: 28px; align-items: start; }
 .scenario-feedback-main, .scenario-feedback-side { min-width: 0; }
+.scenario-feedback-notice { margin: 0 0 17px; padding: 11px 14px; border: 1px solid rgba(244, 189, 112, .27); border-radius: 8px; background: rgba(77, 55, 28, .25); color: #dcb985; font-size: 12px; line-height: 1.6; }
 .scenario-feedback-side { padding: 18px 17px 3px; border: 1px solid rgba(126, 155, 199, .17); border-radius: 12px; background: rgba(15, 28, 48, .58); }
 .scenario-feedback-side .scenario-practice-field:last-of-type { margin-bottom: 10px; }
 .scenario-answer-echo { margin-bottom: 17px; padding: 15px 17px; border-left: 2px solid #456d9b; border-radius: 0 8px 8px 0; background: rgba(26, 45, 72, .42); }

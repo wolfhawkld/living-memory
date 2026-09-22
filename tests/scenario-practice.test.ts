@@ -51,8 +51,8 @@ const snapshot: Snapshot = {
   observationsCount: 0,
 };
 
-function feedbackState(): ReturnType<typeof createScenarioPracticeState> {
-  let state = createScenarioPracticeState(snapshot, { [concept.id]: true });
+function feedbackState(sourceSnapshot: Snapshot = snapshot): ReturnType<typeof createScenarioPracticeState> {
+  let state = createScenarioPracticeState(sourceSnapshot, { [concept.id]: true });
   state = { ...state, scenario: '为一个 orchestrator 设计强规则校验和上下文记忆。', confidence: 75 };
   state = startScenarioPractice(state, '2026-09-22T10:00:00.000Z');
   state = { ...state, answer: '我会先拆出规则与状态机。' };
@@ -105,6 +105,16 @@ test('scenario submission preserves blank recall and freezes timing, anchor and 
   const blank = { ...feedbackState(), answer: '', outcome: 'failure' as const, basis: 'self-check' as const };
   assert.equal(buildScenarioObservationRequest(blank).answer, '');
   assert.equal(buildScenarioObservationRequest(blank).rating, 'blank');
+});
+
+test('an anchor from an older source revision is not sent as the current observation anchor', () => {
+  const oldRevisionSnapshot = structuredClone(snapshot);
+  oldRevisionSnapshot.states[concept.id].anchor = {
+    ...oldRevisionSnapshot.states[concept.id].anchor!,
+    sourceRevision: 'revision-old',
+  };
+  const request = buildScenarioObservationRequest(feedbackState(oldRevisionSnapshot));
+  assert.equal(request.anchorEventId, null);
 });
 
 test('known outcomes require an explicit basis and unverified outcomes remain available', () => {

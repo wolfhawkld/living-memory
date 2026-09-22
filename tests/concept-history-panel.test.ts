@@ -91,6 +91,26 @@ function panel(overrides: Partial<ConceptHistoryPanelProps> = {}): string {
   }));
 }
 
+test('scenario evidence metadata is visible but scenario and applicability stay behind answer reveal', () => {
+  const event = observation({ learning: { task: 'scenario', scenario: '场景里的敏感线索', applicability: '核对补充的答案线索',
+    confidence: 75, confidenceAt: '2026-09-19T09:59:00.000Z', cue: 'independent', outcome: 'unverified', basis: 'unknown' } });
+  const html = panel({ history: history({ entries: [{ type: 'observation', event }], total: 1 }) });
+  assert.match(html, /场景调用观察/);
+  assert.match(html, /75%/);
+  assert.match(html, /未核对/);
+  assert.doesNotMatch(html, /场景里的敏感线索|核对补充的答案线索|秘密的原始回答/);
+});
+
+test('manual retention events are labeled as decisions and preserve the paused original anchor', () => {
+  const event = { eventId: 'hold-1', conceptId: 'concept-1', sourceRevision: 'revision-1', occurredAt: '2026-09-19T10:00:00Z', recordedAt: '2026-09-19T10:00:00Z', active: true, previousEventId: null };
+  const html = panel({ history: history({ state: state({ status: 'retained', decay: null, elapsedDays: null, retention: event }),
+    entries: [{ type: 'retention', event }], total: 1 }) });
+  assert.match(html, /长期保持（本人确认）/);
+  assert.match(html, /衰减暂停/);
+  assert.match(html, /资料版本已变化/);
+  assert.doesNotMatch(html, /100%/);
+});
+
 test('does not show an empty loaded state before the first history response', () => {
   assert.equal(panel({ history: null }), '');
   assert.match(panel({ history: null, loading: true }), /正在加载学习历史/);

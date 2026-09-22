@@ -59,6 +59,8 @@ export interface ScenarioPracticeProps {
   onSave: (request: ObservationRequest) => Promise<boolean>;
   onReadSource: (concept: Concept) => void;
   wasSourceViewed: (concept: Concept) => boolean;
+  /** Notify the parent after the feedback summary exposes a concept for future attempts. */
+  onSourceExposed?: (concept: Concept) => void;
 }
 
 function deepFreeze<T>(value: T): T {
@@ -193,7 +195,8 @@ export function buildScenarioObservationRequest(state: ScenarioPracticeState): O
 
   const observedExposure = state.sourceViewedBefore[concept.id] === true;
   const exposure: Exposure = observedExposure ? 'exposed' : state.exposure;
-  const anchorEventId = state.snapshot.states[concept.id]?.anchor?.eventId ?? null;
+  const anchor = state.snapshot.states[concept.id]?.anchor ?? null;
+  const anchorEventId = anchor && anchor.sourceRevision === concept.source.revision ? anchor.eventId : null;
   const learning: LearningEvidence = {
     task: 'scenario',
     scenario: state.scenario.trim(),
@@ -246,7 +249,7 @@ const OUTCOME_LABELS: Record<ScenarioOutcome, string> = {
 };
 
 const BASIS_LABELS: Record<ScenarioBasis, string> = {
-  'self-check': '自己的回忆核对',
+  'self-check': '自己对照资料核对',
   application: '实际应用结果',
   unknown: '不确定',
 };
@@ -269,6 +272,7 @@ export function ScenarioPractice({
   onSave,
   onReadSource,
   wasSourceViewed,
+  onSourceExposed,
 }: ScenarioPracticeProps): ReactElement {
   const initialState = useRef<ScenarioPracticeState | null>(null);
   if (!initialState.current) {
@@ -284,8 +288,8 @@ export function ScenarioPractice({
   const scenarioRef = useRef<HTMLTextAreaElement>(null);
   const queryRef = useRef<HTMLInputElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
-  const busyRef = useRef(busy);
-  const onCloseRef = useRef(onClose);
+  const onSourceExposedRef = useRef(onSourceExposed);
+  const exposedConceptRef = useRef<string | null>(null);
   const titleId = useId();
   const scenarioId = useId();
   const confidenceId = useId();
@@ -298,8 +302,7 @@ export function ScenarioPractice({
   const exposureId = useId();
   const isBusy = busy || saving;
 
-  busyRef.current = isBusy;
-  onCloseRef.current = onClose;
+  onSourceExposedRef.current = onSourceExposed;
 
   const concept = selectedConcept(state);
   const concepts = state.snapshot.concepts;
@@ -328,14 +331,15 @@ export function ScenarioPractice({
   }, []);
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || busyRef.current) return;
-      event.preventDefault();
-      onCloseRef.current();
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, []);
+    if (state.stage !== 'feedback' || !concept) {
+      if (!concept) exposedConceptRef.current = null;
+      return;
+    }
+    const notify = onSourceExposedRef.current;
+    if (!notify || exposedConceptRef.current === concept.id) return;
+    exposedConceptRef.current = concept.id;
+    notify(concept);
+  }, [concept, state.stage]);
 
   useEffect(() => {
     if (state.stage === 'setup') scenarioRef.current?.focus({ preventScroll: true });
@@ -401,7 +405,13 @@ export function ScenarioPractice({
       className="scenario-practice"
       aria-labelledby={titleId}
       aria-modal="true"
-      onCancel={(event) => { event.preventDefault(); close(); }}
+      onCancel={(event) => {
+        // Escape is handled by the top-most native dialog. A nested ConceptReader
+        // must consume its own cancel event without closing this exercise.
+        if (event.currentTarget !== dialogRef.current) return;
+        event.preventDefault();
+        close();
+      }}
       onPointerDown={(event) => { backdropDown.current = event.target === event.currentTarget; }}
       onClick={(event) => {
         if (backdropDown.current && event.target === event.currentTarget && !isBusy) close();
@@ -430,7 +440,7 @@ export function ScenarioPractice({
               <select id={confidenceId} value={state.confidence === null ? '' : String(state.confidence)} onChange={(event) => setState((current) => updateDraft(current, { confidence: parseConfidence(event.target.value) }))}>
                 {SCENARIO_CONFIDENCE_OPTIONS.map((option) => <option key={option.label} value={option.value === null ? '' : String(option.value)}>{option.label}</option>)}
               </select>
-              <small>你认为自己能独立想起一个适用概念，并解释为什么适用的概率。</small>
+              <small>你认为自己能独立想起至少一个适用概念，并解释为什么适用的概率。一次记录只选一个概念；若原始回答没有明确想起当前概念，请谨慎选择结果。</small>
             </label>
             {state.validationError ? <p className="scenario-practice-error" role="alert">{state.validationError}</p> : null}
             <div className="scenario-practice-actions">
@@ -461,6 +471,7 @@ export function ScenarioPractice({
           <section className="scenario-practice-body scenario-feedback" aria-labelledby={titleId}>
             <div className="scenario-feedback-columns">
               <div className="scenario-feedback-main">
+                <p className="scenario-feedback-notice">请核对原始回答是否已想起该概念并说明适用理由；核对后新发现的概念不算这次独立想起。</p>
                 <div className="scenario-answer-echo"><span>场景</span><p>{state.scenario}</p></div>
                 <div className="scenario-answer-echo"><span>你的回答</span><p>{state.answer || '（空白回答）'}</p></div>
 

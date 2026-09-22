@@ -9,8 +9,8 @@ export interface ReaderRequest {
 }
 
 export function canShowConceptReader(request: ReaderRequest | null, sourceId: string, concept: Concept | null,
-  recallStage: 'answer' | 'feedback' | null, sourceReloadPending: boolean): boolean {
-  return Boolean(request && concept && !sourceReloadPending && recallStage !== 'answer'
+  recallStage: 'prediction' | 'answer' | 'feedback' | null, sourceReloadPending: boolean): boolean {
+  return Boolean(request && concept && !sourceReloadPending && (recallStage === null || recallStage === 'feedback')
     && request.sourceId === sourceId && request.conceptId === concept.id && request.sourceRevision === concept.source.revision);
 }
 
