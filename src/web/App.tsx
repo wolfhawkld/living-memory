@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { AccountUser } from '../shared/accounts';
 import type {
   Concept,
   Exposure,
@@ -42,7 +43,6 @@ import { canShowConceptReader, relativeSource, type ReaderRequest, type ReaderSe
 import { createIdleRotationClock, trackRotationActivity, type RotationStatus } from './graph-rotation';
 import type { ChangeNotification } from '../shared/types';
 import { inspectLayout } from '../shared/layout';
-import './styles.css';
 import './concept-history.css';
 import 'katex/dist/katex.min.css';
 import './markdown-content.css';
@@ -193,7 +193,7 @@ function EmptyPanel({ title, text }: { title: string; text: string }) {
   return <div className="empty-panel"><span className="empty-mark">✦</span><strong>{title}</strong><p>{text}</p></div>;
 }
 
-export default function App() {
+export default function App({ account, onLogout, onManageAccounts }: { account?: AccountUser; onLogout?: () => void; onManageAccounts?: () => void } = {}) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [layout, setLayout] = useState<Layout>({});
   const [writeToken, setWriteToken] = useState('');
@@ -317,6 +317,10 @@ export default function App() {
     try {
       const session = await api.getSession();
       if (requestId !== snapshotRequestRef.current) return null;
+      if (account && session.user?.id !== account.id) {
+        window.dispatchEvent(new CustomEvent('lm-auth-required'));
+        throw new ApiRequestError('账号已切换，正在重新加载知识空间。', { code: 'AUTH_REQUIRED', status: 401 });
+      }
       const currentSource = session.sourceId ?? 'legacy-unscoped';
       const [nextSnapshot, nextLayout] = await Promise.all([
         api.getSnapshot(undefined, currentSource, 'all'),
@@ -365,7 +369,7 @@ export default function App() {
     } finally {
       if (requestId === snapshotRequestRef.current) setLoading(false);
     }
-  }, []);
+  }, [account?.id]);
 
   const canApplyChange = useCallback(() => {
     const ui = changeUiRef.current;
@@ -803,11 +807,12 @@ export default function App() {
     } catch (writeError) {
       const retryable = writeError instanceof ApiRequestError && writeError.retryable;
       const changedObservationSource = options.path === '/observations' && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
-      if (retryable || changedObservationSource) {
+      const expiredAccount = Boolean(options.eventId) && writeError instanceof ApiRequestError && writeError.code === 'AUTH_REQUIRED';
+      if (retryable || changedObservationSource || expiredAccount) {
         const queued = queuePendingWrite(sourceId, { method: options.method, path: options.path, payload: options.payload, eventId: options.eventId, conceptId: options.conceptId, label: options.label });
         if (queued) {
           refreshPendingState();
-          showNotice({ tone: 'info', text: changedObservationSource
+          showNotice({ tone: 'info', text: expiredAccount ? '登录已失效，原记录已保存在此账号知识空间的待同步队列；重新登录后可重试。' : changedObservationSource
             ? '知识源已变化，原记录已保存在原知识源的待同步队列；重新连接原知识源后可重试。'
             : '网络暂时不可用，原记录已保存到待同步队列。' });
           return { ok: false, queued: true };
@@ -1102,6 +1107,7 @@ export default function App() {
           <span className="graph-count">{domains.length} 个知识域 · 全库 {snapshot.source.conceptCount} 个概念</span>
         </div>
         <div className="topbar-actions">
+          {account ? <><span className="account-name" title="当前私人知识空间">{account.username}</span>{account.role === 'admin' ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={onManageAccounts}>账号管理</button> : null}<button type="button" className="quiet-button" disabled={domainBusy} onClick={onLogout}>退出登录</button></> : null}
           <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => { setReaderRequest(null); setScenarioOpen(true); }}>场景调用练习</button>
           <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={refreshing || writeLocked || Boolean(attempt)} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
           <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={demoEnabled || busyAction === 'export'} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；暂不支持导入恢复。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
@@ -1143,7 +1149,7 @@ export default function App() {
               const state = displaySnapshot.states[concept.id] ?? { status: 'unknown' as const };
               return <button type="button" key={concept.id} className={`concept-row${selectedId === concept.id ? ' is-selected' : ''}`} onClick={() => selectConcept(concept.id)}><span className="row-status" style={{ '--status-color': STATUS_COLORS[state.status] } as React.CSSProperties}><span /></span><span className="row-content"><strong>{concept.title}</strong><small>{domainLabel(domainIdOf(concept))}{domainIdOf(concept) !== domainId ? ' · 跨域' : ''}</small></span><span className="row-chevron">›</span></button>;
             })}
-            {listedConcepts.length === 0 ? <EmptyPanel title="当前领域暂无概念" text="切换知识域，或搜索知识库中的其他概念。" /> : null}
+            {listedConcepts.length === 0 ? <EmptyPanel title={snapshot.concepts.length ? '当前领域暂无概念' : '知识空间还没有概念'} text={snapshot.concepts.length ? '切换知识域，或搜索知识库中的其他概念。' : '请先将知识 Markdown 放入此账号的知识目录，再点击刷新知识源。'} /> : null}
           </div>
           <PendingWritesPanel writes={pendingWrites} />
           <div className="left-footer"><span className={`sync-led${pendingWrites.length ? ' is-pending' : ''}`} /><span>{pendingWrites.length ? `${pendingWrites.length} 条记录等待同步` : '本地状态已同步'}</span>{pendingWrites.length ? <button type="button" className="sync-retry" onClick={() => void retryPending()} disabled={writeLocked || busyAction === 'pending'}>{busyAction === 'pending' ? '同步中…' : '重试同步'}</button> : null}</div>

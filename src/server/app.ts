@@ -1,12 +1,15 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { Layout, ModelConfig, Snapshot } from '../shared/types.js';
 import { isValidInstant } from '../core/time-model.js';
 import { sendConceptAttachment } from './attachments.js';
 import { loadKnowledgeGraph, KnowledgeSourceError, type KnowledgeSource } from './kg.js';
 import { createChangeFeed } from './changes.js';
+import { Accounts, type AccountSession } from './accounts.js';
+import { requestSessionToken, renewOwnerDevice, setSessionCookie, SESSION_COOKIE } from './account-session.js';
+import { validateStoragePaths } from './storage-paths.js';
 import {
   parseObservationRequest,
   parseRetentionRequest,
@@ -28,6 +31,7 @@ export interface AppOptions {
   now?: () => Date;
   token?: string;
   staticDir?: string;
+  accountsEnabled?: boolean;
 }
 
 export interface LivingMemoryApp extends Express {
@@ -38,6 +42,7 @@ export interface LivingMemoryApp extends Express {
     closeChanges: () => void;
     token: string;
     port: number;
+    close: () => void;
   };
 }
 
@@ -207,21 +212,41 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   const port = options.port ?? envNumber('LM_PORT', DEFAULT_PORT);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new StoreError('INVALID_PORT', 'LM_PORT 必须是有效端口。');
   const root = sourceRoot(options);
-  const initialSource = loadKnowledgeGraph({ root, limit: sourceLimit(options), includePrefix: sourceInclude(options) });
   const dataDir = options.dataDir ?? process.env.LM_DATA_DIR ?? 'data/local';
+  const staticDir = options.staticDir ?? resolve(process.cwd(), 'dist');
+  validateStoragePaths({ root, dataDir, staticDir, accountsEnabled: Boolean(options.accountsEnabled), dbPath: options.dbPath });
+  const initialSource = loadKnowledgeGraph({ root, limit: sourceLimit(options), includePrefix: sourceInclude(options) });
   const store = new Store({ dataDir, dbPath: options.dbPath, namespace: initialSource.namespace, now: options.now });
   const token = options.token ?? randomBytes(32).toString('hex');
-  let source = initialSource;
-  const changes = createChangeFeed(initialSource.namespace);
-  const refreshSource = () => {
-    const next = loadKnowledgeGraph({ root, limit: sourceLimit(options), includePrefix: sourceInclude(options) });
-    if (next.namespace !== store.namespace) {
-      throw new StoreError('SOURCE_MISMATCH', '知识根目录已变化，请重启服务后重新连接。', 409);
-    }
-    source = next;
-    changes.publish('source');
-    return source;
+  const accounts = options.accountsEnabled ? new Accounts({ dataDir, now: options.now }) : null;
+  if (accounts) renewOwnerDevice(accounts, dataDir, port);
+  type KnowledgeContext = { source: KnowledgeSource; store: Store; changes: ReturnType<typeof createChangeFeed>; root: string; includePrefix?: string };
+  const initialContext: KnowledgeContext = { source: initialSource, store, changes: createChangeFeed(initialSource.namespace), root, includePrefix: sourceInclude(options) };
+  const userContexts = new Map<string, KnowledgeContext>();
+  const contextForUser = (userId: string): KnowledgeContext => {
+    if (!accounts || userId === accounts.ownerId()) return initialContext;
+    const existing = userContexts.get(userId);
+    if (existing) return existing;
+    const privateRoot = join(dataDir, 'users', userId, 'knowledge');
+    mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
+    const privateSource = loadKnowledgeGraph({ root: privateRoot, limit: sourceLimit(options) });
+    const context = { source: privateSource, root: privateRoot,
+      store: new Store({ dataDir, dbPath: options.dbPath, namespace: privateSource.namespace, now: options.now }),
+      changes: createChangeFeed(privateSource.namespace) };
+    userContexts.set(userId, context);
+    return context;
   };
+  const refreshContext = (context: KnowledgeContext) => {
+    const next = loadKnowledgeGraph({ root: context.root, limit: sourceLimit(options), includePrefix: context.includePrefix });
+    if (next.namespace !== context.store.namespace) throw new StoreError('SOURCE_MISMATCH', '知识根目录已变化，请重启服务后重新连接。', 409);
+    context.source = next;
+    context.changes.publish('source');
+    return next;
+  };
+  const refreshSource = () => refreshContext(initialContext);
+  type AccountRequest = Request & { accountSession?: AccountSession; knowledgeContext?: KnowledgeContext };
+  const contextOf = (req: Request) => (req as AccountRequest).knowledgeContext ?? initialContext;
+  const sessionOf = (req: Request) => (req as AccountRequest).accountSession;
   const now = options.now ?? (() => new Date());
   const app = express() as LivingMemoryApp;
   app.use(express.json({ limit: '1mb' }));
@@ -246,28 +271,97 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       res.status(204).end();
       return;
     }
-    const expectedSource = req.header('x-lm-source-id');
-    if (expectedSource && expectedSource !== source.namespace) {
-      res.status(409).json({ error: { code: 'SOURCE_MISMATCH', message: '服务正在使用另一个知识源，请重新连接后确认操作。' } });
-      return;
+    next();
+  });
+
+  const resolveAccount = (req: Request) => {
+    const raw = requestSessionToken(req);
+    return raw && accounts ? accounts.authenticate(raw) : null;
+  };
+  const authStatus = (user: AccountSession['user'] | null = null) => ({ enabled: Boolean(accounts), needsSetup: Boolean(accounts && !accounts.hasAccounts()), user });
+  app.get('/api/auth/status', (req, res) => res.set('Cache-Control', 'no-store').json(authStatus(resolveAccount(req)?.user ?? null)));
+  app.post('/api/auth/setup', asyncRoute(async (req, res) => {
+    if (!accounts) throw new StoreError('ACCOUNTS_DISABLED', '当前为本机单用户模式。', 404);
+    if (!req.is('application/json')) throw new StoreError('INVALID_BODY', '请提交 JSON。');
+    const user = await accounts.setup(req.body?.username, req.body?.password);
+    // A fresh private account claims the existing knowledge source and learning
+    // namespace exactly once; no copying of legacy events is required.
+    const session = accounts.issueSession(user.id);
+    renewOwnerDevice(accounts, dataDir, port);
+    setSessionCookie(res, session);
+    res.set('Cache-Control', 'no-store').status(201).json(authStatus(user));
+  }));
+  app.post('/api/auth/login', asyncRoute(async (req, res) => {
+    if (!accounts) throw new StoreError('ACCOUNTS_DISABLED', '当前为本机单用户模式。', 404);
+    if (!req.is('application/json')) throw new StoreError('INVALID_BODY', '请提交 JSON。');
+    const session = await accounts.login(req.body?.username, req.body?.password, req.socket.remoteAddress ?? 'local');
+    setSessionCookie(res, session);
+    res.set('Cache-Control', 'no-store').json(authStatus(session.user));
+  }));
+
+  app.use('/api', (req, res, next) => {
+    if (accounts) {
+      const session = resolveAccount(req);
+      if (!session) { next(new StoreError('AUTH_REQUIRED', '请登录后访问你的私人知识空间。', 401)); return; }
+      (req as AccountRequest).accountSession = session;
+      (req as AccountRequest).knowledgeContext = contextForUser(session.user.id);
     }
+    const expectedSource = req.header('x-lm-source-id');
+    if (expectedSource && expectedSource !== contextOf(req).source.namespace) {
+      next(new StoreError('SOURCE_MISMATCH', '会话或知识空间已变化，请重新登录后确认操作。', 409)); return;
+    }
+    res.set('Cache-Control', 'no-store');
     next();
   });
 
   const requireWrite = (req: Request, res: Response, next: NextFunction): void => {
-    if (writeToken(req) !== token) {
+    if (writeToken(req) !== (sessionOf(req)?.csrfToken ?? token)) {
       res.status(401).json({ error: { code: 'TOKEN_REQUIRED', message: '写入请求需要有效的本地会话令牌。' } });
       return;
     }
     next();
   };
 
-  app.get('/api/session', (_req, res) => res.set('Cache-Control', 'no-store').json({ writeToken: token, sourceId: source.namespace }));
-  app.get('/api/changes', (_req, res) => changes.subscribe(res));
-  app.get('/api/health', (_req, res) => {
+  app.post('/api/auth/logout', requireWrite, (req, res) => {
+    const raw = requestSessionToken(req);
+    if (accounts && raw) accounts.logout(raw);
+    res.clearCookie(SESSION_COOKIE, { httpOnly: true, sameSite: 'strict', path: '/' });
+    res.status(204).end();
+  });
+  const requireAdmin = (req: Request, _res: Response, next: NextFunction) => {
+    if (!accounts || sessionOf(req)?.user.role !== 'admin') { next(new StoreError('FORBIDDEN', '只有管理员可以管理账号。', 403)); return; }
+    next();
+  };
+  app.get('/api/admin/users', requireAdmin, (_req, res) => res.json({ users: accounts!.listUsers() }));
+  app.post('/api/admin/users', requireAdmin, requireWrite, asyncRoute(async (req, res) => {
+    const user = await accounts!.createUser(req.body?.username, req.body?.password);
+    contextForUser(user.id);
+    res.status(201).json({ user });
+  }));
+  app.put('/api/admin/users/:id', requireAdmin, requireWrite, asyncRoute(async (req, res) => {
+    const user = await accounts!.updateUser(String(req.params.id), req.body);
+    if (user.id === accounts!.ownerId()) renewOwnerDevice(accounts!, dataDir, port);
+    res.json({ user });
+  }));
+  app.get('/api/session', (req, res) => res.set('Cache-Control', 'no-store').json({
+    writeToken: sessionOf(req)?.csrfToken ?? token, sourceId: contextOf(req).source.namespace,
+    ...(sessionOf(req) ? { user: sessionOf(req)!.user } : {}),
+  }));
+  app.get('/api/changes', (req, res) => {
+    contextOf(req).changes.subscribe(res);
+    if (accounts) {
+      const raw = requestSessionToken(req)!;
+      const timer = setInterval(() => { if (!accounts.authenticate(raw)) res.end(); }, 1000);
+      timer.unref();
+      res.on('close', () => clearInterval(timer));
+    }
+  });
+  app.get('/api/health', (req, res) => {
+    const { source, store, changes } = contextOf(req);
     res.json({ status: 'ok', modelVersion: store.getConfig().modelVersion, source: source.index.source });
   });
   app.get('/api/snapshot', asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
     const asOf = parseAsOf(req.query.asOf, now());
     const scope = parseSnapshotScope(req.query.scope);
     const graph = scope === 'all' ? source.index : source.graph;
@@ -281,6 +375,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     res.json(snapshot);
   }));
   app.get('/api/concepts/:conceptId/history', asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
     const conceptId = req.params.conceptId;
     if (typeof conceptId !== 'string') throw new StoreError('CONCEPT_NOT_FOUND', '找不到对应概念，请先刷新知识源。', 404);
     const concept = conceptById(source, conceptId);
@@ -290,12 +385,14 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     res.set('Cache-Control', 'no-store').json(history);
   }));
   app.get('/api/concepts/:conceptId/attachment', asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
     const conceptId = req.params.conceptId;
     if (typeof conceptId !== 'string') throw new StoreError('CONCEPT_NOT_FOUND', '找不到对应概念，请先刷新知识源。', 404);
     const concept = conceptById(source, conceptId);
     sendConceptAttachment(res, source, concept, req.query);
   }));
   app.post('/api/reviews', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
     const review = parseReviewRequest(req.body);
     if (!store.hasEvent(review.eventId)) {
       const concept = conceptById(source, review.conceptId);
@@ -306,6 +403,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.post('/api/observations', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
     const observation = parseObservationRequest(req.body);
     if (!store.hasEvent(observation.eventId)) {
       const concept = conceptById(source, observation.conceptId);
@@ -324,6 +422,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.post('/api/retentions', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
     const retention = parseRetentionRequest(req.body);
     if (!store.hasEvent(retention.eventId)) {
       const concept = conceptById(source, retention.conceptId);
@@ -335,6 +434,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.put('/api/config', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
     const body = req.body as Record<string, unknown>;
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new StoreError('INVALID_BODY', '请求体必须是 JSON 对象。');
     const halfLifeDays = body.halfLifeDays;
@@ -345,40 +445,47 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     changes.publish('config');
     res.json(config);
   }));
-  app.get('/api/layout', (_req, res) => res.json(store.getLayout()));
+  app.get('/api/layout', (req, res) => res.json(contextOf(req).store.getLayout()));
   app.put('/api/layout', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
     const partial = validateLayout(req.body);
+    if (accounts && Object.keys(partial).some((id) => !source.index.concepts.some((concept) => concept.id === id))) throw new StoreError('CONCEPT_NOT_FOUND', '布局包含不属于当前私人空间的节点。', 404);
     const merged = { ...store.getLayout(), ...partial };
     res.json(store.setLayout(merged));
   }));
-  app.get('/api/export', (_req, res) => {
+  app.get('/api/export', (req, res) => {
+    const { source, store, changes } = contextOf(req);
     const data = store.exportData(source.index.source, source.index.concepts);
     res.setHeader('Content-Disposition', 'attachment; filename="living-memory-export.json"');
     res.type('application/json').send(JSON.stringify(data));
   });
-  app.post('/api/refresh', requireWrite, asyncRoute((_req, res) => {
-    refreshSource();
-    res.json({ status: 'ok', source: source.index.source });
+  app.post('/api/refresh', requireWrite, asyncRoute((req, res) => {
+    const next = refreshContext(contextOf(req));
+    res.json({ status: 'ok', source: next.index.source });
   }));
 
-  const staticDir = options.staticDir ?? resolve(process.cwd(), 'dist');
   if (existsSync(staticDir)) app.use(express.static(staticDir));
   app.use('/api', (_req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: '找不到该 API。' } }));
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => apiError(res, error));
   app.livingMemory = {
     store,
-    getSource: () => source,
+    getSource: () => initialContext.source,
     refresh: refreshSource,
-    closeChanges: changes.close,
+    closeChanges: () => { initialContext.changes.close(); for (const context of userContexts.values()) context.changes.close(); },
     token,
     port,
+    close: () => {
+      initialContext.changes.close();
+      store.close();
+      for (const context of userContexts.values()) { context.changes.close(); context.store.close(); }
+      accounts?.close();
+    },
   };
   return app;
 }
 
 export function closeApp(app: LivingMemoryApp): void {
-  app.livingMemory.closeChanges();
-  app.livingMemory.store.close();
+  app.livingMemory.close();
 }
 
 export { apiError };
