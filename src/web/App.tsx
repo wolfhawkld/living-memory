@@ -30,11 +30,17 @@ import { PendingWritesPanel } from './PendingWritesPanel';
 import { ConceptHistoryPanel } from './ConceptHistoryPanel';
 import { useConceptHistory } from './useConceptHistory';
 import { parseSourceExposure, sourceExposureKey, SOURCE_EXPOSURE_STORAGE_KEY } from './source-exposure';
+import { ConceptReader } from './ConceptReader';
+import { MarkdownView } from './MarkdownView';
+import { canShowConceptReader, relativeSource, type ReaderRequest, type ReaderSection } from './concept-reader-state';
 import { createIdleRotationClock, trackRotationActivity, type RotationStatus } from './graph-rotation';
 import type { ChangeNotification } from '../shared/types';
 import { inspectLayout } from '../shared/layout';
 import './styles.css';
 import './concept-history.css';
+import 'katex/dist/katex.min.css';
+import './markdown-content.css';
+import './concept-reader.css';
 
 const DAY_MS = 86_400_000;
 const STATUS_LABELS: Record<MemoryState['status'], string> = {
@@ -100,14 +106,6 @@ function formatElapsed(days: number | null | undefined): string {
   return `${(days / 30).toFixed(1)} 个月`;
 }
 
-function relativeSource(path: string): string {
-  const normalized = path.replaceAll('\\', '/');
-  const marker = normalized.toLowerCase().lastIndexOf('progressive-kg/');
-  if (marker >= 0) return normalized.slice(marker + 'progressive-kg/'.length);
-  const segments = normalized.split('/').filter(Boolean);
-  return segments.slice(-3).join(' / ') || '来源路径未知';
-}
-
 function errorMessage(error: unknown): string {
   if (error instanceof ApiRequestError) return error.message;
   if (error instanceof Error) return error.message;
@@ -163,19 +161,16 @@ function StatusBadge({ status }: { status: MemoryState['status'] }) {
   );
 }
 
-function SourceBlock({ concept }: { concept: Concept }) {
+function SourceBlock({ concept, onOpen }: { concept: Concept; onOpen: (section: ReaderSection) => void }) {
   return (
     <div className="source-block">
       <div className="source-heading"><span>资料来源</span><span className="source-revision" title={concept.source.revision}>版本 {concept.source.revision.replace('sha256:', '').slice(0, 10)}</span></div>
       <div className="source-path" title="只显示相对来源，不展示本机根路径">{relativeSource(concept.source.path)}</div>
-      <details className="content-details">
+      <details className="source-summary-details">
         <summary>展开核心摘要</summary>
-        <p>{concept.summary || '此概念暂无摘要。'}</p>
+        <div className="source-summary-preview"><MarkdownView content={concept.summary || '此概念暂无摘要。'} compact /></div>
       </details>
-      <details className="content-details">
-        <summary>展开完整资料</summary>
-        <div className="source-body">{concept.body || '此概念暂无正文。'}</div>
-      </details>
+      <div className="source-reading-actions"><button type="button" onClick={() => onOpen('body')}>大窗阅读完整资料 ↗</button><button type="button" onClick={() => onOpen('summary')}>大窗查看摘要</button></div>
     </div>
   );
 }
@@ -207,6 +202,7 @@ export default function App() {
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingWrites, setPendingWrites] = useState<PendingWrite[]>([]);
   const [sourceViewedKeys, setSourceViewedKeys] = useState<string[]>([]);
+  const [readerRequest, setReaderRequest] = useState<ReaderRequest | null>(null);
   const [attempt, setAttempt] = useState<RecallAttempt | null>(null);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [estimatedDate, setEstimatedDate] = useState('');
@@ -242,6 +238,7 @@ export default function App() {
     refreshing: false,
     simulationLoading: false,
     sourceReloadPending: false,
+    readerOpen: false,
   });
   const changeHandlersRef = useRef<{
     onChange: (notification: ChangeNotification) => void;
@@ -270,6 +267,7 @@ export default function App() {
     refreshing,
     simulationLoading,
     sourceReloadPending,
+    readerOpen: Boolean(readerRequest),
   };
 
   const refreshPendingState = useCallback(() => setPendingWrites(getPendingWrites(sourceId)), [sourceId]);
@@ -365,7 +363,8 @@ export default function App() {
       !ui.busyAction &&
       !ui.refreshing &&
       !ui.simulationLoading &&
-      !ui.sourceReloadPending
+      !ui.sourceReloadPending &&
+      !ui.readerOpen
     );
   }, []);
 
@@ -509,7 +508,7 @@ export default function App() {
 
   useEffect(() => {
     changeHandlersRef.current.flush();
-  }, [attempt, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken]);
+  }, [attempt, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
 
   useEffect(() => {
     void loadInitial();
@@ -617,7 +616,7 @@ export default function App() {
     : displaySnapshot, [displaySnapshot, domainId, expandedIds, selectedId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
-  const domainBusy = Boolean(attempt) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const domainBusy = Boolean(attempt) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
 
   // Source refreshes may remove a domain or a relation. Reconcile only when no
   // answer/dialog is active, and never turn a view change into a learning event.
@@ -633,6 +632,10 @@ export default function App() {
   }, [activeDomainId, domainBusy, domainId, expandedIds, selectedId, viewSnapshot, visibleExpandedIds, visibleIds]);
 
   const selectedConcept = useMemo(() => snapshot?.concepts.find((concept) => concept.id === selectedId) ?? null, [selectedId, snapshot]);
+  const readerVisible = canShowConceptReader(readerRequest, sourceId, selectedConcept, attempt?.stage ?? null, sourceReloadPending);
+  useEffect(() => {
+    if (readerRequest && !readerVisible) setReaderRequest(null);
+  }, [readerRequest, readerVisible]);
   const selectedSourceViewed = Boolean(selectedConcept && sourceViewedKeys.includes(sourceExposureKey(sourceId, selectedConcept)));
   const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !sourceReloadPending);
   const conceptHistory = useConceptHistory({
@@ -705,6 +708,13 @@ export default function App() {
       return next;
     });
   }, [showNotice, snapshot, sourceId]);
+
+  const openReader = useCallback((section: ReaderSection = 'body') => {
+    if (!selectedConcept || !sourceId || sourceReloadPending || attempt?.stage === 'answer') return;
+    markSourceViewed(selectedConcept.id);
+    setReaderRequest({ sourceId, conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision, section });
+  }, [selectedConcept, sourceId, sourceReloadPending, attempt?.stage, markSourceViewed]);
+  const closeReader = useCallback(() => setReaderRequest(null), []);
 
   const selectConcept = useCallback((conceptId: string) => {
     if (attempt && attempt.conceptId !== conceptId) {
@@ -826,6 +836,7 @@ export default function App() {
 
   const startRecall = useCallback(() => {
     if (!snapshot || !selectedConcept || !selectedState || writeLocked || attempt) return;
+    setReaderRequest(null);
     setAttempt({
       conceptId: selectedConcept.id,
       eventId: null,
@@ -1099,7 +1110,7 @@ export default function App() {
           {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={viewSnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt)} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt) || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
             <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown'] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': STATUS_COLORS[status] } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
             <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div>
           </div>
@@ -1117,13 +1128,13 @@ export default function App() {
               <p className="state-reason">{selectedState.reason ?? '状态由当前时间与最近确认事件投影。'}</p>
               <div className="detail-actions"><button type="button" className="primary-button" onClick={() => void submitReview('review')} disabled={writeLocked || busyAction === 'review'}>{busyAction === 'review' ? '保存中…' : '确认已重温'}</button><button type="button" className="secondary-button" onClick={() => { reviewEventRef.current = null; setEstimatedDate(new Date().toISOString().slice(0, 10)); setReviewDialogOpen(true); }} disabled={writeLocked || busyAction === 'review'}>补记过去重温</button></div>
               <button type="button" className="recall-button" onClick={startRecall} disabled={writeLocked || Boolean(attempt)}><span>✦</span>先想一句，再查看资料</button>
+              <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{selectedSourceViewed ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => openReader()} disabled={sourceReloadPending}><span>打开大窗阅读</span><span aria-hidden="true">↗</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{selectedSourceViewed ? <SourceBlock concept={selectedConcept} onOpen={openReader} /> : null}</div>
               {historyEnabled && selectedConcept ? <ConceptHistoryPanel
                 key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}
                 {...conceptHistory} pendingCount={pendingLearningCount} simulated={simulated}
                 onRevealAnswer={() => markSourceViewed(selectedConcept.id)}
               /> : <p className="source-hint">{attempt ? '回忆任务期间隐藏学习历史与旧回答。' : demoEnabled ? '示例模式不展示真实学习历史；关闭示例后可查看已保存记录。' : '知识源正在切换，学习历史暂时隐藏。'}</p>}
               <CrossDomainPanel neighbors={crossDomainNeighbors} expandedIds={visibleExpandedIds} visibleIds={visibleIds} onToggle={toggleExpanded} onNavigate={changeDomain} disabled={domainBusy} canExpand={canExpand} />
-              <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{selectedSourceViewed ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => markSourceViewed(selectedConcept.id)}><span>{selectedSourceViewed ? '资料已展开' : '打开来源与摘要'}</span><span>{selectedSourceViewed ? '✓' : '⌄'}</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{selectedSourceViewed ? <SourceBlock concept={selectedConcept} /> : null}</div>
             </>
           ) : <EmptyPanel title="选择一个概念" text="点击图谱节点，或在左侧搜索后选择结果，查看概念与时间状态。" />}
         </aside>
@@ -1131,7 +1142,9 @@ export default function App() {
 
       {reviewDialogOpen && selectedConcept ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setReviewDialogOpen(false); }}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="review-dialog-title"><div className="modal-kicker">补记历史 · 估计时间</div><h2 id="review-dialog-title">你大约在什么时候重温过？</h2><p>这条记录会标记为估计事件，只作为时间起点参考，不会伪装成精确测量。</p><label htmlFor="estimated-date">日期</label><input id="estimated-date" type="date" value={estimatedDate} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setEstimatedDate(event.target.value)} /><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setReviewDialogOpen(false)}>取消</button><button type="button" className="primary-button" onClick={() => void submitReview('estimated', estimatedDate)} disabled={writeLocked || !estimatedDate || busyAction === 'review'}>保存估计记录</button></div></div></div> : null}
 
-      {attempt && selectedConcept && selectedConcept.id === attempt.conceptId ? <div className="recall-overlay"><div className="recall-card" role="dialog" aria-modal="true" aria-labelledby="recall-title"><div className="recall-topline"><span className="eyebrow">主动回忆 · {attempt.stage === 'answer' ? '先回答' : '核对与自评'}</span><button type="button" className="icon-button" onClick={() => setAttempt(null)} aria-label="取消回忆">×</button></div><h2 id="recall-title">{selectedConcept.title}</h2>{attempt.stage === 'answer' ? <><p className="recall-prompt">先用自己的话写下你记得的核心原理、关键条件或一个应用场景。资料会在提交后显示。</p><textarea autoFocus value={attempt.answer} onChange={(event) => setAttempt({ ...attempt, answer: event.target.value })} placeholder="我记得……" aria-label="回忆答案" /><div className="recall-actions"><button type="button" className="secondary-button" onClick={() => setAttempt(null)}>取消</button><button type="button" className="primary-button" onClick={submitRecallAnswer}>提交回答，查看资料</button></div></> : <><div className="answer-echo"><span>你的回答</span><p>{attempt.answer || '（空白）'}</p></div><SourceBlock concept={selectedConcept} /><div className="self-rating"><span className="eyebrow">这次回忆感觉如何？</span><div className="rating-options">{(['clear', 'partial', 'blank'] as const).map((rating) => <button type="button" key={rating} className={attempt.rating === rating ? 'is-selected' : ''} onClick={() => setAttempt({ ...attempt, rating })}>{rating === 'clear' ? '能解释' : rating === 'partial' ? '有些模糊' : '想不起'}</button>)}</div></div><div className="exposure-options"><span>提交前是否看过资料？</span><select value={attempt.exposure} onChange={(event) => setAttempt({ ...attempt, exposure: event.target.value as Exposure })}><option value="unknown">不确定</option><option value="unexposed">没有</option><option value="exposed">看过</option></select></div><div className="recall-actions"><button type="button" className="secondary-button" onClick={() => setAttempt(null)}>取消，不保存</button><button type="button" className="primary-button" onClick={() => void saveObservation()} disabled={!attempt.rating || busyAction === 'observation' || writeLocked}>{busyAction === 'observation' ? '保存中…' : '保存这次观察'}</button></div><p className="recall-footnote">观察只用于了解时间提示是否符合体验，暂时不会改变曲线。</p></>}</div></div> : null}
+      {attempt && selectedConcept && selectedConcept.id === attempt.conceptId ? <div className="recall-overlay"><div className="recall-card" role="dialog" aria-modal="true" aria-labelledby="recall-title"><div className="recall-topline"><span className="eyebrow">主动回忆 · {attempt.stage === 'answer' ? '先回答' : '核对与自评'}</span><button type="button" className="icon-button" onClick={() => setAttempt(null)} aria-label="取消回忆">×</button></div><h2 id="recall-title">{selectedConcept.title}</h2>{attempt.stage === 'answer' ? <><p className="recall-prompt">先用自己的话写下你记得的核心原理、关键条件或一个应用场景。资料会在提交后显示。</p><textarea autoFocus value={attempt.answer} onChange={(event) => setAttempt({ ...attempt, answer: event.target.value })} placeholder="我记得……" aria-label="回忆答案" /><div className="recall-actions"><button type="button" className="secondary-button" onClick={() => setAttempt(null)}>取消</button><button type="button" className="primary-button" onClick={submitRecallAnswer}>提交回答，查看资料</button></div></> : <><div className="answer-echo"><span>你的回答</span><p>{attempt.answer || '（空白）'}</p></div><SourceBlock concept={selectedConcept} onOpen={openReader} /><div className="self-rating"><span className="eyebrow">这次回忆感觉如何？</span><div className="rating-options">{(['clear', 'partial', 'blank'] as const).map((rating) => <button type="button" key={rating} className={attempt.rating === rating ? 'is-selected' : ''} onClick={() => setAttempt({ ...attempt, rating })}>{rating === 'clear' ? '能解释' : rating === 'partial' ? '有些模糊' : '想不起'}</button>)}</div></div><div className="exposure-options"><span>提交前是否看过资料？</span><select value={attempt.exposure} onChange={(event) => setAttempt({ ...attempt, exposure: event.target.value as Exposure })}><option value="unknown">不确定</option><option value="unexposed">没有</option><option value="exposed">看过</option></select></div><div className="recall-actions"><button type="button" className="secondary-button" onClick={() => setAttempt(null)}>取消，不保存</button><button type="button" className="primary-button" onClick={() => void saveObservation()} disabled={!attempt.rating || busyAction === 'observation' || writeLocked}>{busyAction === 'observation' ? '保存中…' : '保存这次观察'}</button></div><p className="recall-footnote">观察只用于了解时间提示是否符合体验，暂时不会改变曲线。</p></>}</div></div> : null}
+
+      {readerVisible && readerRequest && selectedConcept ? <ConceptReader key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`} concept={selectedConcept} initialSection={readerRequest.section} onClose={closeReader} /> : null}
 
       {notice ? <div className={`notice notice-${notice.tone}`} role="status">{notice.text}</div> : null}
     </div>

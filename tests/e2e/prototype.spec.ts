@@ -378,7 +378,9 @@ test('real WebGL, lookup, review, simulated time and reload form one persistent 
   await expect(page.locator('.graph-stage canvas')).toBeVisible();
   await selectConcept(page, concept.title);
   await expect(page.locator('.right-panel .status-badge')).toContainText('尚未');
-  await page.getByRole('button', { name: '打开来源与摘要' }).click();
+  await page.getByRole('button', { name: '打开大窗阅读' }).click();
+  await expect(page.getByRole('dialog', { name: concept.title })).toBeVisible();
+  await page.getByRole('button', { name: '关闭阅读窗口' }).click();
   await expect(page.locator('.right-panel .source-path')).toContainText('内积.md');
   expect((await exported(request)).anchors).toHaveLength(0);
 
