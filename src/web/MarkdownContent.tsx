@@ -6,6 +6,7 @@ import remarkMath from 'remark-math';
 import { MarkdownImage } from './MarkdownImage';
 import { isImageReference, markdownImageUrl, type MarkdownMediaSource } from './markdown-media';
 import { MermaidDiagram } from './MermaidDiagram';
+import { normalizeDisplayMath } from './markdown-math';
 
 export interface MarkdownContentProps {
   content: string;
@@ -323,7 +324,7 @@ export function MarkdownContent({ content, compact = false, source }: MarkdownCo
           ? markdownImageUrl(url, source) ? url : ''
           : safeUrlTransform(url)}
       >
-        {content}
+        {normalizeDisplayMath(content)}
       </ReactMarkdown>
     </div>
   );
