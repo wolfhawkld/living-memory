@@ -8,6 +8,7 @@ import type { Concept, GraphLink, Layout, MemoryState, Snapshot } from '../share
 import { calculateNodeFocus } from './graph-focus';
 import { collectGraphLayout, graphNodePosition } from './graph-position';
 import { accommodateGraphOverview, calculateGraphOverview } from './graph-overview';
+import { createIsolatedNodeForce } from './graph-isolation';
 import { createGraphLabels } from './graph-labels';
 import { readRotationStatus, rotateCameraClockwise, type IdleRotationClock, type RotationStatus } from './graph-rotation';
 
@@ -67,6 +68,7 @@ interface GraphInstance {
   cooldownTicks: (value: number) => GraphInstance;
   cooldownTime: (value: number) => GraphInstance;
   d3AlphaDecay: (value: number) => GraphInstance;
+  d3Force: (name: string, force: ReturnType<typeof createIsolatedNodeForce>) => GraphInstance;
   warmupTicks: (value: number) => GraphInstance;
   numDimensions: (value: 2 | 3) => GraphInstance;
   onNodeClick: (callback: (node: GraphNode) => void) => GraphInstance;
@@ -606,6 +608,9 @@ function GraphViewInstance({
         graph.pauseAnimation?.();
         animationPausedRef.current = true;
       }
+      // Domain filtering can leave a node with only hidden, cross-domain links.
+      // Keep those nodes near the visible graph without inventing any edges.
+      graph.d3Force('isolatedBoundary', createIsolatedNodeForce(graphData.links, twoDimensional));
       graph.graphData({ nodes: graphData.nodes, links: cloneLinks(graphData.links) });
 
       return () => {
@@ -700,6 +705,8 @@ function GraphViewInstance({
     nodesRef.current = nextNodes;
     if (topologyChanged) {
       // A source refresh may add/remove concepts. Preserve coordinates for surviving nodes while allowing the engine to add/remove only then.
+      // Re-evaluate isolation when a cross-domain neighbor is expanded/removed.
+      graph.d3Force('isolatedBoundary', createIsolatedNodeForce(graphData.links, twoDimensionalRef.current));
       graph.graphData({ nodes: nextNodes, links: cloneLinks(graphData.links) });
     }
     if (selectedId && !selectedIdRef.current) selectedIdRef.current = selectedId;
