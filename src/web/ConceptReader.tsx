@@ -3,8 +3,8 @@ import type { Concept } from '../shared/types';
 import { MarkdownView } from './MarkdownView';
 import { relativeSource, type ReaderSection } from './concept-reader-state';
 
-export function ConceptReader({ concept, initialSection, onClose }: {
-  concept: Concept; initialSection: ReaderSection; onClose: () => void;
+export function ConceptReader({ concept, sourceId, initialSection, onClose }: {
+  concept: Concept; sourceId: string; initialSection: ReaderSection; onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -59,7 +59,8 @@ export function ConceptReader({ concept, initialSection, onClose }: {
     </div>
     <div ref={bodyRef} className="reader-scroll" tabIndex={0} role="region" aria-label={section === 'body' ? '完整资料正文' : '核心摘要正文'}
       style={{ '--reader-font-size': `${fontSize}px` } as CSSProperties}>
-      <MarkdownView key={section} content={section === 'body' ? concept.body || '此概念暂无正文。' : concept.summary || '此概念暂无摘要。'} />
+      <MarkdownView key={section} content={section === 'body' ? concept.body || '此概念暂无正文。' : concept.summary || '此概念暂无摘要。'}
+        source={{ sourceId, conceptId: concept.id, sourceRevision: concept.source.revision }} />
     </div>
     <footer className="reader-footer"><span>阅读不会自动确认重温</span><span>Esc 关闭</span></footer>
   </dialog>;

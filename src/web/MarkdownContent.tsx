@@ -1,17 +1,23 @@
-import { useId, type AnchorHTMLAttributes, type ReactElement, type ReactNode } from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
+import { useId, useMemo, type AnchorHTMLAttributes, type ReactElement, type ReactNode } from 'react';
+import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { MarkdownImage } from './MarkdownImage';
+import { isImageReference, markdownImageUrl, type MarkdownMediaSource } from './markdown-media';
+import { MermaidDiagram } from './MermaidDiagram';
 
 export interface MarkdownContentProps {
   content: string;
   compact?: boolean;
+  source?: MarkdownMediaSource;
 }
 
 type MarkdownNode = {
   type: string;
   value?: unknown;
+  url?: string;
+  alt?: string;
   children?: MarkdownNode[];
   data?: {
     hProperties?: Record<string, unknown>;
@@ -28,10 +34,6 @@ type MarkdownAnchorProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
   node?: unknown;
 };
 
-type MarkdownImageProps = {
-  alt?: string;
-};
-
 type MarkdownTableProps = {
   children?: ReactNode;
 };
@@ -41,11 +43,11 @@ type MarkdownCodeProps = {
   className?: string;
 };
 
-type MarkdownPreProps = {
+type MarkdownPreProps = ExtraProps & {
   children?: ReactNode;
 };
 
-const WIKI_LINK_PATTERN = /\[\[([^\]\n|]+?)(?:\|([^\]\n]*?))?\]\]/g;
+const WIKI_LINK_PATTERN = /(!?)\[\[([^\]\n|]+?)(?:\|([^\]\n]*?))?\]\]/g;
 const WIKI_SKIP_NODES = new Set(['code', 'inlineCode', 'math', 'inlineMath', 'html', 'link']);
 const ID_REFERENCE_PROPERTIES = new Set([
   'ariaDescribedBy',
@@ -69,9 +71,15 @@ function splitWikiLinks(value: string): MarkdownNode[] | null {
     if (match.index > lastIndex) {
       nodes.push({ type: 'text', value: value.slice(lastIndex, match.index) });
     }
-    const target = match[1].trim();
-    const label = match[2]?.trim() || target;
-    nodes.push({ type: 'text', value: label });
+    const target = match[2].trim();
+    const label = match[3]?.trim() || target;
+    if (match[1] && isImageReference(target)) {
+      const size = match[3]?.trim().match(/^(\d{1,4})(?:x(\d{1,4}))?$/);
+      const width = size && Number(size[1]) > 0 && Number(size[1]) <= 5000 ? Number(size[1]) : undefined;
+      const height = width && size?.[2] && Number(size[2]) > 0 && Number(size[2]) <= 5000 ? Number(size[2]) : undefined;
+      nodes.push({ type: 'image', url: target, alt: size ? target.split('/').at(-1) ?? target : label,
+        data: { hProperties: { 'data-wiki-target': target, ...(width ? { width } : {}), ...(height ? { height } : {}) } } });
+    } else nodes.push({ type: 'text', value: label });
     lastIndex = match.index + match[0].length;
   }
 
@@ -106,7 +114,7 @@ function rewriteWikiLinks(node: MarkdownNode): void {
 }
 
 /**
- * Turn Obsidian-style wiki links into plain readable labels. This deliberately
+ * Turn Obsidian links into readable labels and image embeds into media nodes. This
  * runs on mdast text nodes, so code spans/fences and math nodes are untouched.
  */
 function remarkWikiLinks() {
@@ -126,8 +134,7 @@ function safeUrlTransform(url: string): string {
   const candidate = url.trim();
   if (!candidate || /[\u0000-\u001f\u007f]/.test(candidate)) return '';
 
-  // A hash is the only local URL supported by the reader. Relative paths are
-  // intentionally left as readable placeholders until an attachment API exists.
+  // Local document navigation remains separate from image attachment loading.
   if (candidate.startsWith('#')) return candidate;
   if (!/^(?:https?:|mailto:)/i.test(candidate)) return '';
 
@@ -246,15 +253,6 @@ function MarkdownLink({
   );
 }
 
-function MarkdownImage({ alt }: MarkdownImageProps): ReactElement {
-  const label = alt?.trim() || '未提供替代文字';
-  return (
-    <span className="markdown-content-image-placeholder" role="img" aria-label={`图片：${label}`}>
-      图片：{label}（图片暂不可用）
-    </span>
-  );
-}
-
 function MarkdownTable({ children }: MarkdownTableProps): ReactElement {
   return (
     <div className="markdown-content-table-wrap">
@@ -271,29 +269,47 @@ function MarkdownCode({ children, className }: MarkdownCodeProps): ReactElement 
   return <code className={classes}>{children}</code>;
 }
 
-function MarkdownPre({ children }: MarkdownPreProps): ReactElement {
+function MarkdownPre({ children, node }: MarkdownPreProps): ReactElement {
+  const block = node?.children.find((child) => child.type === 'element' && child.tagName === 'code');
+  if (block?.type === 'element') {
+    const classes = block.properties.className;
+    const languages = Array.isArray(classes) ? classes : [];
+    if (languages.some((value) => String(value).toLowerCase() === 'language-mermaid')) {
+      const code = block.children.filter((child) => child.type === 'text').map((child) => child.value).join('');
+      return <MermaidDiagram key={code} code={code} />;
+    }
+  }
   return <pre className="markdown-content-pre">{children}</pre>;
 }
 
-function createMarkdownComponents(): Components {
+function createMarkdownComponents(source?: MarkdownMediaSource): Components {
   return {
     a: MarkdownLink,
     code: MarkdownCode,
-    img: MarkdownImage,
+    img: ({ node, ...props }) => {
+      // Keep wiki targets literal: mdast encodes image URLs, but Obsidian filenames
+      // may contain literal percent signs and use vault-wide attachment lookup.
+      const wikiTarget = node?.properties['data-wiki-target'];
+      const src = typeof wikiTarget === 'string'
+        ? /^https?:\/\//i.test(wikiTarget) ? wikiTarget : `![[${wikiTarget}]]`
+        : props.src;
+      return <MarkdownImage {...props} src={src} source={source} />;
+    },
     pre: MarkdownPre,
     table: MarkdownTable,
   };
 }
 
-export function MarkdownContent({ content, compact = false }: MarkdownContentProps): ReactElement {
+export function MarkdownContent({ content, compact = false, source }: MarkdownContentProps): ReactElement {
   const instanceId = useId();
   const scopePrefix = `markdown-${instanceId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
+  const components = useMemo(() => createMarkdownComponents(source), [source?.sourceId, source?.conceptId, source?.sourceRevision]);
 
   return (
     <div className={`markdown-content${compact ? ' markdown-content-compact' : ''}`}>
       <ReactMarkdown
         allowElement={(element) => element.tagName !== 'script' && element.tagName !== 'style'}
-        components={createMarkdownComponents()}
+        components={components}
         remarkRehypeOptions={{ allowDangerousHtml: false }}
         remarkPlugins={[remarkGfm, remarkMath, remarkWikiLinks, remarkHeadingIds]}
         rehypePlugins={[[rehypeKatex, {
@@ -303,7 +319,9 @@ export function MarkdownContent({ content, compact = false }: MarkdownContentPro
           trust: false,
         }], createScopeIdsPlugin(scopePrefix)]}
         skipHtml
-        urlTransform={safeUrlTransform}
+        urlTransform={(url, key, node) => node.tagName === 'img' && key === 'src'
+          ? markdownImageUrl(url, source) ? url : ''
+          : safeUrlTransform(url)}
       >
         {content}
       </ReactMarkdown>

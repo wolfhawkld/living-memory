@@ -1,6 +1,6 @@
 # Markdown 与大窗阅读
 
-2026-09-22：节点详情提供渲染后的 Markdown 和大尺寸阅读窗口。
+2026-09-22：节点详情提供渲染后的 Markdown 和大尺寸阅读窗口，并支持图片附件和 Mermaid 图表。
 
 ## 使用
 
@@ -18,12 +18,52 @@
 - 标准外部链接可打开新标签页；页内标题/脚注使用每个阅读区域独立的锚点。
 - 宽表格、代码块和长公式可横向滚动；普通长文字折行。
 
-原始 HTML 不执行。图片与本地附件链接暂用文字占位，不直接读取本机文件或自动请求外部图片；Mermaid 等特殊代码围栏暂按代码展示。本轮没有编辑或写回原始 Markdown 的功能。
+原始 HTML 不执行。图片及 Mermaid 的支持见下文；其他特殊代码围栏仍按代码展示。本轮没有编辑或写回原始 Markdown 的功能。
 
 Markdown 与公式解析器按需加载。渲染采用 [react-markdown](https://github.com/remarkjs/react-markdown) 的语法树组件方式，公式使用 [rehype-katex](https://github.com/remarkjs/remark-math/tree/main/packages/rehype-katex)，阅读窗口使用 [原生 dialog](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/dialog) 管理模态焦点和背景交互。
 
+## 图片附件
+
+标准 Markdown 图片和 Obsidian 图片嵌入都支持：
+
+```markdown
+![示意图](./assets/diagram.png)
+![共享图片](../assets/diagram.png)
+![知识库根目录图片](/assets/diagram.png)
+![[diagram.png]]
+![[assets/diagram.png|320]]
+![[assets/diagram.png|640x480]]
+![[assets/diagram.png|说明文字]]
+![外部图片](https://example.com/diagram.png)
+```
+
+图片默认适应阅读宽度，点击切换原始尺寸并可滚动查看。加载失败会保留说明和重试按钮。支持 PNG、JPEG、GIF、WebP、AVIF、BMP、ICO、SVG，本地单图最大 20 MiB。`宽x高` 保留为图片尺寸属性，阅读样式优先保持图片比例。
+
+标准相对路径从当前笔记所在目录解析，`/assets/…` 从知识库根目录解析。标准 URL 的空格、中文、`#`、`%` 可按 URL 编码；wiki 文件名按原文处理。Obsidian 嵌入先查库内路径与笔记相对路径，找不到时按文件名在库内做有界查找；多个同名附件会报错，需改成明确路径。回退搜索跳过隐藏目录、`.git`、`.obsidian`、`node_modules` 和符号链接，最多检查 20,000 个目录项。
+
+本地图片通过只读接口 `GET /api/concepts/:conceptId/attachment?sourceId=…&sourceRevision=…&path=…` 读取。接口验证知识源、概念版本、真实路径边界、文件大小与图片类型，不允许访问知识库外的路径；SVG 附带隔离策略。来源版本变化后旧请求拒绝读取。HTTP(S) 外部图片由浏览器按需直接加载，不经过后端代理，不发送来源页面信息。PDF、音视频及其他附件暂不嵌入。
+
+## Mermaid 图表
+
+使用 `mermaid` 代码围栏即可渲染，例如：
+
+````markdown
+```mermaid
+flowchart LR
+  A[阅读与理解] --> B[间隔后回忆]
+  B --> C[核对与应用]
+  C --> A
+```
+````
+
+提供深色图形、50%～300% 缩放、横向滚动、原代码切换和渲染失败重试。Mermaid 在实际遇到图表时按需加载，图表在浏览器本地生成 SVG，不调用 LLM 或远程绘图服务。
+
+渲染器采用 Mermaid 的 [strict 配置](https://mermaid.js.org/config/schema-docs/config-properties-securitylevel.html)，不启用图内点击脚本；移除图表自带配置，使用站点固定主题与资源限制（20,000 字符、1,000 条边）。生成结果以 SVG 图片展示，关闭或替换时释放资源。语法错误不会使整篇资料消失，可切回代码查看。图表及图片加载、缩放、重试都不写入学习事件，不更新重温起点或衰减参数。
+
 ## 检查范围
 
-本轮 178/178 Node 测试、TypeScript 检查、生产构建及差异检查通过。本地 HTTP 确认主页与 Markdown 按需加载文件匹配最新产物。已有 CLI 测试曾因临时端口占用失败，完整重跑通过。原 3D 主包仍有体积提示；Markdown/数学解析器为独立约 436.5 kB（gzip 130 kB）的按需加载模块。
+本轮 195/195 Node 测试、TypeScript 检查、生产构建及差异检查通过。已有 2D 图谱测试在并行构建期间曾出现对象尚未初始化的失败，构建结束后完整重跑通过。原 3D 主包仍有体积提示；Markdown/数学解析器为独立约 447 kB（gzip 134 kB）的按需加载模块。Mermaid 核心和各图型独立分块，复杂图型会额外加载布局模块；尚未测量浏览器实际内存与渲染性能。
 
-使用合成 Markdown 验证 GFM、公式、危险 HTML/链接处理、代码与数学内容中的 wiki 语法不被误改、多个渲染区域的锚点隔离；检查阅读窗口的来源/版本和回忆阶段准入。运行 Node 测试与生产构建；浏览器视觉、焦点和滚动体验由用户验证。已有端到端脚本同步更新入口名称，本轮不执行浏览器测试。
+安装 Mermaid 时其解析器的间接依赖固定了旧版 lodash-es；项目用 `overrides` 统一到原图谱依赖已使用的 4.18.1，避免引入[已修复的依赖漏洞](https://github.com/advisories/GHSA-r5fr-rjxr-66jc)。本轮 `npm audit` 返回 0 项。
+
+使用合成 Markdown 验证 GFM、公式、危险 HTML/链接处理、代码与数学内容中的 wiki 语法不被误改、多个渲染区域的锚点隔离；检查阅读窗口的来源/版本和回忆阶段准入。新增合成 HTTP 测试覆盖图片路径、编码、来源版本、同名歧义、类型和大小限制、路径越界及只读行为；SSR 与注入式 Mermaid API 测试覆盖围栏识别、排队、失败重试、尺寸处理和资源清理。本地 HTTP 确认新主页产物及附件路由已加载。真实 Mermaid 浏览器渲染、视觉、焦点和滚动体验由用户验证，本轮不执行浏览器测试。

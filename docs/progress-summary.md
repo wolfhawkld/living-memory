@@ -1,6 +1,6 @@
 # Living Memory 阶段进展总结
 
-> 2026-09-22 更新入口：[演示后的迭代 TODO](planning/iteration-todo-2026-09-22.md)已按当前实现重新核对。[逐概念学习历史](development/concept-history.md)和 [Markdown 大窗阅读](development/markdown-reader.md)现已实现，178 项 Node 测试及构建通过，界面体验待用户验证。以下保留 9 月 17 日的阶段记录及部分后续补充，其中早期测试数、搜索范围和待实现描述不代表最新状态。
+> 2026-09-22 更新入口：[演示后的迭代 TODO](planning/iteration-todo-2026-09-22.md)已按当前实现重新核对。[逐概念学习历史](development/concept-history.md)和 [Markdown 大窗阅读、图片附件与 Mermaid 渲染](development/markdown-reader.md)现已实现，195 项 Node 测试及构建通过，界面体验待用户验证。以下保留 9 月 17 日的阶段记录及部分后续补充，其中早期测试数、搜索范围和待实现描述不代表最新状态。
 
 更新日期：2026-09-17。本文汇总本项目当前进展，区分用户确认、设计建议、实际产物与待验证事项。
 
