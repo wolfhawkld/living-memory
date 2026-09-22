@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { Layout, ModelConfig, Snapshot } from '../shared/types.js';
 import { isValidInstant } from '../core/time-model.js';
+import { sendConceptAttachment } from './attachments.js';
 import { loadKnowledgeGraph, KnowledgeSourceError, type KnowledgeSource } from './kg.js';
 import { createChangeFeed } from './changes.js';
 import {
@@ -286,6 +287,12 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     const cursor = parseHistoryCursor(req.query.cursor);
     const history = store.getConceptHistory(concept, now().toISOString(), limit, cursor);
     res.set('Cache-Control', 'no-store').json(history);
+  }));
+  app.get('/api/concepts/:conceptId/attachment', asyncRoute((req, res) => {
+    const conceptId = req.params.conceptId;
+    if (typeof conceptId !== 'string') throw new StoreError('CONCEPT_NOT_FOUND', '找不到对应概念，请先刷新知识源。', 404);
+    const concept = conceptById(source, conceptId);
+    sendConceptAttachment(res, source, concept, req.query);
   }));
   app.post('/api/reviews', requireWrite, asyncRoute((req, res) => {
     const review = parseReviewRequest(req.body);
