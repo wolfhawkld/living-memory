@@ -32,6 +32,7 @@ npm start
 
 - [演示后的迭代 TODO（2026-09-22）](docs/planning/iteration-todo-2026-09-22.md)：当前完成范围、原有待办入口，以及学习历史、少量复习和场景调用的后续顺序。
 - [逐概念学习历史](docs/development/concept-history.md)：查看重温、补记与回忆观察，区分当前起点、旧版本、冻结观察值和待同步记录。
+- [Markdown 与大窗阅读](docs/development/markdown-reader.md)：渲染知识正文、表格与公式，打开大窗口阅读和调整字号。
 - [当前优先：时间驱动原型](docs/design/time-first-prototype.md)：LM-003 收敛方案、单参数曲线、最小交互、五步开发与试用条件。
 - [初始模拟数值与连线说明](docs/development/time-colors-and-links.md)：可复现的示例颜色、数值记录及局部图谱连线解释。
 - [P0 运行与联调](docs/development/p0-running.md)：启动方式、progressive-kg 接入、时间模拟、观察记录和当前检查边界。
@@ -71,4 +72,4 @@ npm start
 
 本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。项目许可证将在未来开源前确定。
 
-状态：2026-09-22，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。本轮 168 项 Node 测试及构建通过，浏览器视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，语音链路及 Obsidian 宿主属于后续范围。
+状态：2026-09-22，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)及 [Markdown 大窗阅读](docs/development/markdown-reader.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。本轮 178 项 Node 测试及构建通过，浏览器视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，语音链路及 Obsidian 宿主属于后续范围。

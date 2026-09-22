@@ -22,8 +22,13 @@
     "3d-force-graph": "1.80.0",
     "express": "5.2.1",
     "gray-matter": "4.0.3",
+    "katex": "0.16.22",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "rehype-katex": "7.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
     "three": "0.186.0"
   },
   "devDependencies": {
