@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { DARK_THEME, LIGHT_UI, themeCssRule, themeRootCss, themeUiCssVariables } from './src/web/theme-palette';
+import { DARK_THEME, themeCssRule, themeRootCss } from './src/web/theme-palette';
 import { themeBootstrapScript } from './src/web/theme-bootstrap';
+import { darkGraphVariables, lightWorkspaceVariables } from './src/web/theme-workspace';
 
 export default defineConfig({
   plugins: [
@@ -14,10 +15,9 @@ export default defineConfig({
         tag: 'style',
         attrs: { id: 'lm-default-theme' },
         children: `${themeRootCss(DARK_THEME)}\n${themeCssRule(
-          ':root[data-theme="light"]', { '--page-backdrop': LIGHT_UI.background },
+          ':root[data-theme="light"]', lightWorkspaceVariables(),
         )}\n${themeCssRule(
-          ':root[data-theme="light"] .auth-shell, :root[data-theme="light"] .theme-selector',
-          themeUiCssVariables(LIGHT_UI),
+          ':root[data-theme="light"] .graph-frame', darkGraphVariables(),
         )}`,
         injectTo: 'head',
       }, {
