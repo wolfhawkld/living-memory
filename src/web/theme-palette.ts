@@ -111,8 +111,7 @@ export const DARK_THEME: ThemePalette = {
   },
 };
 
-// THEME-02 first enables the login shell and selector. The workspace and graph
-// will adopt the light palette separately in THEME-03/04.
+// Shared light UI colors; graph materials remain a separate THEME-04 migration.
 export const LIGHT_UI: ThemePalette['ui'] = {
   background: '#eef2f7',
   panel: '#ffffff',
@@ -122,7 +121,7 @@ export const LIGHT_UI: ThemePalette['ui'] = {
   borderStrong: '#a7b8ce',
   text: '#24344c',
   textMuted: '#50637c',
-  textSubtle: '#61728a',
+  textSubtle: '#5b6b82',
   accent: '#285eaa',
   onAccent: '#ffffff',
   error: '#b13d40',

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
-import { DARK_THEME, themeCssVariables, themeRootCss, type ThemePalette } from '../src/web/theme-palette.js';
+import { DARK_THEME, themeCssRule, themeCssVariables, themeRootCss, type ThemePalette } from '../src/web/theme-palette.js';
+import { lightWorkspaceVariables } from '../src/web/theme-workspace.js';
 
 test('the initial palette supplies the variables used by existing stylesheets', () => {
   const webDirectory = new URL('../src/web/', import.meta.url);
@@ -11,7 +12,7 @@ test('the initial palette supplies the variables used by existing stylesheets', 
     .join('\n');
   const initialCss = themeRootCss(DARK_THEME);
   const declared = new Set(
-    [...`${initialCss}\n${styles}`.matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]),
+    [...`${initialCss}\n${themeCssRule(':root[data-theme="light"]', lightWorkspaceVariables())}\n${styles}`.matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]),
   );
   // Per-element values supplied by React, not application-wide theme tokens.
   declared.add('--status-color');

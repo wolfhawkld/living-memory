@@ -1,21 +1,21 @@
 .status-badge.status-retained .status-dot { color: var(--memory-badge-retained); }
-.retention-button { width: 100%; margin: 8px 0; padding: 10px 12px; border: 1px solid #76649e66; border-radius: 9px; background: #b49aea0d; color: #c7b4ed; text-align: left; cursor: pointer; }
+.retention-button { width: 100%; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--ui-retained-border, #76649e66); border-radius: 9px; background: var(--ui-retained-soft, #b49aea0d); color: var(--ui-retained, #c7b4ed); text-align: left; cursor: pointer; }
 .retention-button:disabled { opacity: .45; cursor: default; }
-.retention-fixed-note { padding: 16px; border-radius: 10px; background: #b49aea0b; border: 1px solid #b49aea33; color: #c7b4ed; font-size: 12px; line-height: 1.9; }
-.retention-dialog { color: #e2e7f1; background: #111a29; border: 1px solid #33475e; border-radius: 16px; padding: 28px; max-width: 520px; width: calc(100vw - 60px); line-height: 1.8; }
-.retention-dialog::backdrop { background: #02060ddd; }
-.learning-summary { margin: 22px 0; padding: 14px; border: 1px solid #26374c; border-radius: 12px; color: #aebcd0; font-size: 12px; line-height: 1.7; }
-.learning-summary h3 { color: #e2e7f1; font-size: 14px; margin: 0 0 10px; }
+.retention-fixed-note { padding: 16px; border-radius: 10px; background: var(--ui-retained-soft, #b49aea0b); border: 1px solid var(--ui-retained-border, #b49aea33); color: var(--ui-retained, #c7b4ed); font-size: 12px; line-height: 1.9; }
+.retention-dialog { color: var(--ui-text, #e2e7f1); background: var(--ui-panel, #111a29); border: 1px solid var(--ui-border-strong, #33475e); border-radius: 16px; padding: 28px; max-width: 520px; width: calc(100vw - 60px); line-height: 1.8; }
+.retention-dialog::backdrop { background: var(--ui-backdrop, #02060ddd); }
+.learning-summary { margin: 22px 0; padding: 14px; border: 1px solid var(--ui-border, #26374c); border-radius: 12px; color: var(--ui-text-muted, #aebcd0); font-size: 12px; line-height: 1.7; }
+.learning-summary h3 { color: var(--ui-text, #e2e7f1); font-size: 14px; margin: 0 0 10px; }
 .learning-counts { margin: 12px 0; }
 .learning-counts div { display: flex; justify-content: space-between; gap: 12px; }
-.learning-counts dd { margin: 0; color: #c4d8ee; }
-.calibration-row { border-top: 1px solid #26374c; padding: 12px 0 0; }
-.calibration-row strong { color: #c5d7ee; font-weight: 500; }
+.learning-counts dd { margin: 0; color: var(--ui-text, #c4d8ee); }
+.calibration-row { border-top: 1px solid var(--ui-border, #26374c); padding: 12px 0 0; }
+.calibration-row strong { color: var(--ui-text-muted, #c5d7ee); font-weight: 500; }
 .calibration-row p { margin-top: 5px; }
-.learning-fields { border: 1px solid #26374c; border-radius: 10px; margin: 16px 0; padding: 12px; }
-.learning-field { display: grid; gap: 8px; color: #c5d7ee; margin: 12px 0 18px; font-size: 13px; }
-.learning-field select { background: #0e1827; color: #d5e3f4; border: 1px solid #33475e; border-radius: 7px; padding: 10px; width: 100%; }
-.learning-field small { color: #8698af; line-height: 1.7; }
+.learning-fields { border: 1px solid var(--ui-border, #26374c); border-radius: 10px; margin: 16px 0; padding: 12px; }
+.learning-field { display: grid; gap: 8px; color: var(--ui-text-muted, #c5d7ee); margin: 12px 0 18px; font-size: 13px; }
+.learning-field select { background: var(--ui-input, #0e1827); color: var(--ui-text, #d5e3f4); border: 1px solid var(--ui-border-strong, #33475e); border-radius: 7px; padding: 10px; width: 100%; }
+.learning-field small { color: var(--ui-text-subtle, #8698af); line-height: 1.7; }
 .recall-feedback-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
-.concept-history-learning { margin: 9px 0; font-size: 12px; line-height: 1.8; color: #b6c8dc; }
+.concept-history-learning { margin: 9px 0; font-size: 12px; line-height: 1.8; color: var(--ui-text-muted, #b6c8dc); }
 .concept-history-scenario { white-space: pre-wrap; overflow-wrap: anywhere; }

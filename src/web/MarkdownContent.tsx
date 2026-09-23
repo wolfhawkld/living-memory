@@ -314,7 +314,7 @@ export function MarkdownContent({ content, compact = false, source }: MarkdownCo
         remarkRehypeOptions={{ allowDangerousHtml: false }}
         remarkPlugins={[remarkGfm, remarkMath, remarkWikiLinks, remarkHeadingIds]}
         rehypePlugins={[[rehypeKatex, {
-          errorColor: '#f4bd70',
+          errorColor: 'var(--ui-warning, #f4bd70)',
           strict: 'ignore',
           throwOnError: false,
           trust: false,
