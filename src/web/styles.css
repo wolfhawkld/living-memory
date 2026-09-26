@@ -164,6 +164,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .graph-frame { position: relative; min-height: 0; flex: 1; overflow: hidden; margin: 0 13px; border: 1px solid var(--ui-border, rgba(110, 149, 204, .13)); border-radius: 14px; background: var(--ui-panel, rgba(5, 11, 22, .48)); box-shadow: var(--ui-glow, inset 0 0 80px rgba(44, 83, 139, .06)); }
 .graph-stage, .graph-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .graph-canvas-hidden { opacity: 0; pointer-events: none; }
+:root[data-theme="light"] .graph-frame { background: var(--graph-background); }
+:root[data-theme="light"] .graph-canvas .float-tooltip-kap {
+  color: var(--graph-tooltip-text);
+  background: var(--graph-tooltip-background);
+  border: 1px solid var(--graph-tooltip-border);
+  box-shadow: var(--ui-shadow);
+}
 .simulation-watermark { position: absolute; top: 13px; left: 50%; padding: 6px 10px; transform: translateX(-50%); border: 1px solid var(--ui-warning-border, rgba(244, 189, 112, .3)); border-radius: 99px; background: var(--ui-warning-soft, rgba(61, 45, 26, .7)); color: var(--amber); font-size: 10px; letter-spacing: .08em; }
 .graph-fallback { position: absolute; top: 50%; left: 50%; display: flex; width: 230px; flex-direction: column; align-items: center; gap: 8px; transform: translate(-50%, -50%); color: var(--muted); font-size: 11px; line-height: 1.5; text-align: center; }
 .graph-fallback strong { color: var(--text); font-size: 13px; }

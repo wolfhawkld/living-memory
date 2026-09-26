@@ -29,6 +29,3 @@
 .theme-selector > span { color: var(--muted); }
 .theme-selector .theme-resolved { color: var(--muted); font-size: 10px; }
 .auth-theme-row { margin-top: 20px; }
-
-/* The canvas and its overlays remain dark until THEME-04. */
-:root[data-theme="light"] .graph-frame { color-scheme: dark; }

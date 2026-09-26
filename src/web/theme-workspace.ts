@@ -1,14 +1,5 @@
-import { DARK_THEME, LIGHT_UI, themeCssVariables, themeUiCssVariables, type ThemePalette } from './theme-palette';
-
-/** Same state meanings and color families, with shades readable on pale panels. */
-export const LIGHT_MEMORY_COLORS: ThemePalette['memory'] = {
-  unknown: '#386796',
-  recent: '#12796c',
-  revisit: '#96620f',
-  stale: '#bb404b',
-  pending: '#606b7b',
-  retained: '#7953a3',
-};
+import { LIGHT_THEME, LIGHT_UI, LIGHT_MEMORY_COLORS, themeCssVariables } from './theme-palette';
+export { LIGHT_MEMORY_COLORS } from './theme-palette';
 
 // Component styles keep their original dark values as var() fallbacks. Only
 // light mode supplies these semantic overrides, preserving the established dark
@@ -51,25 +42,8 @@ export const LIGHT_COMPONENT_VARIABLES = {
 } satisfies Record<`--ui-${string}`, string>;
 
 export function lightWorkspaceVariables(): Record<`--${string}`, string> {
-  const variables: Record<`--${string}`, string> = {
-    ...themeUiCssVariables(LIGHT_UI),
-    ...LIGHT_COMPONENT_VARIABLES,
-    '--mint': LIGHT_MEMORY_COLORS.recent,
-    '--amber': LIGHT_MEMORY_COLORS.revisit,
-    '--coral': LIGHT_MEMORY_COLORS.stale,
-    '--unknown': LIGHT_MEMORY_COLORS.unknown,
-  };
-  for (const [status, color] of Object.entries(LIGHT_MEMORY_COLORS)) {
-    variables[`--memory-${status}`] = color;
-    variables[`--memory-badge-${status}`] = color;
-  }
-  return variables;
-}
-
-/** Temporary boundary: the canvas and its overlays adopt theme colors in THEME-04. */
-export function darkGraphVariables(): Record<`--${string}`, string> {
   return {
-    ...themeCssVariables(DARK_THEME),
-    ...Object.fromEntries(Object.keys(LIGHT_COMPONENT_VARIABLES).map((key) => [key, 'initial'])),
+    ...themeCssVariables(LIGHT_THEME),
+    ...LIGHT_COMPONENT_VARIABLES,
   };
 }
