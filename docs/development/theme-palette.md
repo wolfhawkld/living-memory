@@ -2,7 +2,7 @@
 
 更新：2026-09-22。对应[浅色主题计划](../planning/light-theme-todo.md)的第一项，该项交付时仍只启用深色主题。协作任务：[Issue #29](https://github.com/wolfhawkld/living-memory/issues/29)。
 
-后续状态（2026-09-23）：THEME-02 已加入[主题入口与本机偏好](theme-preferences.md)，THEME-03 已完成[工作区与阅读层浅色适配](theme-workspace.md)。下一项为 THEME-04 图谱主题，Mermaid/媒体随后处理。下文配色基础与验证记录保留 THEME-01 阶段信息，迁移表同步标记后续进度。
+后续状态（2026-09-26）：THEME-02 已加入[主题入口与本机偏好](theme-preferences.md)，THEME-03 已完成[工作区与阅读层浅色适配](theme-workspace.md)，THEME-04 接入[图谱主题](theme-graph.md)。下一项为 THEME-05 Mermaid/媒体。下文配色基础与验证记录保留 THEME-01 阶段信息，迁移表同步标记后续进度。
 
 ## 配色来源与接入方式
 
@@ -17,14 +17,14 @@ THEME-01 让 `App`、`DemoPanel` 和图谱读取同一配色对象，`GraphView`
 
 `themeCssVariables()` 将相同定义映射为 CSS 变量；`themeRootCss()` 序列化成根样式。[Vite 配置](../../vite.config.ts)在开发页面与生产 HTML 的 head 中加入 `lm-default-theme` 样式，确保 React 加载前已有基础背景与文字色，无需复制一份 CSS 色值或增加生成文件。配色来源只允许仓库内的可信定义。
 
-旧的 `--mint / --amber / --coral / --unknown` 暂时作为兼容别名；新状态变量使用 `--memory-状态名` 和 `--memory-badge-状态名`。图谱仍直接使用 `DARK_THEME`；主题入口、账号本机偏好及页面浅色已由 THEME-02/03 接入。
+旧的 `--mint / --amber / --coral / --unknown` 暂时作为兼容别名；新状态变量使用 `--memory-状态名` 和 `--memory-badge-状态名`。THEME-04 加入完整 `LIGHT_THEME`，图谱按有效主题读取配色；页面 CSS 使用同一状态定义。
 
 ## 固定色值盘点与后续迁移
 
 | 范围 | THEME-01 结果 / 后续任务 |
 | --- | --- |
-| `styles.css` 根变量、状态徽标 | 已迁移；THEME-03 已接入组件背景、交互状态、提示、曲线及页面纹理；图谱覆盖层仍保留深色直到 THEME-04 |
-| `GraphView.tsx` 与 `graph-labels.ts` | 已集中语义配色及光效参数；动态换色、标签缓存失效与浅色光效在 THEME-04 处理 |
+| `styles.css` 根变量、状态徽标 | 已迁移；THEME-03 接入页面组件，THEME-04 取消图谱覆盖层的强制深色边界并适配悬停提示 |
+| `GraphView.tsx` 与 `graph-labels.ts` | THEME-04 已接入动态换色、标签缓存失效、局部光晕与浅色后处理配置 |
 | `App.tsx`、`DemoPanel.tsx` | 已解除从 GraphView 导入状态颜色的依赖；THEME-03 已改用语义状态 CSS 变量 |
 | `account.css`、`domain-controls.css`、`concept-search.css`、`pending-writes.css` | THEME-03 已接入登录、账户、领域、搜索及待同步界面的局部颜色 |
 | `concept-history.css`、`scenario-practice.css`、`learning-evidence.css` | THEME-03 已接入历史/练习/信心/长期保持容器、徽标及交互状态 |
@@ -32,7 +32,7 @@ THEME-01 让 `App`、`DemoPanel` 和图谱读取同一配色对象，`GraphView`
 | `mermaid-renderer.ts`、`mermaid-diagram.css`、`markdown-image.css` | Mermaid 配置、图表重渲染和媒体容器在 THEME-05 处理；普通图片不反色 |
 | `index.html` 的浏览器主题色、`color-scheme: dark` | THEME-02 已按实际主题、首屏偏好和根主题标记统一更新 |
 
-THEME-01 未改动图谱生命周期、相机、布局、旋转计时、账号作用域或学习数据。后续 THEME-02/03 已接入偏好及页面展示，图谱和 Mermaid 仍需各自的渲染层适配。
+THEME-01 未改动图谱生命周期、相机、布局、旋转计时、账号作用域或学习数据。后续 THEME-02/03/04 已接入偏好、页面与图谱展示，Mermaid 仍需 THEME-05 的渲染层适配。
 
 ## 验证记录
 

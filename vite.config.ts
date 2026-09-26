@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { DARK_THEME, themeCssRule, themeRootCss } from './src/web/theme-palette';
 import { themeBootstrapScript } from './src/web/theme-bootstrap';
-import { darkGraphVariables, lightWorkspaceVariables } from './src/web/theme-workspace';
+import { lightWorkspaceVariables } from './src/web/theme-workspace';
 
 export default defineConfig({
   plugins: [
@@ -16,8 +16,6 @@ export default defineConfig({
         attrs: { id: 'lm-default-theme' },
         children: `${themeRootCss(DARK_THEME)}\n${themeCssRule(
           ':root[data-theme="light"]', lightWorkspaceVariables(),
-        )}\n${themeCssRule(
-          ':root[data-theme="light"] .graph-frame', darkGraphVariables(),
         )}`,
         injectTo: 'head',
       }, {

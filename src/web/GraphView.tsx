@@ -11,7 +11,9 @@ import { accommodateGraphOverview, calculateGraphOverview } from './graph-overvi
 import { createIsolatedNodeForce } from './graph-isolation';
 import { createGraphLabels } from './graph-labels';
 import { readRotationStatus, rotateCameraClockwise, type IdleRotationClock, type RotationStatus } from './graph-rotation';
-import { DARK_THEME } from './theme-palette';
+import { themePalette, type ThemePalette } from './theme-palette';
+import { useTheme } from './ThemeProvider';
+import { applyNodeTheme, applySceneTheme, type GraphThemeResources, type NodeVisual } from './graph-theme';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -179,39 +181,17 @@ function nodeSize(_node: GraphNode): number {
   return 2.2;
 }
 
-interface NodeVisual {
-  sphere: THREE.Mesh<THREE.SphereGeometry, THREE.MeshLambertMaterial>;
-  halo: THREE.Sprite;
-  ring: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
-}
-
-function updateNodeVisual(node: GraphNode, glowEnabled = true, selected = false): void {
+function updateNodeVisual(node: GraphNode, theme: ThemePalette, glowEnabled = true, selected = false): void {
   const visual = node.__mesh?.userData.lmVisual as NodeVisual | undefined;
   if (!visual) return;
-  const color = DARK_THEME.memory[node.state.status];
-  visual.sphere.material.color.set(color);
-  visual.sphere.material.emissive.set(color);
-  visual.sphere.material.emissiveIntensity = glowEnabled
-    ? DARK_THEME.graph.node.emissiveWithGlow
-    : DARK_THEME.graph.node.emissiveWithoutGlow;
-  const unknown = node.state.status === 'unknown';
-  visual.sphere.visible = !unknown;
-  visual.ring.visible = unknown || selected;
-  visual.ring.material.color.set(selected ? DARK_THEME.graph.node.selectedRing : color);
-  visual.ring.material.opacity = selected
-    ? DARK_THEME.graph.node.selectedRingOpacity
-    : DARK_THEME.graph.node.ringOpacity;
-  const haloMaterial = visual.halo.material as THREE.SpriteMaterial;
-  haloMaterial.color.set(color);
-  haloMaterial.opacity = unknown ? DARK_THEME.graph.node.unknownHaloOpacity : DARK_THEME.graph.node.haloOpacity;
-  visual.halo.visible = glowEnabled;
+  applyNodeTheme(visual, node.state.status, theme, glowEnabled, selected);
   const size = nodeSize(node);
   visual.sphere.scale.setScalar(size);
   visual.ring.scale.setScalar(size * (selected ? 1.45 : 1));
   visual.halo.scale.set(size * 6, size * 6, 1);
 }
 
-function buildNodeVisual(node: GraphNode, glowEnabled = true, selected = false): THREE.Group {
+function buildNodeVisual(node: GraphNode, theme: ThemePalette, glowEnabled = true, selected = false): THREE.Group {
   const group = new THREE.Group();
   const sphere = new THREE.Mesh(
     new THREE.SphereGeometry(1, 32, 24),
@@ -227,7 +207,7 @@ function buildNodeVisual(node: GraphNode, glowEnabled = true, selected = false):
   group.add(halo, ring, sphere);
   group.userData.lmVisual = { sphere, halo, ring };
   node.__mesh = group;
-  updateNodeVisual(node, glowEnabled, selected);
+  updateNodeVisual(node, theme, glowEnabled, selected);
   return group;
 }
 
@@ -292,10 +272,13 @@ function GraphViewInstance({
   onSelect,
   onLayoutChange,
 }: GraphViewProps) {
+  const theme = themePalette(useTheme().resolvedTheme);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const hostRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<GraphInstance | null>(null);
-  const bloomPassRef = useRef<UnrealBloomPass | null>(null);
-  const outputPassRef = useRef<OutputPass | null>(null);
+  const themeResourcesRef = useRef<GraphThemeResources | null>(null);
+  const layoutNeedsSaveRef = useRef(true);
   const nodesRef = useRef<GraphNode[]>([]);
   const layoutTimerRef = useRef<number | null>(null);
   const selectedIdRef = useRef(selectedId);
@@ -377,6 +360,7 @@ function GraphViewInstance({
       // React development effect replay can construct, destroy, and construct
       // the instance on one fiber; reset its readiness state each time.
       graphReadyRef.current = false;
+      layoutNeedsSaveRef.current = true;
       focusRequestedRef.current = false;
       rotationNotBeforeRef.current = 0;
       animationPausedRef.current = false;
@@ -409,9 +393,9 @@ function GraphViewInstance({
       // A scene background clears in the current render target's color space.
       // Relying only on renderer.clearColor can reuse the prior screen-space
       // clear value when the composer's RenderPass switches to a linear buffer.
-      graph.scene().background = new THREE.Color(DARK_THEME.graph.background);
+      graph.scene().background = new THREE.Color(themeRef.current.graph.background);
       graph
-        .backgroundColor(DARK_THEME.graph.background)
+        .backgroundColor(themeRef.current.graph.background)
         .showNavInfo(false)
         .enableNodeDrag(true)
         .cooldownTicks(150)
@@ -419,7 +403,7 @@ function GraphViewInstance({
         .warmupTicks(0)
         .d3AlphaDecay(0.045)
         .numDimensions(twoDimensional ? 2 : 3)
-        .nodeThreeObject((node) => buildNodeVisual(node, glowEnabledRef.current, node.id === selectedIdRef.current))
+        .nodeThreeObject((node) => buildNodeVisual(node, themeRef.current, glowEnabledRef.current, node.id === selectedIdRef.current))
         .nodeThreeObjectExtend(false)
         .nodeLabel((node) => `<strong style="display:inline-block;max-width:280px;white-space:normal;overflow-wrap:anywhere;line-height:1.3">${escapeHtml(node.title)}</strong><br/><span style="display:inline-block;max-width:280px;white-space:normal;overflow-wrap:anywhere;line-height:1.3">${escapeHtml(node.domain)}</span>`)
         .linkLabel((link) => {
@@ -429,18 +413,18 @@ function GraphViewInstance({
         })
         .linkColor((link) => {
           const selected = selectedIdRef.current;
-          if (!selected) return DARK_THEME.graph.link;
-          return isIncidentLink(link, selected) ? DARK_THEME.graph.linkSelected : DARK_THEME.graph.linkMuted;
+          if (!selected) return themeRef.current.graph.link;
+          return isIncidentLink(link, selected) ? themeRef.current.graph.linkSelected : themeRef.current.graph.linkMuted;
         })
-        .linkOpacity(DARK_THEME.graph.linkOpacity)
+        .linkOpacity(themeRef.current.graph.linkOpacity)
         // Native lines keep a one-pixel footprint while zooming; world-space
         // cylinders and persistent arrows grew into large bars in close views.
         .linkWidth(0)
         .linkDirectionalArrowLength((link) => hoveredIdRef.current && isIncidentLink(link, hoveredIdRef.current) ? 1.4 : 0)
         .linkDirectionalArrowColor((link) => {
           const selected = selectedIdRef.current;
-          if (!selected) return DARK_THEME.graph.link;
-          return isIncidentLink(link, selected) ? DARK_THEME.graph.linkSelected : DARK_THEME.graph.linkMuted;
+          if (!selected) return themeRef.current.graph.link;
+          return isIncidentLink(link, selected) ? themeRef.current.graph.linkSelected : themeRef.current.graph.linkMuted;
         })
         .linkDirectionalArrowRelPos(0.84)
         .linkHoverPrecision(6)
@@ -461,7 +445,13 @@ function GraphViewInstance({
           if (graphRef.current !== graph) return;
           layoutSettled = true;
           fitInitialView();
-          scheduleLayoutSave();
+          // Cosmetic ForceGraph setters can emit another engine-stop without
+          // moving nodes. Only an initial or changed topology needs saving;
+          // explicit dragging already schedules its own save above.
+          if (layoutNeedsSaveRef.current) {
+            layoutNeedsSaveRef.current = false;
+            scheduleLayoutSave();
+          }
         });
 
       // Offscreen bloom bypasses the default framebuffer's antialiasing. MSAA
@@ -476,19 +466,17 @@ function GraphViewInstance({
       try {
         bloomPass = new UnrealBloomPass(
           new THREE.Vector2(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight)),
-          DARK_THEME.graph.bloom.strength,
-          DARK_THEME.graph.bloom.radius,
-          DARK_THEME.graph.bloom.threshold,
+          themeRef.current.graph.bloom.strength,
+          themeRef.current.graph.bloom.radius,
+          themeRef.current.graph.bloom.threshold,
         );
         // The built-in composer only has RenderPass. Keep the final color-space
         // conversion after Bloom so the dark background retains its original color.
         outputPass = new OutputPass();
-        bloomPass.enabled = glowEnabledRef.current;
-        outputPass.enabled = glowEnabledRef.current;
+        bloomPass.enabled = glowEnabledRef.current && themeRef.current.graph.bloom.strength > 0;
+        outputPass.enabled = bloomPass.enabled;
         graph.postProcessingComposer().addPass(bloomPass);
         graph.postProcessingComposer().addPass(outputPass);
-        bloomPassRef.current = bloomPass;
-        outputPassRef.current = outputPass;
       } catch {
         // Browsers without a compatible post-processing path still keep the sprite glow.
         if (bloomPass) graph.postProcessingComposer().removePass(bloomPass);
@@ -497,20 +485,21 @@ function GraphViewInstance({
         outputPass?.dispose();
         bloomPass = null;
         outputPass = null;
-        bloomPassRef.current = null;
-        outputPassRef.current = null;
       }
 
       const ambient = new THREE.AmbientLight(
-        DARK_THEME.graph.ambientLight.color,
-        DARK_THEME.graph.ambientLight.intensity,
+        themeRef.current.graph.ambientLight.color,
+        themeRef.current.graph.ambientLight.intensity,
       );
       const point = new THREE.DirectionalLight(
-        DARK_THEME.graph.directionalLight.color,
-        DARK_THEME.graph.directionalLight.intensity,
+        themeRef.current.graph.directionalLight.color,
+        themeRef.current.graph.directionalLight.intensity,
       );
       point.position.set(0, 80, 140);
       graph.lights([ambient, point]);
+      const themeResources = { ambient, directional: point, bloom: bloomPass, output: outputPass };
+      themeResourcesRef.current = themeResources;
+      applySceneTheme(graph, themeResources, themeRef.current, glowEnabledRef.current);
 
       let width = host.clientWidth;
       let height = host.clientHeight;
@@ -576,6 +565,7 @@ function GraphViewInstance({
           group.scale.setScalar(Math.min(1, maxWorldRadius / nodeSize(node)));
         }
         labels.update({ nodes: nodesRef.current, camera, width, height,
+          theme: themeRef.current,
           twoDimensional: twoDimensionalRef.current,
           selectedId: selectedIdRef.current, hoveredId: hoveredIdRef.current, neighborIds });
       };
@@ -618,15 +608,14 @@ function GraphViewInstance({
         graph.pauseAnimation?.();
         animationPausedRef.current = true;
         graphRef.current = null;
+        if (themeResourcesRef.current === themeResources) themeResourcesRef.current = null;
         if (bloomPass) {
           graph.postProcessingComposer().removePass(bloomPass);
           bloomPass.dispose();
-          if (bloomPassRef.current === bloomPass) bloomPassRef.current = null;
         }
         if (outputPass) {
           graph.postProcessingComposer().removePass(outputPass);
           outputPass.dispose();
-          if (outputPassRef.current === outputPass) outputPassRef.current = null;
         }
         graph._destructor?.();
         for (const node of nodesRef.current) {
@@ -654,23 +643,23 @@ function GraphViewInstance({
   }, []);
 
   useEffect(() => {
-    const bloomPass = bloomPassRef.current;
-    if (bloomPass) bloomPass.enabled = glowEnabled;
-    if (outputPassRef.current) outputPassRef.current.enabled = glowEnabled;
-    for (const node of nodesRef.current) updateNodeVisual(node, glowEnabled, node.id === selectedIdRef.current);
-  }, [glowEnabled]);
+    const graph = graphRef.current;
+    const resources = themeResourcesRef.current;
+    if (graph && resources) applySceneTheme(graph, resources, theme, glowEnabled);
+    for (const node of nodesRef.current) updateNodeVisual(node, theme, glowEnabled, node.id === selectedIdRef.current);
+  }, [glowEnabled, theme]);
 
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
     const linkColor = (link: GraphLink) => (
-      !selectedId
-        ? DARK_THEME.graph.link
-        : isIncidentLink(link, selectedId) ? DARK_THEME.graph.linkSelected : DARK_THEME.graph.linkMuted
+      !selectedIdRef.current
+        ? themeRef.current.graph.link
+        : isIncidentLink(link, selectedIdRef.current) ? themeRef.current.graph.linkSelected : themeRef.current.graph.linkMuted
     );
-    graph.linkColor(linkColor).linkDirectionalArrowColor(linkColor);
-    for (const node of nodesRef.current) updateNodeVisual(node, glowEnabledRef.current, node.id === selectedId);
-  }, [selectedId]);
+    graph.linkColor(linkColor).linkDirectionalArrowColor(linkColor).linkOpacity(theme.graph.linkOpacity);
+    for (const node of nodesRef.current) updateNodeVisual(node, theme, glowEnabledRef.current, node.id === selectedId);
+  }, [selectedId, theme]);
 
   useEffect(() => {
     nodesRef.current = graphData.nodes;
@@ -695,7 +684,7 @@ function GraphViewInstance({
         incoming.fy = existing.fy;
         incoming.fz = existing.fz;
         incoming.__mesh = existing.__mesh;
-        updateNodeVisual(existing, glowEnabledRef.current, existing.id === selectedIdRef.current);
+        updateNodeVisual(existing, themeRef.current, glowEnabledRef.current, existing.id === selectedIdRef.current);
       }
     }
     const nextNodes = graphData.nodes.map((node) => previousById.get(node.id) ?? node);
@@ -706,6 +695,7 @@ function GraphViewInstance({
     if (topologyChanged) {
       // A source refresh may add/remove concepts. Preserve coordinates for surviving nodes while allowing the engine to add/remove only then.
       // Re-evaluate isolation when a cross-domain neighbor is expanded/removed.
+      layoutNeedsSaveRef.current = true;
       graph.d3Force('isolatedBoundary', createIsolatedNodeForce(graphData.links, twoDimensionalRef.current));
       graph.graphData({ nodes: nextNodes, links: cloneLinks(graphData.links) });
     }
@@ -787,7 +777,7 @@ export function GraphFallbackList({
             key={concept.id}
             onClick={() => onSelect(concept.id)}
           >
-            <span className="status-dot" style={{ backgroundColor: DARK_THEME.memory[state?.status ?? 'unknown'] }} />
+            <span className="status-dot" style={{ backgroundColor: `var(--memory-${state?.status ?? 'unknown'})` }} />
             <span>{concept.title}</span>
           </button>
         );

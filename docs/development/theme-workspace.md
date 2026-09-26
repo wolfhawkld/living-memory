@@ -34,4 +34,4 @@
 
 工作分支：`feat/theme-workspace`，基于 THEME-02 的 `feat/theme-preferences`（[PR #32](https://github.com/wolfhawkld/living-memory/pull/32)），通过草稿 PR 交付，不自动合并。
 
-2026-09-22 完成代码后按用户要求暂停；2026-09-23 按“继续执行”恢复验证与协作提交。下一项为 THEME-04 图谱主题适配，之后是 THEME-05 Mermaid/媒体；整套浅色视觉的人工验收保留在 THEME-06。
+2026-09-22 完成代码后按用户要求暂停；2026-09-23 恢复验证与协作提交，已创建[草稿 PR #34](https://github.com/wolfhawkld/living-memory/pull/34)，随后暂停浅色主题后续任务。2026-09-26 用户明确恢复，从 THEME-04 图谱主题适配继续；本文件保留 THEME-03 阶段的范围与验证记录，最新状态见[浅色主题 TODO](../planning/light-theme-todo.md)。

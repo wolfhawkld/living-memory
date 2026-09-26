@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { graphNodePosition } from './graph-position';
-import { DARK_THEME } from './theme-palette';
+import { DARK_THEME, type ThemePalette } from './theme-palette';
 
 /** A graph node shape accepted by the screen-label layer. */
 export interface GraphLabelNode {
@@ -19,6 +19,7 @@ export interface GraphLabelUpdate {
   camera: THREE.Camera;
   width: number;
   height: number;
+  theme?: ThemePalette;
   selectedId?: string | null;
   hoveredId?: string | null;
   neighborIds?: Iterable<string>;
@@ -315,11 +316,33 @@ function styleLayer(layer: HTMLDivElement): void {
   layer.dataset.graphLabelLayer = 'true';
 }
 
-function styleLabel(entry: LabelEntry, size: LabelSize, kind: GraphLabelKind, hovered: boolean, width: number): void {
+function labelPaletteSignature(theme: ThemePalette): string {
+  const { label, labelEmphasized } = theme.graph;
+  return [
+    label.border,
+    label.background,
+    label.shadow,
+    label.text,
+    labelEmphasized.border,
+    labelEmphasized.background,
+    labelEmphasized.shadow,
+    labelEmphasized.text,
+  ].join('|');
+}
+
+function styleLabel(
+  entry: LabelEntry,
+  size: LabelSize,
+  kind: GraphLabelKind,
+  hovered: boolean,
+  width: number,
+  theme: ThemePalette,
+  paletteSignature: string,
+): void {
   const element = entry.element;
   const emphasized = kind === 'selected' || kind === 'hovered';
   const constrainedWidth = Math.min(size.width, Math.max(MIN_LABEL_WIDTH, width - 4));
-  const styleSignature = `${constrainedWidth}:${size.height}:${kind}:${hovered ? 'hovered' : 'steady'}`;
+  const styleSignature = `${constrainedWidth}:${size.height}:${kind}:${hovered ? 'hovered' : 'steady'}:${paletteSignature}`;
   if (entry.styleSignature === styleSignature) return;
   entry.styleSignature = styleSignature;
   element.className = `graph-label graph-label-${kind}${hovered ? ' graph-label-hovered' : ''}`;
@@ -329,7 +352,7 @@ function styleLabel(entry: LabelEntry, size: LabelSize, kind: GraphLabelKind, ho
   element.style.maxWidth = `${SELECTED_LABEL_MAX_WIDTH}px`;
   element.style.height = `${size.height}px`;
   element.style.padding = '4px 6px';
-  const palette = emphasized ? DARK_THEME.graph.labelEmphasized : DARK_THEME.graph.label;
+  const palette = emphasized ? theme.graph.labelEmphasized : theme.graph.label;
   element.style.border = `1px solid ${palette.border}`;
   element.style.borderRadius = '4px';
   element.style.background = palette.background;
@@ -446,6 +469,8 @@ export function createGraphLabels(host: HTMLElement): GraphLabelLayer {
 
   const render = (state: GraphLabelUpdate): void => {
     if (disposed) return;
+    const theme = state.theme ?? DARK_THEME;
+    const paletteSignature = labelPaletteSignature(theme);
     const width = Math.max(0, Number.isFinite(state.width) ? state.width : 0);
     const height = Math.max(0, Number.isFinite(state.height) ? state.height : 0);
     const selectedId = state.selectedId ?? null;
@@ -479,7 +504,7 @@ export function createGraphLabels(host: HTMLElement): GraphLabelLayer {
         ...baseSize,
         width: Math.min(baseSize.width, Math.max(MIN_LABEL_WIDTH, width - 4)),
       };
-      styleLabel(entry, size, kind, isHovered, width);
+      styleLabel(entry, size, kind, isHovered, width, theme, paletteSignature);
       entry.element.dataset.conceptId = node.id;
       entry.element.dataset.kind = kind;
       entry.element.dataset.priority = String(labelPriority(kind));

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DARK_THEME, LIGHT_UI, themeCssVariables } from '../src/web/theme-palette.js';
-import { darkGraphVariables, LIGHT_COMPONENT_VARIABLES, LIGHT_MEMORY_COLORS, lightWorkspaceVariables } from '../src/web/theme-workspace.js';
+import { DARK_THEME, LIGHT_THEME, LIGHT_UI, themeCssVariables } from '../src/web/theme-palette.js';
+import { LIGHT_COMPONENT_VARIABLES, LIGHT_MEMORY_COLORS, lightWorkspaceVariables } from '../src/web/theme-workspace.js';
 
 function luminance(hex: string): number {
   const channels = hex.slice(1).match(/../g)!.map((value) => parseInt(value, 16) / 255)
@@ -23,30 +23,38 @@ test('light state text and ordinary UI text stay readable on both panel and page
     subtle: LIGHT_UI.textSubtle,
     accent: LIGHT_UI.accent,
     error: LIGHT_UI.error,
+    graphLabel: LIGHT_THEME.graph.label.text,
+    graphLabelEmphasized: LIGHT_THEME.graph.labelEmphasized.text,
   };
   for (const [name, color] of Object.entries(foregrounds)) {
-    for (const background of [LIGHT_UI.panel, LIGHT_UI.background]) {
+    for (const background of [LIGHT_UI.panel, LIGHT_UI.background, LIGHT_THEME.graph.background]) {
       assert.ok(contrast(color, background) >= 4.5, `${name} on ${background} needs readable small text`);
     }
   }
   assert.ok(contrast(LIGHT_UI.onAccent, LIGHT_UI.accent) >= 4.5);
 });
 
-test('page state colors and badge colors agree, while the staged graph boundary retains the dark palette', () => {
+test('page state colors and graph variables share LIGHT_THEME', () => {
   const page = lightWorkspaceVariables();
-  const graph = darkGraphVariables();
+  const graph = themeCssVariables(LIGHT_THEME);
   for (const [status, color] of Object.entries(LIGHT_MEMORY_COLORS)) {
     assert.equal(page[`--memory-${status}`], color);
-    assert.equal(page[`--memory-badge-${status}`], color);
+    assert.equal(page[`--memory-${status}`], LIGHT_THEME.memory[status as keyof typeof LIGHT_THEME.memory]);
+    assert.equal(page[`--memory-badge-${status}`], LIGHT_THEME.memoryBadge[status as keyof typeof LIGHT_THEME.memoryBadge]);
   }
-  for (const [key, value] of Object.entries(themeCssVariables(DARK_THEME))) {
-    assert.equal(graph[key as `--${string}`], value);
-  }
-  // A pale page must not leak component overrides into the still-dark canvas
-  // overlays; `initial` restores each component's original var() fallback.
-  for (const key of Object.keys(LIGHT_COMPONENT_VARIABLES)) {
-    assert.equal(graph[key as `--${string}`], 'initial');
+  for (const [key, value] of Object.entries(graph)) {
+    assert.equal(page[key as `--${string}`], value, `${key} must be shared by page and graph`);
   }
   assert.equal(page['--bg'], LIGHT_UI.background);
-  assert.equal(graph['--bg'], DARK_THEME.ui.background);
+  assert.equal(graph['--bg'], LIGHT_THEME.ui.background);
+  assert.equal(page['--graph-background'], LIGHT_THEME.graph.background);
+  assert.equal(page['--graph-tooltip-text'], LIGHT_THEME.graph.labelEmphasized.text);
+  assert.equal(page['--graph-tooltip-background'], LIGHT_THEME.graph.labelEmphasized.background);
+  assert.equal(page['--graph-tooltip-border'], LIGHT_THEME.graph.labelEmphasized.border);
+
+  // Component-only overrides remain part of the page workspace layer and do
+  // not replace any of the shared palette variables above.
+  for (const [key, value] of Object.entries(LIGHT_COMPONENT_VARIABLES)) {
+    assert.equal(page[key as `--${string}`], value);
+  }
 });
