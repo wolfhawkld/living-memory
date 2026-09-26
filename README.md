@@ -32,7 +32,7 @@ npm start
 
 ## 从这里开始
 
-- [浅色主题 TODO](docs/planning/light-theme-todo.md)：主题选择/本机偏好、工作区与阅读层、[3D/2D 图谱](docs/development/theme-graph.md)、[Mermaid 与图片容器](docs/development/theme-media.md)均已接入；THEME-06 总体验收待进行，浏览器视觉由用户验证。
+- [浅色主题 TODO](docs/planning/light-theme-todo.md)：主题选择/本机偏好、工作区与阅读层、[3D/2D 图谱](docs/development/theme-graph.md)、[Mermaid 与图片容器](docs/development/theme-media.md)均已接入；THEME-06 自动检查完成，待用户按[试用清单](docs/development/theme-validation.md#用户试用清单)进行浏览器验收。
 - [私人账号与知识域](docs/development/private-accounts.md)：登录、创建成员、私人知识源隔离、旧记录保留、CLI 设备身份及未来共享边界。
 - [场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)：当前优先迭代，记录从场景想起知识的表现，比较事前信心与核对结果，支持本人固定保持和手动恢复衰减。
 - [演示后的迭代 TODO（2026-09-22）](docs/planning/iteration-todo-2026-09-22.md)：当前完成范围、原有待办入口，以及学习历史、少量复习和场景调用的后续顺序。
