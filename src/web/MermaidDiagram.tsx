@@ -1,73 +1,45 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from 'react';
-import {
-  createSvgObjectUrl,
-  renderMermaidSvg,
-  revokeSvgObjectUrl,
-} from './mermaid-renderer';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement } from 'react';
+import { createMermaidPreview, INITIAL_MERMAID_PREVIEW } from './mermaid-preview';
+import { useTheme } from './ThemeProvider';
 
 export interface MermaidDiagramProps {
   code: string;
 }
 
-type RenderState = {
-  status: 'idle' | 'loading' | 'ready' | 'error';
-  error: string | null;
-  url: string | null;
-};
-
-const INITIAL_STATE: RenderState = { status: 'idle', error: null, url: null };
-
 export function MermaidDiagram({ code }: MermaidDiagramProps): ReactElement {
+  // New source content resets reading controls. Theme changes keep this instance.
+  return <MermaidDiagramContent key={code} code={code} />;
+}
+
+function MermaidDiagramContent({ code }: MermaidDiagramProps): ReactElement {
+  const { resolvedTheme } = useTheme();
   const [attempt, setAttempt] = useState(0);
   const [showSource, setShowSource] = useState(false);
   const [zoom, setZoom] = useState(1);
-  const [renderState, setRenderState] = useState<RenderState>(INITIAL_STATE);
-  const requestRef = useRef(0);
-  const objectUrlRef = useRef<string | null>(null);
+  const [preview] = useState(createMermaidPreview);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef({ left: 0, top: 0 });
+  const subscribe = useCallback((listener: () => void) => preview.subscribe(() => {
+    // Capture the current reading position before the replacement src is committed.
+    const viewport = viewportRef.current;
+    if (viewport) scrollRef.current = { left: viewport.scrollLeft, top: viewport.scrollTop };
+    listener();
+  }), [preview]);
+  const renderState = useSyncExternalStore(subscribe, preview.getSnapshot, () => INITIAL_MERMAID_PREVIEW);
 
   useEffect(() => {
-    const request = requestRef.current + 1;
-    requestRef.current = request;
-    let active = true;
-    setRenderState({ status: 'loading', error: null, url: null });
-    setShowSource(false);
-    setZoom(1);
+    void preview.load(code, resolvedTheme);
+  }, [attempt, code, resolvedTheme, preview]);
 
-    void renderMermaidSvg(code).then(({ svg }) => {
-      if (!active || request !== requestRef.current) return;
-
-      let nextUrl: string;
-      try {
-        nextUrl = createSvgObjectUrl(svg);
-      } catch (error) {
-        const message = error instanceof Error && error.message ? error.message : '图表预览不可用。';
-        setRenderState({ status: 'error', error: message, url: null });
-        return;
-      }
-
-      if (!active || request !== requestRef.current) {
-        revokeSvgObjectUrl(nextUrl);
-        return;
-      }
-
-      const previousUrl = objectUrlRef.current;
-      objectUrlRef.current = nextUrl;
-      if (previousUrl) revokeSvgObjectUrl(previousUrl);
-      setRenderState({ status: 'ready', error: null, url: nextUrl });
-    }).catch((error: unknown) => {
-      if (!active || request !== requestRef.current) return;
-      const message = error instanceof Error && error.message ? error.message : 'Mermaid 图表渲染失败。';
-      setRenderState({ status: 'error', error: message, url: null });
-    });
-
-    return () => {
-      active = false;
-      if (request !== requestRef.current) return;
-      const url = objectUrlRef.current;
-      objectUrlRef.current = null;
-      if (url) revokeSvgObjectUrl(url);
-    };
-  }, [attempt, code]);
+  useEffect(() => () => preview.clear(), [preview]);
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (viewport) {
+      viewport.scrollLeft = scrollRef.current.left;
+      viewport.scrollTop = scrollRef.current.top;
+    }
+    preview.commitDisplayed(renderState.url);
+  }, [preview, renderState.url, showSource]);
 
   const retry = () => setAttempt((value) => value + 1);
   const decreaseZoom = () => setZoom((value) => Math.max(.5, Number((value - .25).toFixed(2))));
@@ -75,11 +47,11 @@ export function MermaidDiagram({ code }: MermaidDiagramProps): ReactElement {
   const resetZoom = () => setZoom(1);
 
   return (
-    <section className="mermaid-diagram" aria-label="Mermaid 图表">
+    <section className="mermaid-diagram" aria-label="Mermaid 图表" aria-busy={renderState.status === 'loading'}>
       <div className="mermaid-diagram-toolbar">
         <span className="mermaid-diagram-label">图表</span>
         <div className="mermaid-diagram-actions">
-          {renderState.status === 'ready' && !showSource ? (
+          {renderState.url && !showSource ? (
             <div className="mermaid-diagram-zoom" aria-label="图表缩放">
               <button type="button" onClick={decreaseZoom} disabled={zoom <= .5} aria-label="缩小图表">−</button>
               <span aria-live="polite">{Math.round(zoom * 100)}%</span>
@@ -96,14 +68,26 @@ export function MermaidDiagram({ code }: MermaidDiagramProps): ReactElement {
         </div>
       </div>
 
+      {renderState.status === 'loading' && renderState.url && !showSource ? (
+        <span className="mermaid-diagram-update-status" role="status">更新配色中…</span>
+      ) : null}
+
+      {renderState.status === 'error' && renderState.url ? (
+        <div className="mermaid-diagram-error" role="alert">
+          <strong>配色更新失败，暂时保留上一次图表</strong><span>{renderState.error}</span>
+        </div>
+      ) : null}
       {showSource ? (
         <pre className="mermaid-diagram-source"><code>{code}</code></pre>
-      ) : renderState.status === 'ready' && renderState.url ? (
-        <div className="mermaid-diagram-viewport">
+      ) : renderState.url ? (
+        <div className="mermaid-diagram-viewport" ref={viewportRef} onScroll={(event) => {
+          scrollRef.current = { left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop };
+        }}>
           <div className="mermaid-diagram-scale" style={{ zoom } as CSSProperties}>
             <img
               className="mermaid-diagram-image"
               src={renderState.url}
+              style={renderState.size ? { width: renderState.size.width, height: renderState.size.height } : undefined}
               alt="Mermaid 图表"
             />
           </div>

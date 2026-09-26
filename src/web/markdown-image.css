@@ -1,10 +1,10 @@
 .markdown-image { display: block; min-width: 0; max-width: 100%; margin: 1em 0; }
-.markdown-image-scroll { display: block; max-width: 100%; max-height: 70vh; overflow: auto; border: 1px solid #344965; border-radius: 8px; background: #0a1220; }
+.markdown-image-scroll { display: block; max-width: 100%; max-height: 70vh; overflow: auto; border: 1px solid var(--ui-border, #344965); border-radius: 8px; background: var(--ui-panel, #0a1220); }
 .markdown-image-toggle { display: block; max-width: 100%; margin: 0 auto; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
 .markdown-image-toggle img { display: block; max-width: 100%; height: auto; margin: auto; }
 .markdown-image.is-natural .markdown-image-toggle { max-width: none; cursor: zoom-out; }
 .markdown-image.is-natural img { max-width: none; }
-.markdown-image-toggle:focus-visible { outline: 2px solid #78aaff; outline-offset: -2px; }
-.markdown-image-caption { display: block; margin-top: .45em; color: #95abc8; font-size: .75em; line-height: 1.5; overflow-wrap: anywhere; }
-.markdown-image-error { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px; border: 1px solid #6b4e3d; border-radius: 6px; color: #dcb189; font-size: .85em; }
-.markdown-image-error button { padding: 5px 9px; border: 1px solid #47607f; border-radius: 5px; color: #c4d8f4; background: #1a2c46; cursor: pointer; }
+.markdown-image-toggle:focus-visible { outline: 2px solid var(--ui-accent, #78aaff); outline-offset: -2px; }
+.markdown-image-caption { display: block; margin-top: .45em; color: var(--ui-text-muted, #95abc8); font-size: .75em; line-height: 1.5; overflow-wrap: anywhere; }
+.markdown-image-error { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--ui-error-border, #6b4e3d); border-radius: 6px; color: var(--ui-error, #dcb189); font-size: .85em; }
+.markdown-image-error button { padding: 5px 9px; border: 1px solid var(--ui-border-strong, #47607f); border-radius: 5px; color: var(--ui-text, #c4d8f4); background: var(--ui-raised, #1a2c46); cursor: pointer; }

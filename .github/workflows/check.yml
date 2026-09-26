@@ -2,7 +2,7 @@ name: Prototype checks
 
 on:
   push:
-    branches: [main, 'feat/**']
+    branches: [main, develop, 'feat/**']
   pull_request:
 
 permissions:

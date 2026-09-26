@@ -6,6 +6,7 @@ import { MermaidDiagram } from '../src/web/MermaidDiagram.js';
 import {
   createSvgObjectUrl,
   MERMAID_MAX_TEXT_SIZE,
+  MermaidRenderError,
   normalizeSvgDimensions,
   renderMermaidSvg,
   revokeSvgObjectUrl,
@@ -81,6 +82,246 @@ test('serializes concurrent Mermaid renders and initializes each API once', asyn
   assert.equal(configurations[0]?.startOnLoad, false);
   assert.ok((configurations[0]?.secure as string[]).includes('secure'));
   assert.equal(results[0]?.code, 'graph LR\nA --> B');
+});
+
+test('captures each queued theme so concurrent renders never share the wrong config', async () => {
+  const started = deferred<void>();
+  const release = deferred<void>();
+  let activeTheme = '';
+  let active = 0;
+  let maximumActive = 0;
+  const initializedThemes: string[] = [];
+  const renderedThemes: string[] = [];
+  const api = fakeApi(async (id) => {
+    const themeAtRenderStart = activeTheme;
+    renderedThemes.push(`${id}:${themeAtRenderStart}`);
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    if (id === 'dark-first') {
+      started.resolve();
+      await release.promise;
+    }
+    assert.equal(activeTheme, themeAtRenderStart);
+    active -= 1;
+    return { svg: `<svg viewBox="0 0 10 10"><text>${id}</text></svg>` };
+  }, (config) => {
+    activeTheme = String(config.theme);
+    initializedThemes.push(activeTheme);
+  });
+
+  const first = renderMermaidSvg('graph LR\nA --> B', { api, id: 'dark-first', theme: 'dark' });
+  await started.promise;
+  const second = renderMermaidSvg('graph LR\nB --> C', { api, id: 'light-second', theme: 'light' });
+  const third = renderMermaidSvg('graph LR\nC --> D', { api, id: 'dark-third', theme: 'dark' });
+  release.resolve();
+
+  await Promise.all([first, second, third]);
+  assert.equal(maximumActive, 1);
+  assert.deepEqual(initializedThemes, ['dark', 'default', 'dark']);
+  assert.deepEqual(renderedThemes, [
+    'dark-first:dark',
+    'light-second:default',
+    'dark-third:dark',
+  ]);
+});
+
+test('defaults to dark and reuses initialization for the same API and theme', async () => {
+  const initializedThemes: string[] = [];
+  const api = fakeApi(async () => ({ svg: '<svg viewBox="0 0 1 1"></svg>' }), (config) => {
+    initializedThemes.push(String(config.theme));
+  });
+
+  await renderMermaidSvg('graph LR\nA --> B', { api });
+  await renderMermaidSvg('graph LR\nB --> C', { api, theme: 'dark' });
+  await renderMermaidSvg('graph LR\nC --> D', { api, theme: 'light' });
+  await renderMermaidSvg('graph LR\nD --> E', { api, theme: 'light' });
+
+  assert.deepEqual(initializedThemes, ['dark', 'default']);
+});
+
+test('does not reuse a previous theme after a changed initialization fails', async () => {
+  const initializedThemes: string[] = [];
+  const api = fakeApi(async () => ({ svg: '<svg viewBox="0 0 1 1"></svg>' }), (config) => {
+    const theme = String(config.theme);
+    initializedThemes.push(theme);
+    if (theme === 'default') throw new Error('light initialization failed');
+  });
+
+  await renderMermaidSvg('graph LR\nA --> B', { api, theme: 'dark' });
+  await assert.rejects(
+    renderMermaidSvg('graph LR\nB --> C', { api, theme: 'light' }),
+    /light initialization failed/,
+  );
+  await renderMermaidSvg('graph LR\nC --> D', { api, theme: 'dark' });
+
+  assert.deepEqual(initializedThemes, ['dark', 'default', 'dark']);
+});
+
+test('captures the theme before options are mutated while waiting in the queue', async () => {
+  const started = deferred<void>();
+  const release = deferred<void>();
+  const initializedThemes: string[] = [];
+  const api = fakeApi(async (id) => {
+    if (id === 'first') {
+      started.resolve();
+      await release.promise;
+    }
+    return { svg: `<svg viewBox="0 0 1 1"><text>${id}</text></svg>` };
+  }, (config) => {
+    initializedThemes.push(String(config.theme));
+  });
+
+  const first = renderMermaidSvg('graph LR\nA --> B', { api, id: 'first', theme: 'dark' });
+  await started.promise;
+  const secondOptions: import('../src/web/mermaid-renderer.js').MermaidRenderOptions = {
+    api,
+    id: 'second',
+    theme: 'light',
+  };
+  const second = renderMermaidSvg('graph LR\nB --> C', secondOptions);
+  secondOptions.theme = 'dark';
+  release.resolve();
+
+  await Promise.all([first, second]);
+  assert.deepEqual(initializedThemes, ['dark', 'default']);
+});
+
+test('recovers the shared queue after initialization and render failures', async () => {
+  let initializeAttempts = 0;
+  let renderAttempts = 0;
+  const api = fakeApi(async () => {
+    renderAttempts += 1;
+    if (renderAttempts === 1) throw new Error('render failed');
+    return { svg: '<svg viewBox="0 0 1 1"></svg>' };
+  }, () => {
+    initializeAttempts += 1;
+    if (initializeAttempts === 1) throw new Error('initialize failed');
+  });
+
+  await assert.rejects(
+    renderMermaidSvg('graph LR\nA --> B', { api }),
+    /initialize failed/,
+  );
+  await assert.rejects(
+    renderMermaidSvg('graph LR\nB --> C', { api }),
+    /render failed/,
+  );
+  const result = await renderMermaidSvg('graph LR\nC --> D', { api });
+
+  assert.match(result.svg, /viewBox/);
+  assert.equal(initializeAttempts, 2);
+  assert.equal(renderAttempts, 2);
+});
+
+test('skips a cancelled task waiting in the queue and keeps later work usable', async () => {
+  const started = deferred<void>();
+  const release = deferred<void>();
+  const initializedThemes: string[] = [];
+  const renderedIds: string[] = [];
+  const api = fakeApi(async (id) => {
+    renderedIds.push(id);
+    if (id === 'first') {
+      started.resolve();
+      await release.promise;
+    }
+    return { svg: `<svg viewBox="0 0 1 1"><text>${id}</text></svg>` };
+  }, (config) => {
+    initializedThemes.push(String(config.theme));
+  });
+
+  const first = renderMermaidSvg('graph LR\nA --> B', { api, id: 'first', theme: 'dark' });
+  await started.promise;
+  const controller = new AbortController();
+  const queuedLight = renderMermaidSvg('graph LR\nB --> C', {
+    api,
+    id: 'queued-light',
+    signal: controller.signal,
+    theme: 'light',
+  });
+  controller.abort();
+  release.resolve();
+
+  await first;
+  await assert.rejects(
+    queuedLight,
+    (error: unknown) => error instanceof MermaidRenderError && error.code === 'MERMAID_RENDER_ABORTED',
+  );
+  const later = await renderMermaidSvg('graph LR\nC --> D', { api, id: 'later', theme: 'dark' });
+
+  assert.deepEqual(initializedThemes, ['dark']);
+  assert.deepEqual(renderedIds, ['first', 'later']);
+  assert.match(later.svg, /later/);
+});
+
+test('cancelling an active render still cleans its container and leaves the queue usable', async () => {
+  const originalDocument = globalThis.document;
+  const appended: Array<{ parentNode: unknown }> = [];
+  const removed: unknown[] = [];
+  const body = {
+    appendChild(element: { parentNode: unknown }) {
+      element.parentNode = body;
+      appended.push(element);
+    },
+    removeChild(element: unknown) {
+      removed.push(element);
+    },
+  };
+  const fakeDocument = {
+    body,
+    createElement() {
+      return {
+        id: '',
+        parentNode: null as unknown,
+        setAttribute() { /* noop */ },
+        style: {} as Record<string, string>,
+      };
+    },
+  };
+
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: fakeDocument });
+  try {
+    const started = deferred<void>();
+    const release = deferred<void>();
+    let renderCalls = 0;
+    const api = fakeApi(async (_id, _code, container) => {
+      renderCalls += 1;
+      assert.ok(container);
+      if (renderCalls === 1) {
+        started.resolve();
+        await release.promise;
+      }
+      return { svg: '<svg viewBox="0 0 1 1"></svg>' };
+    });
+    const controller = new AbortController();
+    const cancelled = renderMermaidSvg('graph LR\nA --> B', {
+      api,
+      id: 'cancelled',
+      signal: controller.signal,
+    });
+    await started.promise;
+    controller.abort();
+    release.resolve();
+
+    await assert.rejects(
+      cancelled,
+      (error: unknown) => error instanceof MermaidRenderError && error.code === 'MERMAID_RENDER_ABORTED',
+    );
+    assert.equal(renderCalls, 1);
+    assert.equal(appended.length, 1);
+    assert.equal(removed.length, 1);
+
+    const later = await renderMermaidSvg('graph LR\nB --> C', { api, id: 'after-cancel' });
+    assert.match(later.svg, /viewBox/);
+    assert.equal(renderCalls, 2);
+    assert.equal(appended.length, 2);
+    assert.equal(removed.length, 2);
+  } finally {
+    if (originalDocument) {
+      Object.defineProperty(globalThis, 'document', { configurable: true, value: originalDocument });
+    } else {
+      delete (globalThis as { document?: Document }).document;
+    }
+  }
 });
 
 test('gives Blob SVGs finite intrinsic dimensions when Mermaid uses responsive sizing', async () => {

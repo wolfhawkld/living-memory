@@ -2,7 +2,7 @@
 
 更新：2026-09-22。对应[浅色主题计划](../planning/light-theme-todo.md)的第一项，该项交付时仍只启用深色主题。协作任务：[Issue #29](https://github.com/wolfhawkld/living-memory/issues/29)。
 
-后续状态（2026-09-26）：THEME-02 已加入[主题入口与本机偏好](theme-preferences.md)，THEME-03 已完成[工作区与阅读层浅色适配](theme-workspace.md)，THEME-04 接入[图谱主题](theme-graph.md)。下一项为 THEME-05 Mermaid/媒体。下文配色基础与验证记录保留 THEME-01 阶段信息，迁移表同步标记后续进度。
+后续状态（2026-09-26）：THEME-02～05 已接入[主题偏好](theme-preferences.md)、[工作区与阅读层](theme-workspace.md)、[图谱](theme-graph.md)和 [Mermaid/媒体](theme-media.md)。THEME-06 总体验收仍待进行。下文配色基础与验证记录保留 THEME-01 阶段信息，迁移表同步标记后续进度。
 
 ## 配色来源与接入方式
 
@@ -29,10 +29,10 @@ THEME-01 让 `App`、`DemoPanel` 和图谱读取同一配色对象，`GraphView`
 | `account.css`、`domain-controls.css`、`concept-search.css`、`pending-writes.css` | THEME-03 已接入登录、账户、领域、搜索及待同步界面的局部颜色 |
 | `concept-history.css`、`scenario-practice.css`、`learning-evidence.css` | THEME-03 已接入历史/练习/信心/长期保持容器、徽标及交互状态 |
 | `concept-reader.css`、`markdown-content.css`、`MarkdownContent.tsx` | THEME-03 已接入大窗、Markdown、代码、表格、公式及 KaTeX 错误色 |
-| `mermaid-renderer.ts`、`mermaid-diagram.css`、`markdown-image.css` | Mermaid 配置、图表重渲染和媒体容器在 THEME-05 处理；普通图片不反色 |
+| `mermaid-renderer.ts`、`mermaid-diagram.css`、`markdown-image.css` | THEME-05 已接入 Mermaid 队列内配置、图表重渲染和媒体容器；普通图片不反色 |
 | `index.html` 的浏览器主题色、`color-scheme: dark` | THEME-02 已按实际主题、首屏偏好和根主题标记统一更新 |
 
-THEME-01 未改动图谱生命周期、相机、布局、旋转计时、账号作用域或学习数据。后续 THEME-02/03/04 已接入偏好、页面与图谱展示，Mermaid 仍需 THEME-05 的渲染层适配。
+THEME-01 未改动图谱生命周期、相机、布局、旋转计时、账号作用域或学习数据。后续 THEME-02～05 已接入偏好、页面、图谱与媒体展示；实际浏览器效果仍待用户验收。
 
 ## 验证记录
 

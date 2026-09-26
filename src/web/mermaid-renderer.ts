@@ -6,9 +6,13 @@ export interface MermaidRenderApi {
   render(id: string, code: string, container?: Element): Promise<{ svg: string; bindFunctions?: unknown }>;
 }
 
+export type MermaidTheme = 'dark' | 'light';
+
 export interface MermaidRenderOptions {
   api?: MermaidRenderApi;
   id?: string;
+  theme?: MermaidTheme;
+  signal?: AbortSignal;
 }
 
 export interface MermaidRenderResult {
@@ -46,7 +50,7 @@ const MAX_SVG_INTRINSIC_DIMENSION = 50_000;
 let mermaidModulePromise: Promise<MermaidRenderApi> | null = null;
 let renderSequence = 0;
 let renderQueue: Promise<void> = Promise.resolve();
-const configuredApis = new WeakSet<object>();
+const configuredApis = new WeakMap<object, MermaidTheme>();
 
 export type MermaidModuleLoader = () => Promise<MermaidRenderApi>;
 
@@ -81,11 +85,13 @@ export function sanitizeMermaidCode(source: string): string {
   return code;
 }
 
-function mermaidConfiguration(): Record<string, unknown> {
+function mermaidConfiguration(theme: MermaidTheme): Record<string, unknown> {
   return {
     startOnLoad: false,
     securityLevel: 'strict',
-    theme: 'dark',
+    // Mermaid's built-in default theme is the light palette. Keep the public
+    // renderer API's theme vocabulary separate from Mermaid's theme names.
+    theme: theme === 'light' ? 'default' : 'dark',
     htmlLabels: false,
     fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
     maxTextSize: MERMAID_MAX_TEXT_SIZE,
@@ -114,10 +120,21 @@ export function setMermaidModuleLoaderForTests(loader: MermaidModuleLoader | nul
   mermaidModulePromise = null;
 }
 
-function initializeMermaid(api: MermaidRenderApi): void {
-  if (configuredApis.has(api as object)) return;
-  api.initialize(mermaidConfiguration());
-  configuredApis.add(api as object);
+function initializeMermaid(api: MermaidRenderApi, theme: MermaidTheme): void {
+  if (configuredApis.get(api as object) === theme) return;
+  // Do not retain the previous successful theme while a new initialization is
+  // in progress. Mermaid mutates global configuration during initialize, so a
+  // partially applied initialization must force the next task to initialize
+  // again even if it requests the old theme.
+  configuredApis.delete(api as object);
+  api.initialize(mermaidConfiguration(theme));
+  configuredApis.set(api as object, theme);
+}
+
+function throwIfRenderAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new MermaidRenderError('MERMAID_RENDER_ABORTED', 'Mermaid 图表渲染已取消。');
+  }
 }
 
 function enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -260,10 +277,18 @@ export async function renderMermaidSvg(
   options: MermaidRenderOptions = {},
 ): Promise<MermaidRenderResult> {
   const code = sanitizeMermaidCode(source);
+  const apiOverride = options.api;
+  const idOverride = options.id;
+  const theme = options.theme === 'light' ? 'light' : 'dark';
+  const signal = options.signal;
+  throwIfRenderAborted(signal);
+
   return enqueue(async () => {
-    const api = options.api ?? await loadMermaid();
-    initializeMermaid(api);
-    const id = options.id ?? nextRenderId();
+    throwIfRenderAborted(signal);
+    const api = apiOverride ?? await loadMermaid();
+    throwIfRenderAborted(signal);
+    initializeMermaid(api, theme);
+    const id = idOverride ?? nextRenderId();
     const container = createRenderContainer(id);
     let result: { svg: string; bindFunctions?: unknown };
     try {
@@ -274,6 +299,7 @@ export async function renderMermaidSvg(
     } finally {
       container.cleanup();
     }
+    throwIfRenderAborted(signal);
     if (!result || typeof result.svg !== 'string') {
       throw new MermaidRenderError('MERMAID_RENDER_FAILED', 'Mermaid 未返回 SVG 图表。');
     }
