@@ -24,6 +24,10 @@ import {
 } from './api';
 import { GraphFallbackList, GraphView } from './GraphView';
 import { ThemeSelector } from './ThemeSelector';
+import { BriefReviewPanel, BriefReviewProgress } from './BriefReviewPanel';
+import { selectBriefReviewCandidates } from '../core/brief-review';
+import { advanceBriefReview, briefReviewCounts, completeBriefReviewItem, resolveBriefReviewItem, type BriefReviewSession } from './brief-review-session';
+import './brief-review.css';
 import { createDemoRecord, extendDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
 import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
@@ -219,6 +223,10 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const [sourceViewedKeys, setSourceViewedKeys] = useState<string[]>([]);
   const [readerRequest, setReaderRequest] = useState<ReaderRequest | null>(null);
   const [attempt, setAttempt] = useState<RecallAttempt | null>(null);
+  const [briefBudget, setBriefBudget] = useState<3 | 5>(3);
+  const [briefSession, setBriefSession] = useState<BriefReviewSession | null>(null);
+  const briefActionRef = useRef(false);
+  const learningWriteRef = useRef(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
   const [scenarioReader, setScenarioReader] = useState<Concept | null>(null);
   const [retentionConfirmation, setRetentionConfirmation] = useState<RetentionRequest | null>(null);
@@ -278,7 +286,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     hidden: typeof document !== 'undefined' && document.hidden,
     demoEnabled,
     simulated,
-    attempt: Boolean(attempt) || scenarioOpen,
+    attempt: Boolean(attempt) || scenarioOpen || Boolean(briefSession),
     reviewDialogOpen: reviewDialogOpen || Boolean(retentionConfirmation),
     configOpen,
     busyAction,
@@ -376,6 +384,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     const ui = changeUiRef.current;
     return (
       !ui.loading &&
+      !briefActionRef.current &&
       !ui.hidden &&
       !ui.demoEnabled &&
       !ui.simulated &&
@@ -530,7 +539,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   useEffect(() => {
     changeHandlersRef.current.flush();
-  }, [attempt, scenarioOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
+  }, [attempt, briefSession, scenarioOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
 
   useEffect(() => {
     void loadInitial();
@@ -599,8 +608,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         refreshPendingState();
         const notice = pendingSyncNotice(result);
         showNotice(notice);
-        if (result.sent > 0) {
-          try { await loadSnapshot(); } catch (error) {
+        if (result.sent > 0 && canApplyChange()) {
+          try { await loadSnapshot(undefined, sourceId, canApplyChange); } catch (error) {
             showNotice({ tone: 'error', text: `${notice?.text ?? ''} 页面状态刷新失败：${errorMessage(error)}` });
           }
         }
@@ -610,7 +619,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     };
     window.addEventListener('online', retry);
     return () => window.removeEventListener('online', retry);
-  }, [loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, writeLocked, writeToken]);
+  }, [canApplyChange, loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, writeLocked, writeToken]);
 
   useEffect(() => {
     return () => {
@@ -639,7 +648,20 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     : displaySnapshot, [displaySnapshot, domainId, expandedIds, selectedId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
-  const domainBusy = Boolean(attempt) || scenarioOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const briefCandidates = useMemo(() => snapshot && domainId && !writeLocked
+    ? selectBriefReviewCandidates(snapshot, domainId, { limit: briefBudget, excludedIds: pendingConceptIds }) : [],
+  [snapshot, domainId, writeLocked, briefBudget, pendingConceptIds]);
+  const briefDisabledReason = demoEnabled ? '请先切换到真实学习记录。'
+    : simulated ? '请先恢复实时时间。'
+    : sourceReloadPending ? '知识源已变化，请结束当前任务后重新加载。'
+    : !hasSession ? '本地会话尚未就绪。'
+    : domainBusy ? '请先完成当前操作。' : null;
+  const briefItem = briefSession?.items[briefSession.index];
+  const briefResult = briefSession && briefItem ? briefSession.results[briefItem.conceptId] : null;
+  const briefProgressLock = sourceReloadPending || (briefSession && briefSession.sourceId !== sourceId)
+    ? '知识源已变化，请结束本轮后重新加载。' : writeLocked || !hasSession ? '当前无法写入真实记录，请结束本轮后重试。' : null;
+  const learningOverlayOpen = Boolean(attempt) || scenarioOpen || Boolean(briefSession);
 
   // Source refreshes may remove a domain or a relation. Reconcile only when no
   // answer/dialog is active, and never turn a view change into a learning event.
@@ -655,12 +677,16 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [activeDomainId, domainBusy, domainId, expandedIds, selectedId, viewSnapshot, visibleExpandedIds, visibleIds]);
 
   const selectedConcept = useMemo(() => snapshot?.concepts.find((concept) => concept.id === selectedId) ?? null, [selectedId, snapshot]);
+  const briefReviewDisabledReason = briefItem && (!selectedConcept || selectedConcept.id !== briefItem.conceptId
+    || selectedConcept.source.revision !== briefItem.sourceRevision || snapshot?.states[briefItem.conceptId]?.retention?.active
+    || pendingConceptIds.has(briefItem.conceptId))
+    ? '本条内容或状态已变化，请稍后到节点详情确认重温。' : null;
   const readerVisible = canShowConceptReader(readerRequest, sourceId, selectedConcept, attempt?.stage ?? null, sourceReloadPending);
   useEffect(() => {
     if (readerRequest && !readerVisible) setReaderRequest(null);
   }, [readerRequest, readerVisible]);
   const selectedSourceViewed = Boolean(selectedConcept && sourceViewedKeys.includes(sourceExposureKey(sourceId, selectedConcept)));
-  const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !scenarioOpen && !sourceReloadPending);
+  const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !briefSession && !scenarioOpen && !sourceReloadPending);
   const conceptHistory = useConceptHistory({
     sourceId, conceptId: selectedConcept?.id ?? '', sourceRevision: selectedConcept?.source.revision ?? '',
   }, historyEnabled, snapshot);
@@ -733,20 +759,21 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [showNotice, snapshot, sourceId]);
 
   const openReader = useCallback((section: ReaderSection = 'body') => {
-    if (!selectedConcept || !sourceId || sourceReloadPending || (attempt && attempt.stage !== 'feedback')) return;
+    if (!selectedConcept || !sourceId || sourceReloadPending || briefActionRef.current || (attempt && attempt.stage !== 'feedback')) return;
     markSourceViewed(selectedConcept.id);
     setReaderRequest({ sourceId, conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision, section });
   }, [selectedConcept, sourceId, sourceReloadPending, attempt?.stage, markSourceViewed]);
   const closeReader = useCallback(() => setReaderRequest(null), []);
 
   const selectConcept = useCallback((conceptId: string) => {
+    if (briefSession || briefActionRef.current) return;
     if (attempt && attempt.conceptId !== conceptId) {
       if (!window.confirm('当前回忆尚未保存，确定取消并切换概念吗？')) return;
       setAttempt(null);
     }
     setSelectedId(conceptId);
     setFocusRevision((revision) => revision + 1);
-  }, [attempt]);
+  }, [attempt, briefSession]);
 
   const selectSearchResult = useCallback((conceptId: string) => {
     if (domainBusy) return;
@@ -778,7 +805,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [loadSnapshot, simulated]);
 
   const refreshSource = useCallback(async () => {
-    if (!writeToken || writeLocked || attempt) return;
+    if (!writeToken || writeLocked || attempt || briefSession || briefActionRef.current) return;
     setRefreshing(true);
     try {
       await api.refresh(writeToken, sourceId);
@@ -790,7 +817,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     } finally {
       setRefreshing(false);
     }
-  }, [attempt, loadSnapshot, showNotice, sourceId, writeLocked, writeToken]);
+  }, [attempt, briefSession, loadSnapshot, showNotice, sourceId, writeLocked, writeToken]);
 
   const writeWithRetry = useCallback(async (options: {
     path: '/reviews' | '/observations' | '/retentions' | '/config' | '/layout';
@@ -827,59 +854,149 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [refreshPendingState, showNotice, sourceId]);
 
   const submitReview = useCallback(async (kind: 'review' | 'estimated', requestedOccurredAt?: string) => {
-    if (!snapshot || !selectedConcept || !writeToken || writeLocked) return;
-    const eventId = newEventId();
-    const occurredAt = kind === 'review' ? new Date().toISOString() : new Date(`${requestedOccurredAt ?? ''}T12:00:00`).toISOString();
-    const existing = reviewEventRef.current;
-    const stableEvent = existing && existing.conceptId === selectedConcept.id && existing.kind === kind && (kind === 'review' || existing.occurredAt === occurredAt)
-      ? existing
-      : { conceptId: selectedConcept.id, kind, occurredAt, eventId };
-    reviewEventRef.current = stableEvent;
-    const payload: ReviewRequest = {
-      eventId: stableEvent.eventId,
-      conceptId: selectedConcept.id,
-      sourceRevision: selectedConcept.source.revision,
-      kind,
-      occurredAt: stableEvent.occurredAt,
-    };
-    setBusyAction('review');
-    const result = await writeWithRetry({
-      path: '/reviews',
-      method: 'POST',
-      payload,
-      eventId: stableEvent.eventId,
-      conceptId: selectedConcept.id,
-      label: kind === 'estimated' ? '补记重温' : '确认重温',
-      send: () => api.postReview(payload, writeToken, sourceId),
-    });
-    setBusyAction(null);
-    if (result.ok || result.queued) setReviewDialogOpen(false);
-    if (result.ok) {
-      reviewEventRef.current = null;
-      showNotice({ tone: 'success', text: kind === 'estimated' ? '已保存一条估计的过去重温。' : '已确认重温，时间起点已更新。' });
-      await reloadRealSnapshot();
+    if (!snapshot || !selectedConcept || !writeToken || writeLocked || learningWriteRef.current || briefActionRef.current) return;
+    if (briefSession && (briefSession.sourceId !== sourceId || briefSession.items[briefSession.index]?.conceptId !== selectedConcept.id
+      || briefSession.results[selectedConcept.id] !== 'saved' || briefReviewDisabledReason
+      || briefSession.reviews[selectedConcept.id] || briefSession.items[briefSession.index]?.sourceRevision !== selectedConcept.source.revision)) return;
+    learningWriteRef.current = true;
+    try {
+      const eventId = newEventId();
+      const occurredAt = kind === 'review' ? new Date().toISOString() : new Date(`${requestedOccurredAt ?? ''}T12:00:00`).toISOString();
+      const existing = reviewEventRef.current;
+      const stableEvent = existing && existing.conceptId === selectedConcept.id && existing.kind === kind && (kind === 'review' || existing.occurredAt === occurredAt)
+        ? existing
+        : { conceptId: selectedConcept.id, kind, occurredAt, eventId };
+      reviewEventRef.current = stableEvent;
+      const payload: ReviewRequest = {
+        eventId: stableEvent.eventId,
+        conceptId: selectedConcept.id,
+        sourceRevision: selectedConcept.source.revision,
+        kind,
+        occurredAt: stableEvent.occurredAt,
+      };
+      setBusyAction('review');
+      const result = await writeWithRetry({
+        path: '/reviews',
+        method: 'POST',
+        payload,
+        eventId: stableEvent.eventId,
+        conceptId: selectedConcept.id,
+        label: kind === 'estimated' ? '补记重温' : '确认重温',
+        send: () => api.postReview(payload, writeToken, sourceId),
+      });
+      if (result.ok || result.queued) setReviewDialogOpen(false);
+      if (briefSession && (result.ok || result.queued)) {
+        setBriefSession((current) => current?.id === briefSession.id
+          ? { ...current, reviews: { ...current.reviews, [selectedConcept.id]: result.ok ? 'saved' : 'queued' } } : current);
+      }
+      if (result.ok) {
+        reviewEventRef.current = null;
+        showNotice({ tone: 'success', text: kind === 'estimated' ? '已保存一条估计的过去重温。' : '已确认重温，时间起点已更新。' });
+        await reloadRealSnapshot();
+      }
+    } finally {
+      learningWriteRef.current = false;
+      setBusyAction(null);
     }
-  }, [reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
+  }, [briefReviewDisabledReason, briefSession, reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
-  const startRecall = useCallback(() => {
-    if (!snapshot || !selectedConcept || !selectedState || writeLocked || attempt) return;
+  const beginRecall = useCallback((concept: Concept, state: MemoryState) => {
+    const viewed = sourceViewedKeys.includes(sourceExposureKey(sourceId, concept));
     setReaderRequest(null);
+    setSelectedId(concept.id);
+    setFocusRevision((revision) => revision + 1);
+    reviewEventRef.current = null;
     setAttempt({
-      conceptId: selectedConcept.id,
+      conceptId: concept.id,
       eventId: null,
       answer: '',
       startedAt: new Date().toISOString(),
       observedAt: null,
       configRevision: null,
-      anchorEventId: selectedState.anchor?.sourceRevision === selectedConcept.source.revision ? selectedState.anchor.eventId : null,
-      sourceRevision: selectedConcept.source.revision,
-      sourceViewedBefore: selectedSourceViewed,
+      anchorEventId: state.anchor?.sourceRevision === concept.source.revision ? state.anchor.eventId : null,
+      sourceRevision: concept.source.revision,
+      sourceViewedBefore: viewed,
       stage: 'prediction',
       learning: { task: 'concept', confidence: null, confidenceAt: null, cue: 'unknown', outcome: 'unverified', basis: 'unknown' },
       rating: null,
-      exposure: selectedSourceViewed ? 'exposed' : 'unknown',
+      exposure: viewed ? 'exposed' : 'unknown',
     });
-  }, [attempt, selectedConcept, selectedState, selectedSourceViewed, snapshot, writeLocked]);
+  }, [sourceId, sourceViewedKeys]);
+
+  const startRecall = useCallback(() => {
+    if (!snapshot || !selectedConcept || !selectedState || writeLocked || attempt || briefSession || briefActionRef.current || busyAction) return;
+    beginRecall(selectedConcept, selectedState);
+  }, [attempt, beginRecall, briefSession, busyAction, selectedConcept, selectedState, snapshot, writeLocked]);
+
+  const pendingReviewIds = useCallback(() => new Set(getPendingWrites(sourceId)
+    .map((write) => write.conceptId).filter((id): id is string => Boolean(id))), [sourceId]);
+
+  const startBriefReview = useCallback(async () => {
+    if (briefDisabledReason || !domainId || !sourceId || briefActionRef.current) return;
+    briefActionRef.current = true;
+    setBusyAction('brief-review');
+    try {
+      const latest = await loadSnapshot(undefined, sourceId);
+      if (!latest || writeLockedRef.current || sourceIdRef.current !== sourceId) return;
+      const candidates = selectBriefReviewCandidates(latest, domainId, { limit: briefBudget, excludedIds: pendingReviewIds() });
+      if (!candidates.length) {
+        showNotice({ tone: 'info', text: '当前领域没有可按时间推荐的概念，可以直接阅读或手动选择概念回忆。' });
+        return;
+      }
+      const session: BriefReviewSession = {
+        id: newEventId(), sourceId, domainId, index: 0, results: {}, reviews: {},
+        items: candidates.map((candidate) => ({ ...candidate, title: latest.concepts.find((concept) => concept.id === candidate.conceptId)!.title })),
+      };
+      const first = resolveBriefReviewItem(session, latest, pendingReviewIds());
+      if (!first) return;
+      setBriefSession(session);
+      beginRecall(first.concept, first.state);
+    } catch (startError) {
+      showNotice({ tone: 'error', text: `暂时无法开始复习：${errorMessage(startError)}` });
+    } finally {
+      briefActionRef.current = false;
+      setBusyAction(null);
+    }
+  }, [beginRecall, briefBudget, briefDisabledReason, domainId, loadSnapshot, pendingReviewIds, showNotice, sourceId]);
+
+  const endBriefReview = useCallback(() => {
+    if (!briefSession || busyAction || briefActionRef.current || learningWriteRef.current) return;
+    const counts = briefReviewCounts(briefSession);
+    setReaderRequest(null);
+    setAttempt(null);
+    setBriefSession(null);
+    reviewEventRef.current = null;
+    showNotice({ tone: 'info', text: `本轮已结束：保存 ${counts.saved} 条观察，另有 ${counts.queued} 条进入待同步队列，跳过 ${counts.skipped} 条。未提交的作答不会保存。` });
+  }, [briefSession, busyAction, showNotice]);
+
+  const skipBriefItem = useCallback(() => {
+    if (!briefSession || !attempt || busyAction || learningWriteRef.current) return;
+    setBriefSession((current) => completeBriefReviewItem(current, briefSession.id, attempt.conceptId, 'skipped'));
+    setReaderRequest(null);
+    setAttempt(null);
+  }, [attempt, briefSession, busyAction]);
+
+  const nextBriefItem = useCallback(async () => {
+    if (!briefSession || attempt || busyAction || writeLocked || !writeToken || briefActionRef.current
+      || briefSession.sourceId !== sourceId) return;
+    const next = advanceBriefReview(briefSession);
+    if (next === briefSession) return;
+    briefActionRef.current = true;
+    setBusyAction('brief-review');
+    try {
+      const latest = await loadSnapshot(undefined, sourceId);
+      if (!latest || writeLockedRef.current || sourceIdRef.current !== sourceId) return;
+      const ready = resolveBriefReviewItem(next, latest, pendingReviewIds());
+      setBriefSession(ready ? next : completeBriefReviewItem(next, next.id, next.items[next.index].conceptId, 'unavailable'));
+      if (ready) beginRecall(ready.concept, ready.state);
+      else setSelectedId(null);
+    } catch (nextError) {
+      showNotice({ tone: 'error', text: `下一条尚未开始：${errorMessage(nextError)}，可重试或结束本轮。` });
+    } finally {
+      briefActionRef.current = false;
+      setBusyAction(null);
+    }
+  }, [attempt, beginRecall, briefSession, busyAction, loadSnapshot, pendingReviewIds, showNotice, sourceId, writeLocked, writeToken]);
 
   const submitRecallAnswer = useCallback(() => {
     if (!attempt || !snapshot || attempt.stage !== 'answer') return;
@@ -893,44 +1010,53 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [attempt, markSourceViewed, snapshot]);
 
   const saveObservation = useCallback(async () => {
-    if (!attempt || !selectedConcept || !snapshot || !writeToken || writeLocked || attempt.stage !== 'feedback' || !attempt.rating || !attempt.observedAt) return;
-    const eventId = attempt.eventId ?? newEventId();
-    const payload: ObservationRequest = attempt.submittedPayload ?? {
-      eventId,
-      conceptId: selectedConcept.id,
-      sourceRevision: attempt.sourceRevision,
-      observedAt: attempt.observedAt,
-      configRevision: attempt.configRevision ?? snapshot.config.revision,
-      anchorEventId: attempt.anchorEventId,
-      answer: attempt.answer,
-      rating: attempt.rating,
-      exposure: attempt.exposure,
-      observedExposure: attempt.sourceViewedBefore,
-      learning: attempt.learning,
-    };
-    setAttempt({ ...attempt, eventId, submittedPayload: payload });
-    setBusyAction('observation');
-    const result = await writeWithRetry({
-      path: '/observations',
-      method: 'POST',
-      payload,
-      eventId: payload.eventId,
-      conceptId: selectedConcept.id,
-      label: '回忆观察',
-      send: () => api.postObservation(payload, writeToken, sourceId),
-    });
-    if (!result.ok && !result.queued) setAttempt({ ...attempt, eventId, submittedPayload: payload });
-    if (result.queued) setAttempt(null);
-    setBusyAction(null);
-    if (result.ok) {
-      setAttempt(null);
-      showNotice({ tone: 'success', text: '观察已记录；它暂时不会改变重温时间曲线。' });
-      await reloadRealSnapshot();
+    if (!attempt || !selectedConcept || selectedConcept.id !== attempt.conceptId || !snapshot || !writeToken || writeLocked
+      || learningWriteRef.current || attempt.stage !== 'feedback' || !attempt.rating || !attempt.observedAt) return;
+    learningWriteRef.current = true;
+    try {
+      const eventId = attempt.eventId ?? newEventId();
+      const payload: ObservationRequest = attempt.submittedPayload ?? {
+        eventId,
+        conceptId: selectedConcept.id,
+        sourceRevision: attempt.sourceRevision,
+        observedAt: attempt.observedAt,
+        configRevision: attempt.configRevision ?? snapshot.config.revision,
+        anchorEventId: attempt.anchorEventId,
+        answer: attempt.answer,
+        rating: attempt.rating,
+        exposure: attempt.exposure,
+        observedExposure: attempt.sourceViewedBefore,
+        learning: attempt.learning,
+      };
+      setAttempt({ ...attempt, eventId, submittedPayload: payload });
+      setBusyAction('observation');
+      const result = await writeWithRetry({
+        path: '/observations',
+        method: 'POST',
+        payload,
+        eventId: payload.eventId,
+        conceptId: selectedConcept.id,
+        label: '回忆观察',
+        send: () => api.postObservation(payload, writeToken, sourceId),
+      });
+      if (!result.ok && !result.queued) setAttempt({ ...attempt, eventId, submittedPayload: payload });
+      if (result.ok || result.queued) {
+        if (briefSession) setBriefSession((current) => completeBriefReviewItem(current, briefSession.id, attempt.conceptId, result.ok ? 'saved' : 'queued'));
+        setReaderRequest(null);
+        setAttempt(null);
+      }
+      if (result.ok) {
+        showNotice({ tone: 'success', text: '观察已记录；它暂时不会改变重温时间曲线。' });
+        await reloadRealSnapshot();
+      }
+    } finally {
+      learningWriteRef.current = false;
+      setBusyAction(null);
     }
-  }, [attempt, reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
+  }, [attempt, briefSession, reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const saveConfig = useCallback(async () => {
-    if (!snapshot || !writeToken || writeLocked || attempt) return;
+    if (!snapshot || !writeToken || writeLocked || attempt || briefSession || briefActionRef.current || busyAction) return;
     const halfLifeDays = Number(halfLifeDraft);
     if (!Number.isFinite(halfLifeDays) || halfLifeDays <= 0 || halfLifeDays > 3650) {
       showNotice({ tone: 'error', text: '半衰时间应为 0 到 3650 天之间的正数。' });
@@ -945,7 +1071,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       showNotice({ tone: 'success', text: `已更新全局 H = ${halfLifeDays} 天。` });
       await reloadRealSnapshot();
     }
-  }, [attempt, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
+  }, [attempt, briefSession, busyAction, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const saveScenarioObservation = async (payload: ObservationRequest): Promise<boolean> => {
     if (sourceReloadPending && sourceId) {
@@ -1041,7 +1167,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, writeLocked, writeToken]);
 
   const setSimulatedDays = (value: number) => {
-    if (attempt || sourceReloadPending) return;
+    if (domainBusy || briefActionRef.current) return;
     setSimDays(value);
     if (demoEnabled) {
       try {
@@ -1051,7 +1177,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   };
 
   const changeDemoMode = (enabled: boolean) => {
-    if (attempt || sourceReloadPending) return;
+    if (domainBusy || briefActionRef.current) return;
     writeLockedRef.current = true;
     setSimulationLoading(!enabled);
     setSimDays(enabled ? readDemoOffset(sourceId) : 0);
@@ -1110,9 +1236,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         <div className="topbar-actions">
           {account ? <><span className="account-name" title="当前私人知识空间">{account.username}</span>{account.role === 'admin' ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={onManageAccounts}>账号管理</button> : null}<button type="button" className="quiet-button" disabled={domainBusy} onClick={onLogout}>退出登录</button></> : null}
           <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => { setReaderRequest(null); setScenarioOpen(true); }}>场景调用练习</button>
-          <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={refreshing || writeLocked || Boolean(attempt)} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
-          <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={demoEnabled || busyAction === 'export'} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；暂不支持导入恢复。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
-          <button type="button" className={`config-button${configOpen ? ' is-open' : ''}`} onClick={() => setConfigOpen((open) => !open)} disabled={Boolean(attempt) || writeLocked}>H = {displaySnapshot.config.halfLifeDays} 天 <span>⌄</span></button>
+          <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={domainBusy || writeLocked} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
+          <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={demoEnabled || Boolean(briefSession) || Boolean(busyAction)} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；暂不支持导入恢复。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
+          <button type="button" className={`config-button${configOpen ? ' is-open' : ''}`} onClick={() => setConfigOpen((open) => !open)} disabled={Boolean(attempt) || Boolean(briefSession) || Boolean(busyAction) || writeLocked}>H = {displaySnapshot.config.halfLifeDays} 天 <span>⌄</span></button>
           {configOpen ? (
             <div className="config-popover">
               <div className="popover-kicker">时间模型 · {snapshot.config.modelVersion}</div>
@@ -1124,11 +1250,11 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         </div>
       </header>
 
-      {sourceReloadPending ? <div className="mode-bar source-reload-banner" role="alert"><div><strong>知识源已变化</strong><span>请完成当前输入后重新加载页面。</span></div><button type="button" disabled={Boolean(attempt) || scenarioOpen || Boolean(retentionConfirmation) || Boolean(busyAction)} onClick={() => window.location.reload()}>重新加载页面</button></div> : null}
+      {sourceReloadPending ? <div className="mode-bar source-reload-banner" role="alert"><div><strong>知识源已变化</strong><span>请完成当前输入后重新加载页面。</span></div><button type="button" disabled={learningOverlayOpen || Boolean(retentionConfirmation) || Boolean(busyAction)} onClick={() => window.location.reload()}>重新加载页面</button></div> : null}
 
       <div className={`mode-bar${demoEnabled ? ' is-demo' : ''}`}>
         <div><strong>{demoEnabled ? '示例状态 · 非真实记忆' : '真实学习记录'}</strong><span>{demoEnabled ? '虚构重温间隔，拖动时间轴查看颜色变化' : '由你确认的学习与重温记录计算'}</span></div>
-        <div className="mode-actions"><ThemeSelector />{demoEnabled ? <button type="button" onClick={exportDemo}>导出模拟记录</button> : null}<button type="button" onClick={() => changeDemoMode(!demoEnabled)} disabled={Boolean(attempt) || busyAction !== null || sourceReloadPending}>{demoEnabled ? '查看真实记录' : '查看示例状态'}</button></div>
+        <div className="mode-actions"><ThemeSelector />{demoEnabled ? <button type="button" onClick={exportDemo}>导出模拟记录</button> : null}<button type="button" onClick={() => changeDemoMode(!demoEnabled)} disabled={domainBusy}>{demoEnabled ? '查看真实记录' : '查看示例状态'}</button></div>
       </div>
       <div className="domain-view-bar">
         <DomainPicker domains={domains} value={domainId ?? ''} onChange={changeDomain} disabled={domainBusy} />
@@ -1140,10 +1266,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           }
         }}>收起跨域节点</button> : null}
       </div>
-      <main className={`workspace${attempt || scenarioOpen ? ' workspace-recall-hidden' : ''}`} aria-hidden={attempt || scenarioOpen ? true : undefined} inert={attempt || scenarioOpen ? true : undefined}>
+      <main className={`workspace${learningOverlayOpen ? ' workspace-recall-hidden' : ''}`} aria-hidden={learningOverlayOpen ? true : undefined}
+        aria-busy={busyAction === 'brief-review'} inert={learningOverlayOpen || busyAction === 'brief-review' ? true : undefined}>
         <aside className="left-panel">
           <div className="panel-heading"><div><span className="eyebrow">知识空间</span><h1>概念索引</h1></div><span className="count-chip">{listedConcepts.length}</span></div>
           <ConceptSearch key={sourceId} concepts={snapshot.concepts} currentDomainId={domainId} disabled={domainBusy} onSelect={selectSearchResult} />
+          <BriefReviewPanel domainLabel={domainId ? domainLabel(domainId) : '当前领域'} candidateCount={briefCandidates.length}
+            budget={briefBudget} disabledReason={briefDisabledReason} onBudgetChange={setBriefBudget} onStart={() => void startBriefReview()} />
           <div className="list-meta"><span>当前领域 · 按时间状态排序</span><span className="pending-inline">{pendingWrites.length > 0 ? `待同步 ${pendingWrites.length}` : ''}</span></div>
           <div className="concept-list" aria-label="概念列表">
             {listedConcepts.map((concept) => {
@@ -1180,7 +1309,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={viewSnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
             {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={Boolean(attempt) || scenarioOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={learningOverlayOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
             <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown', ...(!demoEnabled ? ['retained' as const] : [])] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': `var(--memory-${status})` } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
             <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div>
           </div>
@@ -1215,8 +1344,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       {reviewDialogOpen && selectedConcept ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setReviewDialogOpen(false); }}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="review-dialog-title"><div className="modal-kicker">补记历史 · 估计时间</div><h2 id="review-dialog-title">你大约在什么时候重温过？</h2><p>这条记录会标记为估计事件，只作为时间起点参考，不会伪装成精确测量。</p><label htmlFor="estimated-date">日期</label><input id="estimated-date" type="date" value={estimatedDate} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setEstimatedDate(event.target.value)} /><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setReviewDialogOpen(false)}>取消</button><button type="button" className="primary-button" onClick={() => void submitReview('estimated', estimatedDate)} disabled={writeLocked || !estimatedDate || busyAction === 'review'}>保存估计记录</button></div></div></div> : null}
 
       {attempt && selectedConcept && selectedConcept.id === attempt.conceptId ? <div className="recall-overlay"><div className="recall-card" role="dialog" aria-modal="true" aria-labelledby="recall-title">
-        <div className="recall-topline"><span className="eyebrow">主动回忆 · {attempt.stage === 'prediction' ? '事前预测' : attempt.stage === 'answer' ? '先回答' : '核对与自评'}</span><button type="button" className="icon-button" disabled={busyAction === 'observation'} onClick={() => setAttempt(null)} aria-label="取消回忆">×</button></div>
+        <div className="recall-topline"><span className="eyebrow">{briefSession ? `少量复习 · ${briefSession.index + 1}/${briefSession.items.length}` : '主动回忆'} · {attempt.stage === 'prediction' ? '事前预测' : attempt.stage === 'answer' ? '先回答' : '核对与自评'}</span>
+          {briefSession ? <div className="brief-review-task-actions"><button type="button" className="quiet-button" disabled={Boolean(busyAction)} onClick={skipBriefItem}>跳过本条</button><button type="button" className="quiet-button" disabled={Boolean(busyAction)} onClick={endBriefReview}>结束本轮</button></div>
+            : <button type="button" className="icon-button" disabled={busyAction === 'observation'} onClick={() => setAttempt(null)} aria-label="取消回忆">×</button>}
+        </div>
         <h2 id="recall-title">{selectedConcept.title}</h2>
+        {briefItem ? <p className="brief-review-task-reason">推荐依据：{briefItem.status === 'stale' ? '较久未重温' : '已到再访阶段'}，距最近{briefItem.estimated ? '估计' : '确认'}重温 {formatElapsed(briefItem.elapsedDays)}。此提示不代表实际回忆能力。</p> : null}
+        {briefSession && briefProgressLock ? <p className="brief-review-locked" role="alert">{briefProgressLock}</p> : null}
         {attempt.stage === 'prediction' ? <>
           <ConfidenceInput value={attempt.learning.confidence} onChange={(confidence) => setAttempt({ ...attempt, learning: { ...attempt.learning, confidence } })} />
           <button type="button" className="primary-button" onClick={() => setAttempt({ ...attempt, stage: 'answer', learning: { ...attempt.learning, confidenceAt: attempt.learning.confidence === null ? null : new Date().toISOString() } })}>开始作答</button>
@@ -1224,7 +1358,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           <p className="recall-prompt">先用自己的话写下核心原理和关键条件。资料会在提交后显示。</p>
           <p className="source-hint">事前信心：{attempt.learning.confidence === null ? '未预测' : `${attempt.learning.confidence}%`}</p>
           <textarea autoFocus value={attempt.answer} onChange={(event) => setAttempt({ ...attempt, answer: event.target.value })} placeholder="我记得……" aria-label="回忆答案" />
-          <div className="recall-actions"><button type="button" className="secondary-button" onClick={() => setAttempt(null)}>取消</button><button type="button" className="primary-button" onClick={submitRecallAnswer}>提交回答，查看资料</button></div>
+          <div className="recall-actions"><button type="button" className="secondary-button" onClick={briefSession ? skipBriefItem : () => setAttempt(null)}>{briefSession ? '跳过本条' : '取消'}</button><button type="button" className="primary-button" onClick={submitRecallAnswer}>提交回答，查看资料</button></div>
         </> : <>
           <div className="answer-echo"><span>你的回答 · 事前信心 {attempt.learning.confidence === null ? '未预测' : `${attempt.learning.confidence}%`}</span><p>{attempt.answer || '（空白）'}</p></div>
           <SourceBlock concept={selectedConcept} sourceId={sourceId} onOpen={openReader} />
@@ -1233,10 +1367,16 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
             <div className="exposure-options"><span>提交前是否看过资料？</span><select disabled={attempt.sourceViewedBefore} value={attempt.exposure} onChange={(event) => setAttempt({ ...attempt, exposure: event.target.value as Exposure })}><option value="unknown">不确定</option><option value="unexposed">没有</option><option value="exposed">看过</option></select></div>
             <LearningEvidenceFields value={attempt.learning} onChange={(learning) => setAttempt({ ...attempt, learning })} />
           </fieldset>
-          <div className="recall-actions"><button type="button" className="secondary-button" disabled={busyAction === 'observation'} onClick={() => setAttempt(null)}>关闭</button><button type="button" className="primary-button" onClick={() => void saveObservation()} disabled={!attempt.rating || busyAction === 'observation' || writeLocked || (attempt.learning.outcome !== 'unverified' && attempt.learning.basis === 'unknown')}>{busyAction === 'observation' ? '保存中…' : attempt.submittedPayload ? '重试原记录' : '保存这次观察'}</button></div>
+          <div className="recall-actions"><button type="button" className="secondary-button" disabled={busyAction === 'observation'} onClick={briefSession ? skipBriefItem : () => setAttempt(null)}>{briefSession ? '跳过本条' : '关闭'}</button><button type="button" className="primary-button" onClick={() => void saveObservation()} disabled={!attempt.rating || busyAction === 'observation' || writeLocked || (attempt.learning.outcome !== 'unverified' && attempt.learning.basis === 'unknown')}>{busyAction === 'observation' ? '保存中…' : attempt.submittedPayload ? '重试原记录' : '保存这次观察'}</button></div>
           <p className="recall-footnote">保存作答与核对结果，供信心比较；不会自动重置重温时间。</p>
         </>}
       </div></div> : null}
+
+      {briefSession && briefItem && briefResult && !attempt ? <BriefReviewProgress key={`${briefSession.id}:${briefSession.index}`}
+        title={briefItem.title} index={briefSession.index} total={briefSession.items.length} result={briefResult}
+        {...briefReviewCounts(briefSession)} reviewStatus={briefSession.reviews[briefItem.conceptId] ?? 'idle'}
+        busy={Boolean(busyAction) || refreshing} lockedReason={briefProgressLock} reviewDisabledReason={briefReviewDisabledReason}
+        onReview={() => void submitReview('review')} onNext={() => void nextBriefItem()} onEnd={endBriefReview} /> : null}
 
       {scenarioOpen ? <ScenarioPractice key={sourceId} snapshot={snapshot} sourceId={sourceId} busy={busyAction === 'scenario'}
         onClose={() => { setScenarioOpen(false); setScenarioReader(null); }} onSave={saveScenarioObservation}

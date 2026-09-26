@@ -32,6 +32,7 @@ npm start
 
 ## 从这里开始
 
+- [少量复习入口](docs/development/brief-review.md)：从当前领域按时间状态推荐 3/5 个概念，复用回忆、核对与信心记录；可跳过、结束，单独确认重温才更新时间起点。
 - [浅色主题 TODO](docs/planning/light-theme-todo.md)：主题选择/本机偏好、工作区与阅读层、[3D/2D 图谱](docs/development/theme-graph.md)、[Mermaid 与图片容器](docs/development/theme-media.md)均已接入；THEME-06 自动检查完成，待用户按[试用清单](docs/development/theme-validation.md#用户试用清单)进行浏览器验收。
 - [私人账号与知识域](docs/development/private-accounts.md)：登录、创建成员、私人知识源隔离、旧记录保留、CLI 设备身份及未来共享边界。
 - [场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)：当前优先迭代，记录从场景想起知识的表现，比较事前信心与核对结果，支持本人固定保持和手动恢复衰减。
@@ -77,4 +78,4 @@ npm start
 
 本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。项目许可证将在未来开源前确定。
 
-状态：2026-09-26，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)及 [Markdown 大窗阅读、图片附件与 Mermaid 渲染](docs/development/markdown-reader.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。已完成[场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)、[私人多账号](docs/development/private-accounts.md)，主题适配已覆盖页面、图谱及 [Mermaid/媒体](docs/development/theme-media.md)，278 项 Node 测试及构建通过，浏览器视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，在线共享、语音链路及 Obsidian 宿主属于后续范围。
+状态：2026-09-26，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)及 [Markdown 大窗阅读、图片附件与 Mermaid 渲染](docs/development/markdown-reader.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。已完成[场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)、[私人多账号](docs/development/private-accounts.md)，主题适配已覆盖页面、图谱及 [Mermaid/媒体](docs/development/theme-media.md)，用户已确认基础图谱主题体验。现已接入[少量复习入口](docs/development/brief-review.md)，288 项 Node 测试、构建与主题构建检查通过，新增复习界面与其余专项视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，在线共享、语音链路及 Obsidian 宿主属于后续范围。
