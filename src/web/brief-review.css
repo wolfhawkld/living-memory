@@ -1,11 +1,11 @@
 .brief-review-panel {
   min-height: 0;
   min-width: 0;
-  max-height: 38vh;
+  max-height: min(46vh, 360px);
   overflow-y: auto;
   flex: 0 1 auto;
   margin: 0 9px 10px;
-  padding: 12px 11px 11px;
+  padding: 16px 14px;
   border: 1px solid var(--ui-border, rgba(126, 155, 199, .16));
   border-radius: 8px;
   background: var(--ui-panel, rgba(23, 31, 45, .76));
