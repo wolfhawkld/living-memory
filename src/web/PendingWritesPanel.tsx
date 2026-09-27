@@ -7,6 +7,7 @@ const PATH_LABELS: Record<string, string> = {
   '/reviews': '确认重温',
   '/observations': '回忆观察',
   '/retentions': '长期保持状态',
+  '/applications': '应用与总结记录',
 };
 
 function writeLabel(write: PendingWrite): string {

@@ -11,6 +11,7 @@ import { Accounts, type AccountSession } from './accounts.js';
 import { requestSessionToken, renewOwnerDevice, setSessionCookie, SESSION_COOKIE } from './account-session.js';
 import { validateStoragePaths } from './storage-paths.js';
 import {
+  parseApplicationRequest,
   parseObservationRequest,
   parseRetentionRequest,
   parseReviewRequest,
@@ -431,6 +432,17 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     const expectedPreviousEventId = store.getRetention(retention.conceptId)?.eventId ?? null;
     const receipt = store.addRetention(retention, expectedPreviousEventId);
     if (receipt.status === 'accepted') changes.publish('retention');
+    res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
+  }));
+  app.post('/api/applications', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
+    const record = parseApplicationRequest(req.body);
+    if (!store.hasEvent(record.eventId)) {
+      const concept = conceptById(source, record.conceptId);
+      if (record.sourceRevision !== concept.source.revision) throw new StoreError('SOURCE_REVISION_MISMATCH', '概念内容已变化，请保留当前记录，刷新知识源后重新确认。', 409);
+    }
+    const receipt = store.addApplication(record);
+    if (receipt.status === 'accepted') changes.publish('application');
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.put('/api/config', requireWrite, asyncRoute((req, res) => {

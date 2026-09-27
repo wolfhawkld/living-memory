@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
+import type { ApplicationRecordRequest } from '../src/shared/types';
 import {
   ApiRequestError,
   api,
@@ -82,6 +83,34 @@ interface FetchCall {
 }
 
 type FetchHandler = (call: FetchCall) => Response | Promise<Response>;
+
+test('offline application records retain the original request and only flush within their own knowledge space', async () => {
+  const payload: ApplicationRecordRequest = {
+    eventId: 'offline-application', conceptId: 'shared-concept', sourceRevision: 'original-revision',
+    occurredAt: '2026-09-20T10:00:00.000Z', kind: 'summary', context: '',
+    content: '  私人原始总结\n    保留缩进', outcome: 'unverified', assistance: 'resources',
+    result: '', limitations: '', insight: '新理解', correction: '', references: '',
+  };
+  for (const sourceId of ['space-a', 'space-b']) {
+    assert.ok(queuePendingWrite(sourceId, { path: '/applications', method: 'POST', payload,
+      eventId: payload.eventId, conceptId: payload.conceptId, label: '总结记录' }));
+  }
+  installFetch(() => { throw new TypeError('offline'); });
+  const failed = await flushPendingWrites('token-a', 'space-a');
+  assert.equal(failed.failed, 1);
+  assert.deepEqual(getPendingWrites('space-a')[0].payload, payload);
+  installFetch((call) => {
+    assert.equal(call.path, '/api/applications');
+    assert.equal(call.method, 'POST');
+    assert.equal(call.headers.get('x-lm-source-id'), 'space-a');
+    assert.deepEqual(JSON.parse(call.body!), payload);
+    return jsonResponse({ status: 'duplicate', eventId: payload.eventId });
+  });
+  const synced = await flushPendingWrites('token-a', 'space-a');
+  assert.equal(synced.sent, 1);
+  assert.equal(getPendingWrites('space-a').length, 0);
+  assert.deepEqual(getPendingWrites('space-b')[0].payload, payload);
+});
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
 const originalCustomEventDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'CustomEvent');

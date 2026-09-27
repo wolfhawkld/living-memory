@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   AnchorEvent,
+  ApplicationRecord,
+  ApplicationRecordRequest,
   Concept,
   ConceptHistory,
   ConceptHistoryEntry,
@@ -114,9 +116,48 @@ const LEARNING_TASKS = ['concept', 'scenario'] as const;
 const LEARNING_CUES = ['independent', 'hinted', 'lookup', 'unknown'] as const;
 const LEARNING_OUTCOMES = ['success', 'partial', 'failure', 'unverified'] as const;
 const LEARNING_BASES = ['self-check', 'application', 'unknown'] as const;
+const APPLICATION_KINDS = ['application', 'summary'] as const;
+const APPLICATION_OUTCOMES = ['success', 'partial', 'failure', 'unverified'] as const;
+const APPLICATION_ASSISTANCE = ['independent', 'resources', 'people-or-ai', 'mixed', 'unknown'] as const;
 
 function isOneOf<T extends readonly string[]>(values: T, value: unknown): value is T[number] {
   return typeof value === 'string' && values.includes(value);
+}
+
+function applicationText(record: Record<string, unknown>, key: string, limit: number, required: boolean): string {
+  const value = record[key];
+  if (value === undefined && !required) return '';
+  if (typeof value !== 'string') throw new StoreError('INVALID_BODY', `字段 ${key} 必须是字符串。`);
+  if (value.length > limit) throw new StoreError('INVALID_BODY', `字段 ${key} 不能超过 ${limit} 个字符。`);
+  if (required && !value.trim()) throw new StoreError('INVALID_BODY', `字段 ${key} 不能为空。`);
+  return value;
+}
+
+function normalizeApplicationRequest(value: unknown): ApplicationRecordRequest {
+  const record = asRecord(value);
+  const kind = requireString(record, 'kind');
+  if (!isOneOf(APPLICATION_KINDS, kind)) throw new StoreError('INVALID_BODY', 'kind 必须是 application 或 summary。');
+  const outcome = requireString(record, 'outcome');
+  if (!isOneOf(APPLICATION_OUTCOMES, outcome)) throw new StoreError('INVALID_BODY', 'outcome 必须是 success、partial、failure 或 unverified。');
+  const assistance = requireString(record, 'assistance');
+  if (!isOneOf(APPLICATION_ASSISTANCE, assistance)) throw new StoreError('INVALID_BODY', 'assistance 必须是 independent、resources、people-or-ai、mixed 或 unknown。');
+  const context = applicationText(record, 'context', 4000, kind === 'application');
+  return {
+    eventId: requireString(record, 'eventId'),
+    conceptId: requireString(record, 'conceptId'),
+    sourceRevision: requireString(record, 'sourceRevision'),
+    occurredAt: normalizeDate(requireString(record, 'occurredAt'), 'INVALID_OCCURRED_AT'),
+    kind,
+    context,
+    content: applicationText(record, 'content', 12000, true),
+    outcome,
+    assistance,
+    result: applicationText(record, 'result', 4000, false),
+    limitations: applicationText(record, 'limitations', 4000, false),
+    insight: applicationText(record, 'insight', 4000, false),
+    correction: applicationText(record, 'correction', 4000, false),
+    references: applicationText(record, 'references', 4000, false),
+  };
 }
 
 /**
@@ -335,6 +376,26 @@ export class Store {
         request_payload TEXT NOT NULL,
         PRIMARY KEY(namespace, event_id)
       );
+      CREATE TABLE IF NOT EXISTS applications (
+        namespace TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        concept_id TEXT NOT NULL,
+        source_revision TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('application', 'summary')),
+        context TEXT NOT NULL,
+        content TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK(outcome IN ('success', 'partial', 'failure', 'unverified')),
+        assistance TEXT NOT NULL CHECK(assistance IN ('independent', 'resources', 'people-or-ai', 'mixed', 'unknown')),
+        result TEXT NOT NULL,
+        limitations TEXT NOT NULL,
+        insight TEXT NOT NULL,
+        correction TEXT NOT NULL,
+        references_text TEXT NOT NULL,
+        request_payload TEXT NOT NULL,
+        PRIMARY KEY(namespace, event_id)
+      );
       CREATE TABLE IF NOT EXISTS layouts (
         namespace TEXT PRIMARY KEY,
         layout_json TEXT NOT NULL,
@@ -350,6 +411,8 @@ export class Store {
         ON observations(namespace, concept_id, observed_at DESC, recorded_at DESC, event_id DESC);
       CREATE INDEX IF NOT EXISTS retentions_by_concept_history
         ON retentions(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
+      CREATE INDEX IF NOT EXISTS applications_by_concept_history
+        ON applications(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
     `);
     // CREATE TABLE IF NOT EXISTS does not update an existing SQLite table.
     // Keep the evidence column additive so databases created by older builds
@@ -406,13 +469,15 @@ export class Store {
     return { modelVersion: MODEL_VERSION, halfLifeDays, revision: next };
   }
 
-  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention'; payload: string } | null {
+  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application'; payload: string } | null {
     const anchor = this.db.prepare('SELECT request_payload FROM anchors WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (anchor) return { kind: 'anchor', payload: anchor.request_payload };
     const observation = this.db.prepare('SELECT request_payload FROM observations WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (observation) return { kind: 'observation', payload: observation.request_payload };
     const retention = this.db.prepare('SELECT request_payload FROM retentions WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    return retention ? { kind: 'retention', payload: retention.request_payload } : null;
+    if (retention) return { kind: 'retention', payload: retention.request_payload };
+    const application = this.db.prepare('SELECT request_payload FROM applications WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
+    return application ? { kind: 'application', payload: application.request_payload } : null;
   }
 
   hasEvent(eventId: string): boolean {
@@ -588,6 +653,60 @@ export class Store {
     return { status: 'accepted', eventId: input.eventId };
   }
 
+  /**
+   * Persist private evidence that a concept was applied or summarized. These
+   * records deliberately live outside anchors and observations: recording a
+   * use case must not advance the time-decay anchor or inflate recall counts.
+   */
+  addApplication(input: ApplicationRecordRequest): StoreWriteResult {
+    const request = normalizeApplicationRequest(input);
+    this.ensureEventId(request.eventId);
+    const requestPayload = canonicalJson(request);
+    const existing = this.findEvent(request.eventId);
+    if (existing) {
+      if (existing.kind !== 'application' || existing.payload !== requestPayload) {
+        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+      }
+      return { status: 'duplicate', eventId: request.eventId };
+    }
+    const now = this.now();
+    if (parseDate(request.occurredAt) > now.getTime()) {
+      throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
+    }
+    const recordedAt = iso(now);
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      this.db.prepare(`INSERT INTO applications(
+        namespace, event_id, concept_id, source_revision, occurred_at, recorded_at,
+        kind, context, content, outcome, assistance, result, limitations,
+        insight, correction, references_text, request_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        this.namespace,
+        request.eventId,
+        request.conceptId,
+        request.sourceRevision,
+        request.occurredAt,
+        recordedAt,
+        request.kind,
+        request.context,
+        request.content,
+        request.outcome,
+        request.assistance,
+        request.result,
+        request.limitations,
+        request.insight,
+        request.correction,
+        request.references,
+        requestPayload,
+      );
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
+    }
+    return { status: 'accepted', eventId: request.eventId };
+  }
+
   getAnchorById(eventId: string): StoredAnchor | null {
     const row = this.db.prepare(`SELECT event_id, concept_id, source_revision, occurred_at, recorded_at, kind, request_payload
       FROM anchors WHERE namespace = ? AND event_id = ?`).get(this.namespace, eventId) as {
@@ -710,6 +829,47 @@ export class Store {
     }));
   }
 
+  getApplications(conceptId?: string, sourceRevision?: string): ApplicationRecord[] {
+    let query = `SELECT event_id, concept_id, source_revision, occurred_at, recorded_at,
+      kind, context, content, outcome, assistance, result, limitations, insight,
+      correction, references_text
+      FROM applications WHERE namespace = ?`;
+    const parameters: string[] = [this.namespace];
+    if (conceptId !== undefined) {
+      query += ' AND concept_id = ?';
+      parameters.push(conceptId);
+    }
+    if (sourceRevision !== undefined) {
+      query += ' AND source_revision = ?';
+      parameters.push(sourceRevision);
+    }
+    query += ' ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC';
+    const rows = this.db.prepare(query).all(...parameters) as Array<{
+      event_id: string; concept_id: string; source_revision: string; occurred_at: string; recorded_at: string;
+      kind: 'application' | 'summary'; context: string; content: string;
+      outcome: 'success' | 'partial' | 'failure' | 'unverified';
+      assistance: 'independent' | 'resources' | 'people-or-ai' | 'mixed' | 'unknown';
+      result: string; limitations: string; insight: string; correction: string; references_text: string;
+    }>;
+    return rows.map((row) => ({
+      eventId: row.event_id,
+      conceptId: row.concept_id,
+      sourceRevision: row.source_revision,
+      occurredAt: row.occurred_at,
+      recordedAt: row.recorded_at,
+      kind: row.kind,
+      context: row.context,
+      content: row.content,
+      outcome: row.outcome,
+      assistance: row.assistance,
+      result: row.result,
+      limitations: row.limitations,
+      insight: row.insight,
+      correction: row.correction,
+      references: row.references_text,
+    }));
+  }
+
   countObservations(): number {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM observations WHERE namespace = ?').get(this.namespace) as { count: number };
     return row.count;
@@ -721,13 +881,23 @@ export class Store {
     if (cursor && (cursor.namespace !== this.namespace || cursor.conceptId !== concept.id)) invalidHistoryCursor();
 
     type HistoryRow = {
-      event_type: 'anchor' | 'observation' | 'retention';
+      event_type: 'anchor' | 'observation' | 'retention' | 'application';
       event_id: string;
       concept_id: string;
       source_revision: string;
       event_at: string;
       recorded_at: string;
       kind: 'review' | 'estimated' | null;
+      application_kind: 'application' | 'summary' | null;
+      context: string | null;
+      content: string | null;
+      outcome: 'success' | 'partial' | 'failure' | 'unverified' | null;
+      assistance: 'independent' | 'resources' | 'people-or-ai' | 'mixed' | 'unknown' | null;
+      result: string | null;
+      limitations: string | null;
+      insight: string | null;
+      correction: string | null;
+      references_text: string | null;
       active: number | null;
       previous_event_id: string | null;
       config_revision: number | null;
@@ -750,6 +920,7 @@ export class Store {
       this.namespace, concept.id,
       this.namespace, concept.id,
       this.namespace, concept.id,
+      this.namespace, concept.id,
     ];
     if (cursor) {
       queryParameters.push(
@@ -766,6 +937,9 @@ export class Store {
       WITH history AS (
         SELECT 'anchor' AS event_type, event_id, concept_id, source_revision,
           occurred_at AS event_at, recorded_at, kind,
+          NULL AS application_kind, NULL AS context, NULL AS content, NULL AS outcome,
+          NULL AS assistance, NULL AS result, NULL AS limitations, NULL AS insight,
+          NULL AS correction, NULL AS references_text,
           NULL AS active, NULL AS previous_event_id,
           NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
           NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
@@ -775,6 +949,9 @@ export class Store {
         UNION ALL
         SELECT 'observation' AS event_type, event_id, concept_id, source_revision,
           observed_at AS event_at, recorded_at, NULL AS kind,
+          NULL AS application_kind, NULL AS context, NULL AS content, NULL AS outcome,
+          NULL AS assistance, NULL AS result, NULL AS limitations, NULL AS insight,
+          NULL AS correction, NULL AS references_text,
           NULL AS active, NULL AS previous_event_id,
           config_revision, half_life_days, anchor_event_id,
           elapsed_days, decay, answer, rating, exposure, observed_exposure, learning_json
@@ -783,16 +960,32 @@ export class Store {
         UNION ALL
         SELECT 'retention' AS event_type, event_id, concept_id, source_revision,
           occurred_at AS event_at, recorded_at, NULL AS kind,
+          NULL AS application_kind, NULL AS context, NULL AS content, NULL AS outcome,
+          NULL AS assistance, NULL AS result, NULL AS limitations, NULL AS insight,
+          NULL AS correction, NULL AS references_text,
           active, previous_event_id,
           NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
           NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
           NULL AS exposure, NULL AS observed_exposure, NULL AS learning_json
         FROM retentions
         WHERE namespace = ? AND concept_id = ?
+        UNION ALL
+        SELECT 'application' AS event_type, event_id, concept_id, source_revision,
+          occurred_at AS event_at, recorded_at, NULL AS kind,
+          kind AS application_kind, context, content, outcome, assistance, result,
+          limitations, insight, correction, references_text,
+          NULL AS active, NULL AS previous_event_id,
+          NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
+          NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
+          NULL AS exposure, NULL AS observed_exposure, NULL AS learning_json
+        FROM applications
+        WHERE namespace = ? AND concept_id = ?
       )
       SELECT event_type, event_id, concept_id, source_revision, event_at, recorded_at,
-        kind, active, previous_event_id, config_revision, half_life_days, anchor_event_id, elapsed_days, decay,
-        answer, rating, exposure, observed_exposure, learning_json
+        kind, application_kind, context, content, outcome, assistance, result, limitations,
+        insight, correction, references_text, active, previous_event_id, config_revision,
+        half_life_days, anchor_event_id, elapsed_days, decay, answer, rating, exposure,
+        observed_exposure, learning_json
       FROM history
       ${keyset}
       ORDER BY event_at DESC, recorded_at DESC, event_id DESC
@@ -803,8 +996,9 @@ export class Store {
       SELECT
         (SELECT COUNT(*) FROM anchors WHERE namespace = ? AND concept_id = ?)
         + (SELECT COUNT(*) FROM observations WHERE namespace = ? AND concept_id = ?)
-        + (SELECT COUNT(*) FROM retentions WHERE namespace = ? AND concept_id = ?) AS total
-    `).get(this.namespace, concept.id, this.namespace, concept.id, this.namespace, concept.id) as { total: number };
+        + (SELECT COUNT(*) FROM retentions WHERE namespace = ? AND concept_id = ?)
+        + (SELECT COUNT(*) FROM applications WHERE namespace = ? AND concept_id = ?) AS total
+    `).get(this.namespace, concept.id, this.namespace, concept.id, this.namespace, concept.id, this.namespace, concept.id) as { total: number };
 
     const hasNext = rows.length > limit;
     const page = hasNext ? rows.slice(0, limit) : rows;
@@ -833,6 +1027,28 @@ export class Store {
             recordedAt: row.recorded_at,
             active: Boolean(row.active),
             previousEventId: row.previous_event_id,
+          },
+        };
+      }
+      if (row.event_type === 'application') {
+        return {
+          type: 'application',
+          event: {
+            eventId: row.event_id,
+            conceptId: row.concept_id,
+            sourceRevision: row.source_revision,
+            occurredAt: row.event_at,
+            recordedAt: row.recorded_at,
+            kind: row.application_kind as 'application' | 'summary',
+            context: row.context as string,
+            content: row.content as string,
+            outcome: row.outcome as 'success' | 'partial' | 'failure' | 'unverified',
+            assistance: row.assistance as 'independent' | 'resources' | 'people-or-ai' | 'mixed' | 'unknown',
+            result: row.result as string,
+            limitations: row.limitations as string,
+            insight: row.insight as string,
+            correction: row.correction as string,
+            references: row.references_text as string,
           },
         };
       }
@@ -948,6 +1164,7 @@ export class Store {
       anchors: this.getAnchors(),
       observations: this.getObservations(),
       retentions: this.getRetentions(),
+      applications: this.getApplications(),
       layout: this.getLayout(),
     };
   }
@@ -983,6 +1200,10 @@ export function parseRetentionRequest(value: unknown): RetentionRequest {
     active: record.active,
     previousEventId: previous === null ? null : (previous as string).trim(),
   };
+}
+
+export function parseApplicationRequest(value: unknown): ApplicationRecordRequest {
+  return normalizeApplicationRequest(value);
 }
 
 export function parseLearningEvidence(value: unknown, observedAt?: string): LearningEvidence | undefined {

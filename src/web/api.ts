@@ -1,4 +1,5 @@
 import type {
+  ApplicationRecordRequest,
   ConceptHistory,
   Layout,
   ModelConfig,
@@ -344,6 +345,8 @@ export const api = {
     writeJson<WriteReceipt>('/retentions', payload, writeToken, sourceId),
   postObservation: (payload: ObservationRequest, writeToken: string, sourceId: string) =>
     writeJson<WriteReceipt>('/observations', payload, writeToken, sourceId),
+  postApplication: (payload: ApplicationRecordRequest, writeToken: string, sourceId: string) =>
+    writeJson<WriteReceipt>('/applications', payload, writeToken, sourceId),
   putConfig: (payload: Pick<ModelConfig, 'halfLifeDays' | 'revision'>, writeToken: string, sourceId: string) =>
     authenticatedJson<ModelConfig>('/config', {
       method: 'PUT',

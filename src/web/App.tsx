@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AccountUser } from '../shared/accounts';
 import type {
+  ApplicationRecordRequest,
   Concept,
   Exposure,
   Layout,
@@ -39,6 +40,8 @@ import { ConceptHistoryPanel } from './ConceptHistoryPanel';
 import { LearningSummaryPanel } from './LearningSummaryPanel';
 import { ConfidenceInput, LearningEvidenceFields } from './LearningEvidenceFields';
 import { ScenarioPractice } from './ScenarioPractice';
+import { ApplicationRecordDialog } from './ApplicationRecordDialog';
+import './application-record.css';
 import { RetentionConfirmation } from './RetentionConfirmation';
 import { useConceptHistory } from './useConceptHistory';
 import { parseSourceExposure, sourceExposureKey, SOURCE_EXPOSURE_STORAGE_KEY } from './source-exposure';
@@ -228,6 +231,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const briefActionRef = useRef(false);
   const learningWriteRef = useRef(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
+  const [applicationDraft, setApplicationDraft] = useState<{ concept: Concept; sourceId: string } | null>(null);
   const [scenarioReader, setScenarioReader] = useState<Concept | null>(null);
   const [retentionConfirmation, setRetentionConfirmation] = useState<RetentionRequest | null>(null);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
@@ -286,7 +290,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     hidden: typeof document !== 'undefined' && document.hidden,
     demoEnabled,
     simulated,
-    attempt: Boolean(attempt) || scenarioOpen || Boolean(briefSession),
+    attempt: Boolean(attempt) || scenarioOpen || Boolean(briefSession) || Boolean(applicationDraft),
     reviewDialogOpen: reviewDialogOpen || Boolean(retentionConfirmation),
     configOpen,
     busyAction,
@@ -539,7 +543,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   useEffect(() => {
     changeHandlersRef.current.flush();
-  }, [attempt, briefSession, scenarioOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
+  }, [attempt, briefSession, scenarioOpen, applicationDraft, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
 
   useEffect(() => {
     void loadInitial();
@@ -628,7 +632,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     };
   }, []);
 
-  const pendingConceptIds = useMemo(() => new Set(pendingWrites.map((item) => item.conceptId).filter((id): id is string => Boolean(id))), [pendingWrites]);
+  const pendingConceptIds = useMemo(() => new Set(pendingWrites.filter((item) => item.path !== '/applications').map((item) => item.conceptId).filter((id): id is string => Boolean(id))), [pendingWrites]);
   const displaySnapshot = useMemo(() => {
     if (snapshot && demoEnabled && demoRecord) return projectDemoSnapshot(snapshot, demoRecord, simDays);
     if (!snapshot || pendingConceptIds.size === 0) return snapshot;
@@ -648,7 +652,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     : displaySnapshot, [displaySnapshot, domainId, expandedIds, selectedId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
-  const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || Boolean(applicationDraft) || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
   const briefCandidates = useMemo(() => snapshot && domainId && !writeLocked
     ? selectBriefReviewCandidates(snapshot, domainId, { limit: briefBudget, excludedIds: pendingConceptIds }) : [],
   [snapshot, domainId, writeLocked, briefBudget, pendingConceptIds]);
@@ -661,7 +665,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const briefResult = briefSession && briefItem ? briefSession.results[briefItem.conceptId] : null;
   const briefProgressLock = sourceReloadPending || (briefSession && briefSession.sourceId !== sourceId)
     ? '知识源已变化，请结束本轮后重新加载。' : writeLocked || !hasSession ? '当前无法写入真实记录，请结束本轮后重试。' : null;
-  const learningOverlayOpen = Boolean(attempt) || scenarioOpen || Boolean(briefSession);
+  const learningOverlayOpen = Boolean(attempt) || scenarioOpen || Boolean(briefSession) || Boolean(applicationDraft);
 
   // Source refreshes may remove a domain or a relation. Reconcile only when no
   // answer/dialog is active, and never turn a view change into a learning event.
@@ -686,12 +690,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     if (readerRequest && !readerVisible) setReaderRequest(null);
   }, [readerRequest, readerVisible]);
   const selectedSourceViewed = Boolean(selectedConcept && sourceViewedKeys.includes(sourceExposureKey(sourceId, selectedConcept)));
-  const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !briefSession && !scenarioOpen && !sourceReloadPending);
+  const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !briefSession && !scenarioOpen && !applicationDraft && !sourceReloadPending);
   const conceptHistory = useConceptHistory({
     sourceId, conceptId: selectedConcept?.id ?? '', sourceRevision: selectedConcept?.source.revision ?? '',
   }, historyEnabled, snapshot);
   const pendingLearningCount = pendingWrites.filter((write) => write.conceptId === selectedId
-    && (write.path === '/reviews' || write.path === '/observations' || write.path === '/retentions')).length;
+    && (write.path === '/reviews' || write.path === '/observations' || write.path === '/retentions' || write.path === '/applications')).length;
   const selectedState = useMemo(() => {
     if (!selectedId || !displaySnapshot) return null;
     return displaySnapshot.states[selectedId] ?? null;
@@ -766,14 +770,14 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const closeReader = useCallback(() => setReaderRequest(null), []);
 
   const selectConcept = useCallback((conceptId: string) => {
-    if (briefSession || briefActionRef.current) return;
+    if (briefSession || applicationDraft || briefActionRef.current) return;
     if (attempt && attempt.conceptId !== conceptId) {
       if (!window.confirm('当前回忆尚未保存，确定取消并切换概念吗？')) return;
       setAttempt(null);
     }
     setSelectedId(conceptId);
     setFocusRevision((revision) => revision + 1);
-  }, [attempt, briefSession]);
+  }, [attempt, briefSession, applicationDraft]);
 
   const selectSearchResult = useCallback((conceptId: string) => {
     if (domainBusy) return;
@@ -820,7 +824,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [attempt, briefSession, loadSnapshot, showNotice, sourceId, writeLocked, writeToken]);
 
   const writeWithRetry = useCallback(async (options: {
-    path: '/reviews' | '/observations' | '/retentions' | '/config' | '/layout';
+    path: '/reviews' | '/observations' | '/retentions' | '/applications' | '/config' | '/layout';
     method: 'POST' | 'PUT';
     payload: unknown;
     eventId: string | null;
@@ -834,22 +838,22 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       return { ok: true, result };
     } catch (writeError) {
       const retryable = writeError instanceof ApiRequestError && writeError.retryable;
-      const changedObservationSource = options.path === '/observations' && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
+      const changedEvidenceSource = (options.path === '/observations' || options.path === '/applications') && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
       const expiredAccount = Boolean(options.eventId) && writeError instanceof ApiRequestError && writeError.code === 'AUTH_REQUIRED';
-      if (retryable || changedObservationSource || expiredAccount) {
+      if (retryable || changedEvidenceSource || expiredAccount) {
         const queued = queuePendingWrite(sourceId, { method: options.method, path: options.path, payload: options.payload, eventId: options.eventId, conceptId: options.conceptId, label: options.label });
         if (queued) {
           refreshPendingState();
-          showNotice({ tone: 'info', text: expiredAccount ? '登录已失效，原记录已保存在此账号知识空间的待同步队列；重新登录后可重试。' : changedObservationSource
+          showNotice({ tone: 'info', text: expiredAccount ? '登录已失效，原记录已保存在此账号知识空间的待同步队列；重新登录后可重试。' : changedEvidenceSource
             ? '知识源已变化，原记录已保存在原知识源的待同步队列；重新连接原知识源后可重试。'
             : '网络暂时不可用，原记录已保存到待同步队列。' });
           return { ok: false, queued: true };
         }
         showNotice({ tone: 'error', text: '网络暂时不可用，这条记录尚未保存；请保持当前页面并重试。' });
-        return { ok: false, queued: false, unsaved: true };
+        return { ok: false, queued: false, unsaved: true, error: '记录尚未保存；浏览器未允许保存待同步记录，请保留当前页面并重试。' };
       }
       showNotice({ tone: 'error', text: errorMessage(writeError) });
-      return { ok: false, queued: false };
+      return { ok: false, queued: false, error: errorMessage(writeError) };
     }
   }, [refreshPendingState, showNotice, sourceId]);
 
@@ -929,7 +933,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [attempt, beginRecall, briefSession, busyAction, selectedConcept, selectedState, snapshot, writeLocked]);
 
   const pendingReviewIds = useCallback(() => new Set(getPendingWrites(sourceId)
-    .map((write) => write.conceptId).filter((id): id is string => Boolean(id))), [sourceId]);
+    .filter((write) => write.path !== '/applications').map((write) => write.conceptId).filter((id): id is string => Boolean(id))), [sourceId]);
 
   const startBriefReview = useCallback(async () => {
     if (briefDisabledReason || !domainId || !sourceId || briefActionRef.current) return;
@@ -1093,6 +1097,42 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       await reloadRealSnapshot();
     }
     return result.ok || Boolean(result.queued);
+  };
+
+  const saveApplication = async (payload: ApplicationRecordRequest): Promise<boolean> => {
+    if (!applicationDraft || learningWriteRef.current || busyAction) return false;
+    if (payload.conceptId !== applicationDraft.concept.id || payload.sourceRevision !== applicationDraft.concept.source.revision) {
+      throw new Error('记录与打开时的概念不一致，请保留内容后重新打开。');
+    }
+    const draftSource = applicationDraft.sourceId;
+    const label = payload.kind === 'application' ? '实际应用记录' : '总结与 insight';
+    learningWriteRef.current = true;
+    setBusyAction('application');
+    try {
+      if (sourceReloadPending || draftSource !== sourceIdRef.current) {
+        const queued = queuePendingWrite(draftSource, { path: '/applications', method: 'POST', payload,
+          eventId: payload.eventId, conceptId: payload.conceptId, label });
+        if (!queued) throw new Error('知识源已变化，浏览器也未允许保存记录。请保留当前内容后重试。');
+        refreshPendingState();
+        showNotice({ tone: 'info', text: '应用与总结记录已保存在原知识空间的待同步队列；重新连接后可重试。' });
+        setApplicationDraft(null);
+        return true;
+      }
+      if (!writeToken || writeLocked) throw new Error('当前无法写入真实记录，请保留内容后重试。');
+      const result = await writeWithRetry({ path: '/applications', method: 'POST', payload,
+        eventId: payload.eventId, conceptId: payload.conceptId, label,
+        send: () => api.postApplication(payload, writeToken, draftSource) });
+      if (!result.ok && !result.queued) throw new Error(result.error ?? '记录尚未保存，请重试。');
+      setApplicationDraft(null);
+      if (result.ok) {
+        showNotice({ tone: 'success', text: '已保存到节点学习历史；重温时间与回忆评分未改变。' });
+        await reloadRealSnapshot();
+      }
+      return true;
+    } finally {
+      learningWriteRef.current = false;
+      setBusyAction(null);
+    }
   };
 
   const saveRetention = async () => {
@@ -1325,14 +1365,18 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
               <div className="time-indicator">时间指标 D <strong>{selectedState.decay === null ? '未知' : selectedState.decay.toFixed(3)}</strong><span>{demoEnabled ? '模拟值' : '时间推算'}</span></div>
               <Curve state={selectedState} halfLifeDays={displaySnapshot.config.halfLifeDays} /></> : <div className="retention-fixed-note">长期保持 · 本人确认于 {formatDate(selectedState.retention?.occurredAt)}<br />固定显示，不随时间衰减。</div>}
               <p className="state-reason">{selectedState.reason ?? '状态由当前时间与最近确认事件投影。'}</p>
-              <button type="button" className="retention-button" disabled={writeLocked || Boolean(busyAction) || pendingLearningCount > 0} onClick={() => setRetentionConfirmation({ eventId: newEventId(), conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision, occurredAt: new Date().toISOString(), active: !snapshot.states[selectedConcept.id]?.retention?.active, previousEventId: snapshot.states[selectedConcept.id]?.retention?.eventId ?? null })}>{snapshot.states[selectedConcept.id]?.retention?.active ? '恢复时间衰减…' : '设为长期保持…'}</button>
+              <button type="button" className="retention-button" disabled={writeLocked || Boolean(busyAction) || pendingConceptIds.has(selectedConcept.id)} onClick={() => setRetentionConfirmation({ eventId: newEventId(), conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision, occurredAt: new Date().toISOString(), active: !snapshot.states[selectedConcept.id]?.retention?.active, previousEventId: snapshot.states[selectedConcept.id]?.retention?.eventId ?? null })}>{snapshot.states[selectedConcept.id]?.retention?.active ? '恢复时间衰减…' : '设为长期保持…'}</button>
               <div className="detail-actions"><button type="button" className="primary-button" onClick={() => void submitReview('review')} disabled={writeLocked || busyAction === 'review'}>{busyAction === 'review' ? '保存中…' : '确认已重温'}</button><button type="button" className="secondary-button" onClick={() => { reviewEventRef.current = null; setEstimatedDate(new Date().toISOString().slice(0, 10)); setReviewDialogOpen(true); }} disabled={writeLocked || busyAction === 'review'}>补记过去重温</button></div>
               <button type="button" className="recall-button" onClick={startRecall} disabled={writeLocked || Boolean(attempt)}><span>✦</span>先想一句，再查看资料</button>
+              <button type="button" className="recall-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => {
+                setApplicationDraft({ sourceId, concept: structuredClone(selectedConcept) });
+              }}>记录应用 / 总结</button>
               <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{selectedSourceViewed ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => openReader()} disabled={sourceReloadPending}><span>打开大窗阅读</span><span aria-hidden="true">↗</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{selectedSourceViewed ? <SourceBlock concept={selectedConcept} sourceId={sourceId} onOpen={openReader} /> : null}</div>
               {historyEnabled ? <LearningSummaryPanel summary={conceptHistory.history?.learning} /> : null}
               {historyEnabled && selectedConcept ? <ConceptHistoryPanel
                 key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}
                 {...conceptHistory} pendingCount={pendingLearningCount} simulated={simulated}
+                concept={selectedConcept}
                 onRevealAnswer={() => markSourceViewed(selectedConcept.id)}
               /> : <p className="source-hint">{attempt ? '回忆任务期间隐藏学习历史与旧回答。' : demoEnabled ? '示例模式不展示真实学习历史；关闭示例后可查看已保存记录。' : '知识源正在切换，学习历史暂时隐藏。'}</p>}
               <CrossDomainPanel neighbors={crossDomainNeighbors} expandedIds={visibleExpandedIds} visibleIds={visibleIds} onToggle={toggleExpanded} onNavigate={changeDomain} disabled={domainBusy} canExpand={canExpand} />
@@ -1377,6 +1421,10 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         {...briefReviewCounts(briefSession)} reviewStatus={briefSession.reviews[briefItem.conceptId] ?? 'idle'}
         busy={Boolean(busyAction) || refreshing} lockedReason={briefProgressLock} reviewDisabledReason={briefReviewDisabledReason}
         onReview={() => void submitReview('review')} onNext={() => void nextBriefItem()} onEnd={endBriefReview} /> : null}
+
+      {applicationDraft ? <ApplicationRecordDialog key={`${applicationDraft.sourceId}:${applicationDraft.concept.id}`}
+        concept={applicationDraft.concept} busy={busyAction === 'application'} onSave={saveApplication}
+        onClose={() => setApplicationDraft(null)} /> : null}
 
       {scenarioOpen ? <ScenarioPractice key={sourceId} snapshot={snapshot} sourceId={sourceId} busy={busyAction === 'scenario'}
         onClose={() => { setScenarioOpen(false); setScenarioReader(null); }} onSave={saveScenarioObservation}

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type {
+  ApplicationRecord,
   AnchorEvent,
   ConceptHistory,
   MemoryState,
@@ -90,6 +91,28 @@ function panel(overrides: Partial<ConceptHistoryPanelProps> = {}): string {
     ...overrides,
   }));
 }
+
+test('application and summary records hide personal content until explicitly revealed and do not claim recall mastery', () => {
+  const event: ApplicationRecord = {
+    eventId: 'application-1', conceptId: 'concept-1', sourceRevision: 'revision-1',
+    occurredAt: '2026-09-19T10:00:00.000Z', recordedAt: '2026-09-19T10:01:00.000Z',
+    kind: 'application', context: '私人业务场景', content: '原始工作总结', result: '私人结果',
+    limitations: '具体业务约束', insight: '总结答案线索', correction: '修订答案线索', references: '私有资料地址',
+    assistance: 'people-or-ai', outcome: 'success',
+  };
+  for (const kind of ['application', 'summary'] as const) {
+    const html = panel({ history: history({ entries: [{ type: 'application', event: { ...event, kind } }], total: 1 }) });
+    assert.match(html, kind === 'application' ? /实际应用记录/ : /总结 \/ insight/);
+    assert.match(html, /他人 \/ AI 协助/);
+    assert.match(html, /自报结果：成功/);
+    assert.match(html, /不计入独立回忆或信心校准，不改变重温起点/);
+    assert.match(html, /来源版本已变化/);
+    assert.match(html, /aria-expanded="false"/);
+    for (const value of [event.context, event.content, event.result, event.limitations, event.insight, event.correction, event.references]) {
+      assert.ok(!html.includes(value), 'personal content must be absent before reveal');
+    }
+  }
+});
 
 test('scenario evidence metadata is visible but scenario and applicability stay behind answer reveal', () => {
   const event = observation({ learning: { task: 'scenario', scenario: '场景里的敏感线索', applicability: '核对补充的答案线索',

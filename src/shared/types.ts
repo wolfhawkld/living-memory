@@ -105,9 +105,30 @@ export interface Observation {
   learning?: LearningEvidence;
 }
 
+/** Private work/summary evidence, independent of recall scores and memory anchors. */
+export interface ApplicationRecordRequest {
+  eventId: string;
+  conceptId: string;
+  sourceRevision: string;
+  occurredAt: string;
+  kind: 'application' | 'summary';
+  context: string;
+  content: string;
+  outcome: 'success' | 'partial' | 'failure' | 'unverified';
+  assistance: 'independent' | 'resources' | 'people-or-ai' | 'mixed' | 'unknown';
+  result: string;
+  limitations: string;
+  insight: string;
+  correction: string;
+  references: string;
+}
+
+export interface ApplicationRecord extends ApplicationRecordRequest { recordedAt: string }
+
 export type ConceptHistoryEntry =
   | { type: 'anchor'; event: AnchorEvent }
   | { type: 'retention'; event: RetentionEvent }
+  | { type: 'application'; event: ApplicationRecord }
   | { type: 'observation'; event: Observation };
 
 /** Real persisted history, ordered by event time, recorded time, then event ID descending. */
@@ -175,7 +196,7 @@ export interface WriteReceipt {
 export interface ChangeNotification {
   sourceId: string;
   revision: number;
-  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention';
+  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application';
 }
 
 export interface LayoutPosition { x: number; y: number; z: number }
@@ -191,5 +212,6 @@ export interface ExportData {
   anchors: AnchorEvent[];
   observations: Observation[];
   retentions?: RetentionEvent[];
+  applications?: ApplicationRecord[];
   layout: Layout;
 }

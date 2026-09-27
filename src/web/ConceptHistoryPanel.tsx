@@ -1,11 +1,14 @@
 import { useState, type ReactElement } from 'react';
 import type {
+  ApplicationRecord,
   AnchorEvent,
+  Concept,
   ConceptHistory,
   ConceptHistoryEntry,
   MemoryState,
   Observation,
 } from '../shared/types';
+import { ApplicationMaterialPreview } from './ApplicationRecordDialog';
 
 export interface ConceptHistoryPanelProps {
   history: ConceptHistory | null;
@@ -17,6 +20,7 @@ export interface ConceptHistoryPanelProps {
   onRevealAnswer: () => void;
   pendingCount: number;
   simulated: boolean;
+  concept?: Concept;
 }
 
 export interface HistoryObservationAnswerProps {
@@ -194,11 +198,49 @@ function ObservationEntry({
   );
 }
 
-function HistoryEntry({ entry, history, onRevealAnswer }: {
-  entry: ConceptHistoryEntry;
+function ApplicationEntry({ event, history, concept, onRevealAnswer }: {
+  event: ApplicationRecord;
   history: ConceptHistory;
+  concept?: Concept;
   onRevealAnswer: () => void;
 }): ReactElement {
+  const [revealed, setRevealed] = useState(false);
+  const fields = [
+    ['场景 / 任务', event.context], ['使用过程 / 自己的总结', event.content],
+    ['结果', event.result], ['适用条件 / 局限', event.limitations], ['Insight', event.insight],
+    ['知识修正建议', event.correction], ['参考资料', event.references],
+  ];
+  return <li className="concept-history-entry">
+    <span className="concept-history-dot" aria-hidden="true" />
+    <div className="concept-history-entry-card">
+      <strong>{event.kind === 'application' ? '实际应用记录' : '总结 / insight'}</strong>
+      <time className="concept-history-event-time" dateTime={event.occurredAt}>{formatDate(event.occurredAt)}</time>
+      <div className="concept-history-secondary"><span>记录于 {formatDate(event.recordedAt)}</span><span>来源版本 {event.sourceRevision}</span></div>
+      <div className="concept-history-learning">
+        <div>使用方式：{{ independent: '独立使用', resources: '查阅资料', 'people-or-ai': '他人 / AI 协助', mixed: '多种协助', unknown: '未记录' }[event.assistance]}</div>
+        <div>自报结果：{{ success: '成功', partial: '部分成功', failure: '未成功', unverified: '尚未验证' }[event.outcome]}</div>
+      </div>
+      <p className="concept-history-old-note">应用与总结证据；不计入独立回忆或信心校准，不改变重温起点。</p>
+      {event.sourceRevision !== history.sourceRevision ? <p className="concept-history-old-note">来源版本已变化，以下记录保留提交时的版本。</p> : null}
+      <button type="button" className="concept-history-answer-toggle" aria-expanded={revealed} onClick={() => {
+        if (!revealed) onRevealAnswer();
+        setRevealed(!revealed);
+      }}>{revealed ? '收起应用 / 总结内容' : '展开应用 / 总结内容'}</button>
+      {revealed ? <div className="concept-history-answer">
+        {fields.filter(([, value]) => value).map(([label, value]) => <div key={label}><span className="concept-history-answer-label">{label}</span><p>{value}</p></div>)}
+        {concept ? <ApplicationMaterialPreview concept={{ ...concept, source: { ...concept.source, revision: event.sourceRevision } }} record={event} /> : null}
+      </div> : null}
+    </div>
+  </li>;
+}
+
+function HistoryEntry({ entry, history, concept, onRevealAnswer }: {
+  entry: ConceptHistoryEntry;
+  history: ConceptHistory;
+  concept?: Concept;
+  onRevealAnswer: () => void;
+}): ReactElement {
+  if (entry.type === 'application') return <ApplicationEntry event={entry.event} history={history} concept={concept} onRevealAnswer={onRevealAnswer} />;
   if (entry.type === 'retention') return <li className="concept-history-entry">
     <span className="concept-history-dot" aria-hidden="true" />
     <div className="concept-history-entry-card">
@@ -229,6 +271,7 @@ export function ConceptHistoryPanel({
   onRevealAnswer,
   pendingCount,
   simulated,
+  concept,
 }: ConceptHistoryPanelProps) {
   // Before the first effect decides whether history is needed, avoid claiming
   // that the concept has no history. A pending count is still useful here.
@@ -272,6 +315,7 @@ export function ConceptHistoryPanel({
                   key={`${entry.type}:${entry.event.eventId}`}
                   entry={entry}
                   history={history}
+                  concept={concept}
                   onRevealAnswer={onRevealAnswer}
                 />
               ))}
