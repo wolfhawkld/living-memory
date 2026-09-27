@@ -32,6 +32,7 @@ npm start
 
 ## 从这里开始
 
+- [开源协作准备与 TODO（2026-09-27）](docs/planning/open-source-readiness-2026-09-27.md)：仓库与 CI 检查结果、文档/协作调整和分批任务；本次先保存计划，下次从 CI 修复开始。
 - [少量复习入口](docs/development/brief-review.md)：从当前领域按时间状态推荐 3/5 个概念，复用回忆、核对与信心记录；可跳过、结束，单独确认重温才更新时间起点。
 - [复习安排与中断续做](docs/development/review-arrangements.md)：节点重点/暂缓、跨领域每日预算、当前浏览器自动保存作答与暂停续做；恢复时重新核对资料和时间起点。
 - [实际应用与总结记录](docs/development/application-records.md)：从节点保存使用场景、结果、局限与 insight，在学习历史中回看；预览复制选定的 KG 整理材料，保存不改记忆时间或回忆评分。
