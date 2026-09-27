@@ -86,6 +86,8 @@ npm start
 
 先阅读[首版需求](docs/requirements/v0.1.md)、[任务拆分](docs/planning/development-tasks-v0.1.md)与[协作说明](CONTRIBUTING.md)，再认领任务。日常开发沿用 `develop` 分支；阶段性发布或集中评审时再通过 Pull Request 合入 `main`。
 
-本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。项目许可证将在未来开源前确定。
+本项目采用 [MIT 许可证](LICENSE)，版权归属 Damon Long。第三方依赖和外部知识资源遵循各自的许可证。
+
+本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。
 
 状态：2026-09-27，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)及 [Markdown 大窗阅读、图片附件与 Mermaid 渲染](docs/development/markdown-reader.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。已完成[场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)、[私人多账号](docs/development/private-accounts.md)，主题适配已覆盖页面、图谱及 [Mermaid/媒体](docs/development/theme-media.md)，用户已确认基础图谱主题体验。现已接入[少量复习入口](docs/development/brief-review.md)、[实际应用与总结记录](docs/development/application-records.md)、[知识薄弱点总览](docs/development/learning-overview.md)、[复习安排与中断续做](docs/development/review-arrangements.md)、[学习数据导入恢复](docs/development/learning-data-import.md)和[改名/移动后的历史衔接](docs/development/concept-identity.md)；应用/总结已获用户试用确认，494 项 Node 测试、构建与主题构建检查通过，复习安排浏览器试用按用户要求跳过，保留未验收；总览、导入恢复、历史衔接和其余专项视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，在线共享、语音链路及 Obsidian 宿主属于后续范围。
