@@ -16,6 +16,7 @@ import type { LearningOverview } from '../shared/learning-overview';
 import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
 import type { ImportPreviewRequest, ImportPreview, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
+import { PendingCoordinationError, withPendingStorageLock, withPendingSyncLock } from './pending-coordination';
 
 export type SessionResponse = LocalSession & { user?: AccountUser };
 
@@ -49,6 +50,8 @@ export interface PendingSyncResult {
   failed: number;
   failures: PendingSyncFailure[];
   repairs?: { id: string; skippedPositions: number }[];
+  /** Another page is synchronizing this knowledge space. */
+  busy?: boolean;
 }
 
 export class ApiRequestError extends Error {
@@ -120,6 +123,32 @@ function pendingKey(sourceId: string | null | undefined): string | null {
   return `${PENDING_KEY_PREFIX}.${encodeURIComponent(sourceId.trim())}`;
 }
 
+/** Observe this space only. Browser storage events reach other tabs; the custom
+ * event reaches the page that performed the mutation. Neither carries answers. */
+export function subscribePendingWrites(sourceId: string, changed: () => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const key = pendingKey(sourceId);
+  if (!key) return () => {};
+  const local = (event: Event) => {
+    if ((event as CustomEvent<{ sourceId?: string }>).detail?.sourceId === sourceId.trim()) changed();
+  };
+  const remote = (event: StorageEvent) => {
+    if (event.key !== null && event.key !== key) return;
+    try { if (event.storageArea && event.storageArea !== window.localStorage) return; } catch { /* Still notify when storage access is denied. */ }
+    changed();
+  };
+  window.addEventListener('lm-pending-changed', local);
+  window.addEventListener('storage', remote);
+  return () => {
+    window.removeEventListener('lm-pending-changed', local);
+    window.removeEventListener('storage', remote);
+  };
+}
+
+function notifyPendingChanged(sourceId: string): void {
+  window.dispatchEvent(new CustomEvent('lm-pending-changed', { detail: { sourceId: sourceId.trim() } }));
+}
+
 function validPendingEntries(entries: unknown[]): PendingWrite[] {
   return entries.filter((item): item is PendingWrite => {
     if (!item || typeof item !== 'object') return false;
@@ -167,7 +196,17 @@ function hasPendingId(entry: unknown, id: string): entry is { id: string } {
   return entry !== null && typeof entry === 'object' && 'id' in entry && entry.id === id;
 }
 
-export function queuePendingWrite(sourceId: string | null | undefined, write: Omit<PendingWrite, 'id' | 'createdAt'> & { id?: string }): PendingWrite | null {
+function samePendingRequest(left: PendingWrite, right: PendingWrite): boolean {
+  return JSON.stringify([left.method, left.path, left.payload, left.eventId, left.conceptId])
+    === JSON.stringify([right.method, right.path, right.payload, right.eventId, right.conceptId]);
+}
+
+function samePendingSnapshot(entry: unknown, expected: PendingWrite): entry is PendingWrite {
+  return hasPendingId(entry, expected.id) && (entry as PendingWrite).createdAt === expected.createdAt
+    && samePendingRequest(entry as PendingWrite, expected);
+}
+
+export async function queuePendingWrite(sourceId: string | null | undefined, write: Omit<PendingWrite, 'id' | 'createdAt'> & { id?: string }): Promise<PendingWrite | null> {
   const pending: PendingWrite = {
     ...write,
     id: write.id ?? (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`),
@@ -177,38 +216,57 @@ export function queuePendingWrite(sourceId: string | null | undefined, write: Om
   const key = pendingKey(sourceId);
   if (!key) return null;
   try {
-    const next = pendingEntriesForUpdate(key).filter((item) => !hasPendingId(item, pending.id));
-    next.push(pending);
-    window.localStorage.setItem(key, JSON.stringify(next));
-    window.dispatchEvent(new CustomEvent('lm-pending-changed'));
-    return pending;
+    // Freeze caller-owned content before waiting for another page's short lock.
+    const frozen = JSON.parse(JSON.stringify(pending)) as PendingWrite;
+    return await withPendingStorageLock(sourceId!, () => {
+      const next = pendingEntriesForUpdate(key);
+      const previous = next.filter(item => hasPendingId(item, frozen.id));
+      if (previous.length) {
+        // An ID describes an immutable request. Keep its first timestamp and
+        // error metadata, and never replace content underneath an active send.
+        return previous.length === 1 && validPendingEntries(previous).length === 1
+          && samePendingRequest(previous[0] as PendingWrite, frozen) ? previous[0] as PendingWrite : null;
+      }
+      next.push(frozen);
+      window.localStorage.setItem(key, JSON.stringify(next));
+      notifyPendingChanged(sourceId!);
+      return frozen;
+    });
   } catch {
     return null;
   }
 }
 
-export function removePendingWrite(sourceId: string | null | undefined, id: string): boolean {
+export async function removePendingWrite(sourceId: string | null | undefined, id: string, expected?: PendingWrite): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   const key = pendingKey(sourceId);
   if (!key) return false;
   try {
-    const next = pendingEntriesForUpdate(key).filter((item) => !hasPendingId(item, id));
-    window.localStorage.setItem(key, JSON.stringify(next));
-    window.dispatchEvent(new CustomEvent('lm-pending-changed'));
-    return true;
+    return await withPendingStorageLock(sourceId!, () => {
+      const entries = pendingEntriesForUpdate(key);
+      if (expected && entries.some(item => hasPendingId(item, id) && !samePendingSnapshot(item, expected))) return false;
+      const next = entries.filter(item => !hasPendingId(item, id));
+      window.localStorage.setItem(key, JSON.stringify(next));
+      notifyPendingChanged(sourceId!);
+      return true;
+    });
   } catch {
     // A server acknowledgment is not enough to claim the local queue is clear.
     return false;
   }
 }
 
-function savePendingError(sourceId: string, id: string, error: PendingWriteError): void {
+async function savePendingError(sourceId: string, expected: PendingWrite, error: PendingWriteError): Promise<void> {
   const key = pendingKey(sourceId);
   if (!key || typeof window === 'undefined') return;
   try {
-    const next = pendingEntriesForUpdate(key).map((write) => hasPendingId(write, id) ? { ...write, lastError: error } : write);
-    window.localStorage.setItem(key, JSON.stringify(next));
-    window.dispatchEvent(new CustomEvent('lm-pending-changed'));
+    await withPendingStorageLock(sourceId, () => {
+      const entries = pendingEntriesForUpdate(key);
+      if (!entries.some(write => samePendingSnapshot(write, expected))) return;
+      const next = entries.map(write => samePendingSnapshot(write, expected) ? { ...write, lastError: error } : write);
+      window.localStorage.setItem(key, JSON.stringify(next));
+      notifyPendingChanged(sourceId);
+    });
   } catch {
     // The caller still receives the error when browser storage is unavailable.
   }
@@ -247,13 +305,15 @@ function preparePendingLayout(write: PendingWrite, sourceId: string): { write: P
   return { write: { ...write, payload: inspected.layout }, skippedPositions: inspected.invalidIds.length };
 }
 
-export function clearPendingWrites(sourceId: string | null | undefined): void {
+export async function clearPendingWrites(sourceId: string | null | undefined): Promise<void> {
   if (typeof window === 'undefined') return;
   const key = pendingKey(sourceId);
   if (!key) return;
   try {
-    window.localStorage.removeItem(key);
-    window.dispatchEvent(new CustomEvent('lm-pending-changed'));
+    await withPendingStorageLock(sourceId!, () => {
+      window.localStorage.removeItem(key);
+      notifyPendingChanged(sourceId!);
+    });
   } catch {
     // no-op
   }
@@ -413,17 +473,32 @@ async function sendPendingBatch(writeToken: string, sourceId: string): Promise<P
   const repairs: NonNullable<PendingSyncResult['repairs']> = [];
   let writes: PendingWrite[];
   try {
-    writes = validPendingEntries(pendingEntriesForUpdate(pendingKey(sourceId)!));
-  } catch {
+    writes = await withPendingStorageLock(sourceId, () => validPendingEntries(pendingEntriesForUpdate(pendingKey(sourceId)!)));
+  } catch (error) {
+    if (error instanceof PendingCoordinationError) throw error;
     throw new ApiRequestError('无法读取浏览器中的待同步记录，原数据未改动。请允许此页面访问本地数据后重试。', {
       code: 'PENDING_STORAGE_UNAVAILABLE', retryable: true,
     });
   }
   for (const write of writes) {
     try {
-      const prepared = preparePendingLayout(write, sourceId);
+      const prepared = await withPendingStorageLock(sourceId, () => {
+        let entries: unknown[];
+        try { entries = pendingEntriesForUpdate(pendingKey(sourceId)!); } catch {
+          throw new ApiRequestError('无法重新读取待同步记录，未发送这条请求，请保留页面后重试。', {
+            code: 'PENDING_STORAGE_UNAVAILABLE', retryable: true,
+          });
+        }
+        const current = entries.find(item => hasPendingId(item, write.id));
+        if (!current) return null;
+        if (!samePendingSnapshot(current, write)) throw new ApiRequestError('待同步内容已被另一个页面修改，原请求没有发送。请刷新后核对。', {
+          code: 'PENDING_CHANGED', retryable: false,
+        });
+        return preparePendingLayout(write, sourceId);
+      });
+      if (!prepared) continue;
       await api.sendPending(prepared.write, writeToken, sourceId);
-      if (!removePendingWrite(sourceId, write.id)) {
+      if (!await removePendingWrite(sourceId, write.id, write)) {
         throw new ApiRequestError('记录已写入服务，但浏览器未能清理待同步标记。请允许此页面保存本地数据后重试。', {
           code: 'PENDING_STORAGE_FAILED', retryable: true,
         });
@@ -438,7 +513,7 @@ async function sendPendingBatch(writeToken: string, sourceId: string): Promise<P
         retryable: error instanceof ApiRequestError && error.retryable,
         attemptedAt: new Date().toISOString(),
       };
-      savePendingError(sourceId, write.id, detail);
+      await savePendingError(sourceId, write, detail);
       const { attemptedAt: _attemptedAt, ...failure } = detail;
       failures.push({ ...failure, id: write.id, label: typeof write.label === 'string' && write.label.trim() ? write.label : '待同步记录' });
       // Keep the original id, payload and timestamps, including on non-retryable
@@ -453,9 +528,15 @@ export function flushPendingWrites(writeToken: string, sourceId: string | null |
   if (!source) return Promise.resolve({ sent: 0, failed: 0, failures: [] });
   const existing = pendingFlushes.get(source);
   if (existing) return existing;
-  // Manual retry and an online event can arrive together. Share one batch per
-  // source so a non-idempotent settings update is not sent twice by this page.
-  const operation = Promise.resolve().then(() => sendPendingBatch(writeToken, source)).finally(() => {
+  // Join this page's retries and elect one sender across all updated pages.
+  // Read the queue only after acquiring the sync lock, not before waiting.
+  const operation = Promise.resolve().then(() => withPendingSyncLock<PendingSyncResult>(source,
+    () => sendPendingBatch(writeToken, source),
+    () => ({ sent: 0, failed: 0, failures: [], busy: true }),
+  )).catch(error => {
+    if (error instanceof PendingCoordinationError) throw new ApiRequestError(error.message, { code: error.code });
+    throw error;
+  }).finally(() => {
     if (pendingFlushes.get(source) === operation) pendingFlushes.delete(source);
   });
   pendingFlushes.set(source, operation);

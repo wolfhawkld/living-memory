@@ -20,6 +20,7 @@ import {
   flushPendingWrites,
   getPendingWrites,
   queuePendingWrite,
+  subscribePendingWrites,
   subscribeToSessionRecovery,
   type PendingWrite,
   type PendingSyncResult,
@@ -90,6 +91,7 @@ const STATUS_LABELS: Record<MemoryState['status'], string> = {
 type Notice = { tone: 'info' | 'success' | 'error'; text: string } | null;
 
 function pendingSyncNotice(result: PendingSyncResult): Notice {
+  if (result.busy) return { tone: 'info', text: '另一个页面正在同步此知识空间，待同步状态会自动更新。' };
   const skipped = result.repairs?.reduce((sum, repair) => sum + repair.skippedPositions, 0) ?? 0;
   const repairNotice = skipped > 0 ? `已备份并修复旧布局，跳过 ${skipped} 个无效位置，保留这些节点的现有布局。` : '';
   const failure = result.failures[0];
@@ -630,13 +632,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   useEffect(() => {
     const onPending = () => refreshPendingState();
-    window.addEventListener('lm-pending-changed', onPending);
+    const unsubscribe = subscribePendingWrites(sourceId, onPending);
     window.addEventListener('online', onPending);
     return () => {
-      window.removeEventListener('lm-pending-changed', onPending);
+      unsubscribe();
       window.removeEventListener('online', onPending);
     };
-  }, [refreshPendingState]);
+  }, [refreshPendingState, sourceId]);
 
   useEffect(() => {
     if (!writeToken) return undefined;
@@ -974,7 +976,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       const changedEvidenceSource = (options.path === '/observations' || options.path === '/applications') && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
       const expiredAccount = Boolean(options.eventId) && writeError instanceof ApiRequestError && writeError.code === 'AUTH_REQUIRED';
       if (retryable || changedEvidenceSource || expiredAccount) {
-        const queued = queuePendingWrite(sourceId, { method: options.method, path: options.path, payload: options.payload, eventId: options.eventId, conceptId: options.conceptId, label: options.label });
+        const queued = await queuePendingWrite(sourceId, { method: options.method, path: options.path, payload: options.payload, eventId: options.eventId, conceptId: options.conceptId, label: options.label });
         if (queued) {
           refreshPendingState();
           showNotice({ tone: 'info', text: expiredAccount ? '登录已失效，原记录已保存在此账号知识空间的待同步队列；重新登录后可重试。' : changedEvidenceSource
@@ -983,7 +985,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           return { ok: false, queued: true };
         }
         showNotice({ tone: 'error', text: '网络暂时不可用，这条记录尚未保存；请保持当前页面并重试。' });
-        return { ok: false, queued: false, unsaved: true, error: '记录尚未保存；浏览器未允许保存待同步记录，请保留当前页面并重试。' };
+        return { ok: false, queued: false, unsaved: true, error: '记录尚未保存；请保留当前页面，确认浏览器已更新且允许本地存储后重试。' };
       }
       showNotice({ tone: 'error', text: errorMessage(writeError) });
       return { ok: false, queued: false, error: errorMessage(writeError) };
@@ -1324,7 +1326,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   const saveScenarioObservation = async (payload: ObservationRequest): Promise<boolean> => {
     if (sourceReloadPending && sourceId) {
-      const queued = queuePendingWrite(sourceId, { path: '/observations', method: 'POST', payload,
+      const queued = await queuePendingWrite(sourceId, { path: '/observations', method: 'POST', payload,
         eventId: payload.eventId, conceptId: payload.conceptId, label: '场景调用观察（等待原知识源）' });
       if (!queued) throw new Error('知识源已变化，浏览器也未允许保存记录。请保留当前页面和回答后重试。');
       refreshPendingState();
@@ -1355,7 +1357,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     setBusyAction('application');
     try {
       if (sourceReloadPending || draftSource !== sourceIdRef.current) {
-        const queued = queuePendingWrite(draftSource, { path: '/applications', method: 'POST', payload,
+        const queued = await queuePendingWrite(draftSource, { path: '/applications', method: 'POST', payload,
           eventId: payload.eventId, conceptId: payload.conceptId, label });
         if (!queued) throw new Error('知识源已变化，浏览器也未允许保存记录。请保留当前内容后重试。');
         refreshPendingState();

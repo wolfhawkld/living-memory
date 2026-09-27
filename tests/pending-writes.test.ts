@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import type { ApplicationRecordRequest } from '../src/shared/types';
+import { createMemoryLockManager } from './helpers/memory-lock-manager.ts';
 import {
   ApiRequestError,
   api,
@@ -92,7 +93,7 @@ test('offline application records retain the original request and only flush wit
     result: '', limitations: '', insight: '新理解', correction: '', references: '',
   };
   for (const sourceId of ['space-a', 'space-b']) {
-    assert.ok(queuePendingWrite(sourceId, { path: '/applications', method: 'POST', payload,
+    assert.ok(await queuePendingWrite(sourceId, { path: '/applications', method: 'POST', payload,
       eventId: payload.eventId, conceptId: payload.conceptId, label: '总结记录' }));
   }
   installFetch(() => { throw new TypeError('offline'); });
@@ -124,6 +125,10 @@ function installBrowserStubs(): void {
   Object.defineProperty(windowStub, 'localStorage', {
     configurable: true,
     value: storage,
+  });
+  Object.defineProperty(windowStub, 'navigator', {
+    configurable: true,
+    value: { locks: createMemoryLockManager() },
   });
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -181,7 +186,7 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
-function enqueue(sourceId: string, id: string, label = `记录 ${id}`): { write: PendingWrite; payload: Record<string, unknown> } {
+async function enqueue(sourceId: string, id: string, label = `记录 ${id}`): Promise<{ write: PendingWrite; payload: Record<string, unknown> }> {
   const payload = {
     eventId: id,
     conceptId: `concept-${id}`,
@@ -189,7 +194,7 @@ function enqueue(sourceId: string, id: string, label = `记录 ${id}`): { write:
     kind: 'review',
     occurredAt: '2026-09-20T08:30:00.000Z',
   };
-  const write = queuePendingWrite(sourceId, {
+  const write = await queuePendingWrite(sourceId, {
     id,
     method: 'POST',
     path: '/reviews',
@@ -229,7 +234,7 @@ afterEach(() => {
 
 test('retains a 409 failure with the original payload, event, timestamp, and lastError', async () => {
   const sourceId = 'source-conflict';
-  const { write, payload } = enqueue(sourceId, 'event-conflict', '冲突复习');
+  const { write, payload } = await enqueue(sourceId, 'event-conflict', '冲突复习');
   installFetch(() => jsonResponse({
     error: { code: 'EVENT_CONFLICT', message: 'eventId 已被其他事件使用。' },
   }, 409));
@@ -270,7 +275,7 @@ test('retains a 409 failure with the original payload, event, timestamp, and las
 
 test('keeps an offline write queued and records a retryable network failure', async () => {
   const sourceId = 'source-offline';
-  const { write, payload } = enqueue(sourceId, 'event-offline', '离线复习');
+  const { write, payload } = await enqueue(sourceId, 'event-offline', '离线复习');
   installFetch(() => Promise.reject(new TypeError('fetch failed')));
 
   const result = resultOf(await flushPendingWrites('token', sourceId));
@@ -297,8 +302,8 @@ test('keeps an offline write queued and records a retryable network failure', as
 
 test('a storage read failure during cleanup cannot erase the queue as if it were empty', async () => {
   const sourceId = 'source-storage-read';
-  enqueue(sourceId, 'first');
-  enqueue(sourceId, 'second');
+  await enqueue(sourceId, 'first');
+  await enqueue(sourceId, 'second');
   const original = stored(sourceId);
   installFetch(() => {
     storage.failGet = true;
@@ -308,15 +313,88 @@ test('a storage read failure during cleanup cannot erase the queue as if it were
   storage.failGet = false;
   assert.equal(result.sent, 0);
   assert.equal(result.failed, 2);
-  assert.ok(result.failures.every((failure) => failure.code === 'PENDING_STORAGE_FAILED'));
+  assert.deepEqual(result.failures.map((failure) => failure.code), [
+    'PENDING_STORAGE_FAILED',
+    'PENDING_STORAGE_UNAVAILABLE',
+  ]);
   assert.deepEqual(stored(sourceId), original);
+});
+
+test('does not lose either record when two enqueues for one source overlap', async () => {
+  const sourceId = 'source-concurrent-enqueue';
+  const firstPromise = enqueue(sourceId, 'concurrent-first');
+  const secondPromise = enqueue(sourceId, 'concurrent-second');
+  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+  assert.deepEqual(stored(sourceId).map((write) => write.id), [first.write.id, second.write.id]);
+});
+
+test('allows an enqueue during a blocked send and cleans only the captured batch', async () => {
+  const sourceId = 'source-enqueue-during-send';
+  const first = await enqueue(sourceId, 'send-first');
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+  installFetch(async (call) => {
+    assert.equal(JSON.parse(call.body ?? '{}').eventId, first.write.eventId);
+    started();
+    await gate;
+    return jsonResponse({ status: 'accepted', eventId: first.write.eventId });
+  });
+
+  const flushing = flushPendingWrites('token', sourceId);
+  await requestStarted;
+  const second = await enqueue(sourceId, 'send-second');
+  assert.deepEqual(stored(sourceId).map((write) => write.id), [first.write.id, second.write.id]);
+
+  release();
+  assert.deepEqual(await flushing, { sent: 1, failed: 0, failures: [] });
+  assert.deepEqual(stored(sourceId).map((write) => write.id), [second.write.id]);
+});
+
+test('rejects a conflicting payload for an existing pending id without overwriting it', async () => {
+  const sourceId = 'source-pending-id-conflict';
+  const original = await enqueue(sourceId, 'immutable-pending-id');
+  const conflict = await queuePendingWrite(sourceId, {
+    id: original.write.id,
+    method: 'POST',
+    path: '/reviews',
+    payload: { ...original.payload, conceptId: 'changed-concept' },
+    eventId: original.write.eventId,
+    conceptId: 'changed-concept',
+    label: '冲突内容',
+  });
+
+  assert.equal(conflict, null);
+  assert.deepEqual(stored(sourceId), [original.write]);
+});
+
+test('keeps an existing queue when storage becomes unavailable during enqueue', async () => {
+  const sourceId = 'source-storage-unavailable-enqueue';
+  const original = await enqueue(sourceId, 'storage-preserved');
+  storage.failGet = true;
+
+  const result = await queuePendingWrite(sourceId, {
+    id: 'storage-must-not-overwrite',
+    method: 'POST',
+    path: '/reviews',
+    payload: { eventId: 'storage-must-not-overwrite' },
+    eventId: 'storage-must-not-overwrite',
+    conceptId: 'concept-storage',
+    label: '存储不可用',
+  });
+
+  storage.failGet = false;
+  assert.equal(result, null);
+  assert.deepEqual(stored(sourceId), [original.write]);
 });
 
 test('reports mixed accepted, duplicate, and failed writes while retaining only the failure', async () => {
   const sourceId = 'source-mixed';
-  const accepted = enqueue(sourceId, 'event-accepted', '已接受');
-  const duplicate = enqueue(sourceId, 'event-duplicate', '幂等重复');
-  const failed = enqueue(sourceId, 'event-failed', '待重试');
+  const accepted = await enqueue(sourceId, 'event-accepted', '已接受');
+  const duplicate = await enqueue(sourceId, 'event-duplicate', '幂等重复');
+  const failed = await enqueue(sourceId, 'event-failed', '待重试');
   installFetch((call) => {
     const eventId = JSON.parse(call.body ?? '{}').eventId;
     if (eventId === accepted.write.eventId) return jsonResponse({ status: 'accepted', eventId });
@@ -344,7 +422,7 @@ test('reports mixed accepted, duplicate, and failed writes while retaining only 
 
 test('keeps a successfully accepted write when storage cleanup fails and does not count it as sent', async () => {
   const sourceId = 'source-storage-failure';
-  const { write, payload } = enqueue(sourceId, 'event-storage-failure', '存储失败');
+  const { write, payload } = await enqueue(sourceId, 'event-storage-failure', '存储失败');
   installFetch(() => jsonResponse({ status: 'accepted', eventId: write.eventId }));
   storage.failSet = true;
   storage.failRemove = true;
@@ -366,7 +444,7 @@ test('keeps a successfully accepted write when storage cleanup fails and does no
 
 test('shares one in-flight flush for concurrent calls on the same source', async () => {
   const sourceId = 'source-concurrent';
-  const { write } = enqueue(sourceId, 'event-concurrent', '并发复习');
+  const { write } = await enqueue(sourceId, 'event-concurrent', '并发复习');
   let release!: () => void;
   let started!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -394,8 +472,8 @@ test('shares one in-flight flush for concurrent calls on the same source', async
 test('isolates pending queues by source namespace', async () => {
   const sourceA = 'source-a';
   const sourceB = 'source-b';
-  const pendingA = enqueue(sourceA, 'same-event-id', '来源 A');
-  const pendingB = enqueue(sourceB, 'same-event-id', '来源 B');
+  const pendingA = await enqueue(sourceA, 'same-event-id', '来源 A');
+  const pendingB = await enqueue(sourceB, 'same-event-id', '来源 B');
   installFetch((call) => jsonResponse({ status: 'accepted', eventId: JSON.parse(call.body ?? '{}').eventId }));
 
   const resultA = resultOf(await flushPendingWrites('token-a', sourceA));
@@ -415,7 +493,7 @@ test('isolates pending queues by source namespace', async () => {
 
 test('renews an expired token for the same source, retries once, and preserves the original payload', async () => {
   const sourceId = 'source-expired-token';
-  const { write, payload } = enqueue(sourceId, 'event-expired-token', '过期令牌');
+  const { write, payload } = await enqueue(sourceId, 'event-expired-token', '过期令牌');
   let postCount = 0;
   installFetch((call) => {
     if (call.path === '/api/session') {
@@ -467,7 +545,7 @@ test('rejects NaN, Infinity, and null layout positions before making a network r
 
 test('backs up a malformed layout before sending only finite positions and retains the recovery archive after cleanup', async () => {
   const sourceId = 'source/layout-repair';
-  const { write } = enqueueLayout(sourceId, 'layout-repair', {
+  const { write } = await enqueueLayout(sourceId, 'layout-repair', {
     valid: { x: 1, y: 2, z: 3 },
     nullPosition: null,
     missingY: { x: 4, z: 6 },
@@ -507,10 +585,10 @@ test('backs up a malformed layout before sending only finite positions and retai
 
 test('sends valid layouts and non-layout writes unchanged without adding repair metadata', async () => {
   const sourceId = 'source-layout-normal';
-  const layout = enqueueLayout(sourceId, 'layout-normal', {
+  const layout = await enqueueLayout(sourceId, 'layout-normal', {
     first: { x: 0, y: 1.5, z: -2 },
   });
-  const review = enqueue(sourceId, 'review-normal', '普通复习');
+  const review = await enqueue(sourceId, 'review-normal', '普通复习');
   installFetch((call) => jsonResponse({ status: 'accepted', eventId: JSON.parse(call.body ?? '{}').eventId }));
 
   const result = resultOf(await flushPendingWrites('token', sourceId));
@@ -526,13 +604,13 @@ test('sends valid layouts and non-layout writes unchanged without adding repair 
 
 test('leaves null, array, and oversized top-level layout payloads unchanged when the service rejects them', async () => {
   const sourceId = 'source-layout-boundaries';
-  const nullPayload = enqueueLayout(sourceId, 'layout-null', null);
-  const arrayPayload = enqueueLayout(sourceId, 'layout-array', [{ x: 1, y: 2, z: 3 }]);
+  const nullPayload = await enqueueLayout(sourceId, 'layout-null', null);
+  const arrayPayload = await enqueueLayout(sourceId, 'layout-array', [{ x: 1, y: 2, z: 3 }]);
   const oversizedPayload = Object.fromEntries(Array.from({ length: 10_001 }, (_, index) => [
     `position-${index}`,
     { x: index, y: index + 1, z: index + 2 },
   ]));
-  const oversized = enqueueLayout(sourceId, 'layout-oversized', oversizedPayload);
+  const oversized = await enqueueLayout(sourceId, 'layout-oversized', oversizedPayload);
   installFetch(() => jsonResponse({
     error: { code: 'INVALID_LAYOUT', message: '布局格式无效。' },
   }, 400));
@@ -562,7 +640,7 @@ test('leaves null, array, and oversized top-level layout payloads unchanged when
 
 test('sends an all-invalid layout as an empty merge and retains its recovery archive', async () => {
   const sourceId = 'source-layout-all-invalid';
-  const { write } = enqueueLayout(sourceId, 'layout-all-invalid', {
+  const { write } = await enqueueLayout(sourceId, 'layout-all-invalid', {
     nullPosition: null,
     missingAxis: { x: 1, z: 2 },
     nonFiniteAfterPersistence: { x: 3, y: null, z: 4 },
@@ -587,7 +665,7 @@ test('sends an all-invalid layout as an empty merge and retains its recovery arc
 
 test('does not send a malformed layout when recovery backup writing fails', async () => {
   const sourceId = 'source-layout-backup-write-failure';
-  const { write, payload } = enqueueLayout(sourceId, 'layout-backup-write-failure', {
+  const { write, payload } = await enqueueLayout(sourceId, 'layout-backup-write-failure', {
     valid: { x: 1, y: 2, z: 3 },
     invalid: null,
   });
@@ -613,7 +691,7 @@ test('does not send a malformed layout when recovery backup writing fails', asyn
 
 test('preserves an existing recovery backup when reading that backup fails', async () => {
   const sourceId = 'source-layout-backup-read-failure';
-  const { write, payload } = enqueueLayout(sourceId, 'layout-backup-read-failure', {
+  const { write, payload } = await enqueueLayout(sourceId, 'layout-backup-read-failure', {
     valid: { x: 1, y: 2, z: 3 },
     invalid: null,
   });
@@ -641,7 +719,7 @@ test('preserves an existing recovery backup when reading that backup fails', asy
 
 test('does not overwrite a recovery backup when the same pending id has changed payload', async () => {
   const sourceId = 'source-layout-backup-conflict';
-  const { write, payload } = enqueueLayout(sourceId, 'layout-backup-conflict', {
+  const { write, payload } = await enqueueLayout(sourceId, 'layout-backup-conflict', {
     valid: { x: 1, y: 2, z: 3 },
     invalid: null,
   });
@@ -667,7 +745,7 @@ test('does not overwrite a recovery backup when the same pending id has changed 
 
 test('backs up one layout pending id once across a failed retry and retains one archive after recovery', async () => {
   const sourceId = 'source-layout-retry';
-  const { write } = enqueueLayout(sourceId, 'layout-retry', {
+  const { write } = await enqueueLayout(sourceId, 'layout-retry', {
     valid: { x: 1, y: 2, z: 3 },
     invalid: null,
   });
@@ -711,11 +789,11 @@ test('backs up one layout pending id once across a failed retry and retains one 
 test('keeps layout recovery backups isolated for different sources', async () => {
   const sourceA = 'source/layout-A';
   const sourceB = 'source/layout B';
-  const pendingA = enqueueLayout(sourceA, 'same-layout-id', {
+  const pendingA = await enqueueLayout(sourceA, 'same-layout-id', {
     valid: { x: 1, y: 2, z: 3 },
     invalidA: null,
   });
-  const pendingB = enqueueLayout(sourceB, 'same-layout-id', {
+  const pendingB = await enqueueLayout(sourceB, 'same-layout-id', {
     valid: { x: 4, y: 5, z: 6 },
     invalidB: null,
   });
@@ -756,8 +834,8 @@ function layoutRecoveryKey(sourceId: string): string {
   return `living-memory.layout-recovery.v1.${encodeURIComponent(sourceId)}`;
 }
 
-function enqueueLayout(sourceId: string, id: string, payload: unknown, label = '保存图谱布局'): { write: PendingWrite; payload: unknown } {
-  const write = queuePendingWrite(sourceId, {
+async function enqueueLayout(sourceId: string, id: string, payload: unknown, label = '保存图谱布局'): Promise<{ write: PendingWrite; payload: unknown }> {
+  const write = await queuePendingWrite(sourceId, {
     id,
     method: 'PUT',
     path: '/layout',
