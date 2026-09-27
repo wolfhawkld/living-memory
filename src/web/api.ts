@@ -14,6 +14,7 @@ import { inspectLayout } from '../shared/layout';
 import type { AccountUser } from '../shared/accounts';
 import type { LearningOverview } from '../shared/learning-overview';
 import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
+import type { ImportPreviewRequest, ImportPreview, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
 
 export type SessionResponse = LocalSession & { user?: AccountUser };
 
@@ -326,6 +327,10 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 }
 
 export const api = {
+  previewImport: (payload: ImportPreviewRequest, writeToken: string, sourceId: string) =>
+    writeJson<ImportPreview>('/import/preview', payload, writeToken, sourceId),
+  commitImport: (payload: ImportCommitRequest, writeToken: string, sourceId: string) =>
+    writeJson<ImportReceipt>('/import/commit', payload, writeToken, sourceId),
   getReviewPlan: (sourceId: string, timeZone: string, signal?: AbortSignal) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源。', { code: 'SOURCE_REQUIRED' }));
     return requestJson<ReviewPlanResponse>(`/review-plan?timeZone=${encodeURIComponent(timeZone)}`, {

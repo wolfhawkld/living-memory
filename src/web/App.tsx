@@ -29,6 +29,10 @@ import { ThemeSelector } from './ThemeSelector';
 import { BriefReviewPanel, BriefReviewProgress } from './BriefReviewPanel';
 import { ConceptReviewControls, ReviewPlanDialog } from './ReviewPlanControls';
 import { useReviewPlan } from './useReviewPlan';
+import { ImportDataDialog } from './ImportDataDialog';
+import './import-data.css';
+import type { ImportPreviewRequest, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
+import { createPendingWriteBarrier } from './pending-write-barrier';
 import { reviewAllowance } from './review-allowance';
 import { briefReviewCheckpointKey, clearBriefReviewCheckpoint, readBriefReviewCheckpoint, writeBriefReviewCheckpoint,
   type BriefRecallAttempt as RecallAttempt, type BriefReviewCheckpoint } from './brief-review-checkpoint';
@@ -246,6 +250,11 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [estimatedDate, setEstimatedDate] = useState('');
   const [configOpen, setConfigOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const importOpenRef = useRef(false);
+  const layoutRestorePendingRef = useRef(false);
+  const layoutWritesRef = useRef(createPendingWriteBarrier());
+  importOpenRef.current = importOpen;
   const [halfLifeDraft, setHalfLifeDraft] = useState('');
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [simulationLoading, setSimulationLoading] = useState(false);
@@ -303,7 +312,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     simulated,
     attempt: Boolean(attempt) || scenarioOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen,
     reviewDialogOpen: reviewDialogOpen || Boolean(retentionConfirmation),
-    configOpen: configOpen || reviewPlanOpen,
+    configOpen: configOpen || reviewPlanOpen || importOpen,
     busyAction,
     refreshing,
     simulationLoading,
@@ -600,7 +609,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   useEffect(() => {
     changeHandlersRef.current.flush();
-  }, [attempt, briefSession, scenarioOpen, applicationDraft, overviewOpen, reviewPlanOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
+  }, [attempt, briefSession, scenarioOpen, applicationDraft, overviewOpen, reviewPlanOpen, importOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
 
   useEffect(() => {
     if (overviewOpen && sourceId && !demoEnabled && !simulated && !sourceReloadPending) void overviewLoader.refresh();
@@ -667,7 +676,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [writeLocked]);
 
   useEffect(() => {
-    if (writeLocked || !writeToken || !sourceId || pendingWrites.length === 0) return undefined;
+    if (writeLocked || importOpen || !writeToken || !sourceId || pendingWrites.length === 0) return undefined;
     const retry = () => {
       void flushPendingWrites(writeToken, sourceId).then(async (result) => {
         if (sourceIdRef.current !== sourceId) return;
@@ -685,7 +694,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     };
     window.addEventListener('online', retry);
     return () => window.removeEventListener('online', retry);
-  }, [canApplyChange, loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, writeLocked, writeToken]);
+  }, [canApplyChange, loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, importOpen, writeLocked, writeToken]);
 
   useEffect(() => {
     return () => {
@@ -714,7 +723,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     : displaySnapshot, [displaySnapshot, domainId, expandedIds, selectedId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
-  const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
   const dailyAllowance = useMemo(() => reviewPlan.response ? reviewAllowance(reviewPlan.response, pendingWrites) : null, [reviewPlan.response, pendingWrites]);
   const briefCandidates = useMemo(() => snapshot && domainId && !writeLocked && reviewPlan.response && dailyAllowance
     ? selectBriefReviewCandidates(snapshot, domainId, {
@@ -735,7 +744,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const briefProgressLock = sourceReloadPending || (briefSession && briefSession.sourceId !== sourceId)
     ? '知识源已变化，请结束本轮后重新加载。' : writeLocked || !hasSession ? '当前无法写入真实记录，请结束本轮后重试。'
     : briefStorageConflictRef.current ? briefStorageError : null;
-  const learningOverlayOpen = Boolean(attempt) || scenarioOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen;
+  const learningOverlayOpen = Boolean(attempt) || scenarioOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen;
 
   // Source refreshes may remove a domain or a relation. Reconcile only when no
   // answer/dialog is active, and never turn a view change into a learning event.
@@ -1381,7 +1390,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   };
 
   const saveLayout = useCallback((next: Layout) => {
-    if (writeLockedRef.current || !writeToken || activeDomainRef.current !== domainId) return;
+    if (importOpenRef.current || layoutRestorePendingRef.current || writeLockedRef.current || !writeToken || activeDomainRef.current !== domainId) return;
     const inspected = inspectLayout(next);
     if (!inspected || Object.keys(inspected.layout).length === 0) return;
     const payload = inspected.layout;
@@ -1390,11 +1399,57 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     setLayout(merged);
     if (layoutWriteTimer.current !== null) window.clearTimeout(layoutWriteTimer.current);
     layoutWriteTimer.current = window.setTimeout(() => {
-      if (writeLockedRef.current || sourceIdRef.current !== sourceId || activeDomainRef.current !== domainId || !writeTokenRef.current) return;
+      if (importOpenRef.current || layoutRestorePendingRef.current || writeLockedRef.current || sourceIdRef.current !== sourceId || activeDomainRef.current !== domainId || !writeTokenRef.current) return;
       const currentToken = writeTokenRef.current;
-      void writeWithRetry({ path: '/layout', method: 'PUT', payload, eventId: null, conceptId: null, label: '保存图谱布局', send: () => api.putLayout(payload, currentToken, sourceId) });
+      void layoutWritesRef.current.track(writeWithRetry({ path: '/layout', method: 'PUT', payload, eventId: null, conceptId: null, label: '保存图谱布局', send: () => api.putLayout(payload, currentToken, sourceId) }));
     }, 1_200);
   }, [domainId, sourceId, writeLocked, writeToken, writeWithRetry]);
+
+  const importLockedReason = writeLocked || !hasSession ? '请先连接当前知识空间并切换到真实记录。'
+    : pendingWrites.length ? '请先同步待写入记录，再导入备份。'
+    : briefSuspended ? '请先继续或结束未完成的复习，再导入备份。' : null;
+
+  const previewImport = useCallback(async (request: ImportPreviewRequest) => {
+    await layoutWritesRef.current.settle();
+    if (!importOpenRef.current || sourceIdRef.current !== sourceId || writeLockedRef.current || pendingSourceIdRef.current || getPendingWrites(sourceId).length || readBriefReviewCheckpoint(sourceId)) {
+      return Promise.reject(new Error('当前有未完成记录或知识空间已变化，请先处理后再导入。'));
+    }
+    return api.previewImport(request, writeTokenRef.current, sourceId);
+  }, [sourceId]);
+
+  const commitImport = useCallback(async (request: ImportCommitRequest) => {
+    await layoutWritesRef.current.settle();
+    if (!importOpenRef.current || sourceIdRef.current !== sourceId || writeLockedRef.current || pendingSourceIdRef.current || getPendingWrites(sourceId).length || readBriefReviewCheckpoint(sourceId)) {
+      return Promise.reject(new Error('当前有未完成记录或知识空间已变化，请先处理后再导入。'));
+    }
+    return api.commitImport(request, writeTokenRef.current, sourceId);
+  }, [sourceId]);
+
+  const imported = useCallback((receipt: ImportReceipt) => {
+    // A committed receipt remains successful even if refreshing the UI fails.
+    if (receipt.sourceId !== sourceIdRef.current || pendingSourceIdRef.current) return;
+    // Keep autosave paused until restored positions are read successfully.
+    layoutRestorePendingRef.current = true;
+    setBusyAction('import-refresh');
+    let valid = true;
+    let timer = 0;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = window.setTimeout(() => { valid = false; reject(new Error('refresh timeout')); }, 15_000);
+    });
+    void Promise.race([
+      Promise.all([loadSnapshot(undefined, receipt.sourceId, () => valid), api.getLayout(receipt.sourceId), reviewPlan.refresh()]),
+      deadline,
+    ])
+      .then(([next, nextLayout]) => {
+        if (!next || receipt.sourceId !== sourceIdRef.current || pendingSourceIdRef.current) return;
+        layoutRef.current = nextLayout;
+        setLayout(nextLayout);
+        layoutRestorePendingRef.current = false;
+        setHalfLifeDraft(String(next.config.halfLifeDays));
+        showNotice({ tone: 'success', text: '学习数据已恢复，图谱与复习安排已更新。' });
+      }).catch(() => showNotice({ tone: 'error', text: '导入已成功，但页面刷新失败。请重新加载页面查看恢复结果。' }))
+      .finally(() => { valid = false; window.clearTimeout(timer); setBusyAction(null); });
+  }, [loadSnapshot, reviewPlan.refresh, showNotice]);
 
   const exportData = useCallback(async () => {
     if (!writeToken) return;
@@ -1434,7 +1489,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     } catch (error) {
       showNotice({ tone: 'error', text: `重试未完成：${errorMessage(error)}` });
     } finally { setBusyAction(null); }
-  }, [loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, writeLocked, writeToken]);
+  }, [loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, importOpen, writeLocked, writeToken]);
 
   const setSimulatedDays = (value: number) => {
     if (domainBusy || briefActionRef.current) return;
@@ -1507,7 +1562,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           {account ? <><span className="account-name" title="当前私人知识空间">{account.username}</span>{account.role === 'admin' ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={onManageAccounts}>账号管理</button> : null}<button type="button" className="quiet-button" disabled={domainBusy} onClick={onLogout}>退出登录</button></> : null}
           <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => { setReaderRequest(null); setScenarioOpen(true); }}>场景调用练习</button>
           <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={domainBusy || writeLocked} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
-          <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={demoEnabled || Boolean(briefSession) || Boolean(busyAction)} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；暂不支持导入恢复。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
+          <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={writeLocked || domainBusy || !hasSession} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；可通过「导入恢复」恢复到当前账号。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
+          <button type="button" className="quiet-button" disabled={domainBusy || Boolean(importLockedReason)} title={importLockedReason ?? '预览并恢复 JSON 备份中的学习数据'} onClick={() => {
+            if (layoutWriteTimer.current !== null) { window.clearTimeout(layoutWriteTimer.current); layoutWriteTimer.current = null; }
+            importOpenRef.current = true;
+            setImportOpen(true);
+          }}>导入恢复</button>
           <button type="button" className={`config-button${configOpen ? ' is-open' : ''}`} onClick={() => setConfigOpen((open) => !open)} disabled={Boolean(attempt) || Boolean(briefSession) || Boolean(busyAction) || writeLocked}>H = {displaySnapshot.config.halfLifeDays} 天 <span>⌄</span></button>
           {configOpen ? (
             <div className="config-popover">
@@ -1674,6 +1734,10 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         {...briefReviewCounts(briefSession)} reviewStatus={briefSession.reviews[briefItem.conceptId] ?? 'idle'}
         busy={Boolean(busyAction) || refreshing} lockedReason={briefProgressLock ?? briefStorageError} reviewDisabledReason={briefReviewDisabledReason}
         onReview={() => void submitReview('review')} onNext={() => void nextBriefItem()} onEnd={endBriefReview} onPause={pauseBriefReview} /> : null}
+
+      {importOpen ? <ImportDataDialog key={sourceId} sourceId={sourceId} accountLabel={account?.username ?? '本机知识空间'}
+        lockedReason={importLockedReason} onPreview={previewImport} onCommit={commitImport}
+        onImported={imported} onClose={() => setImportOpen(false)} /> : null}
 
       {reviewPlanOpen ? <ReviewPlanDialog response={reviewPlan.response} loading={reviewPlan.loading || busyAction === 'review-plan' || writeLocked}
         error={sourceReloadPending ? '知识空间已变化，请关闭并重新加载页面。' : reviewPlanSaveError ?? reviewPlan.error}

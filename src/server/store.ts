@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -21,6 +22,14 @@ import type {
   ReviewRequest,
 } from '../shared/types.js';
 import {
+  DEFAULT_IMPORT_OPTIONS,
+  type ImportCommitRequest,
+  type ImportCounts,
+  type ImportOptions,
+  type ImportPreview,
+  type ImportReceipt,
+} from '../shared/import-data.js';
+import {
   DEFAULT_DAILY_REVIEW_BUDGET,
   MAX_DAILY_REVIEW_BUDGET,
   reviewDayKey,
@@ -31,6 +40,7 @@ import {
 import { DAY_MS, MODEL_VERSION } from '../shared/types.js';
 import { decayAt, isValidInstant, projectMemory } from '../core/time-model.js';
 import { summarizeLearning } from '../core/learning-evidence.js';
+import { buildImportPlan, type PreparedConfig, type PreparedImport } from './import-plan.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 7;
 
@@ -106,6 +116,18 @@ function computeDecay(anchorAt: string | null, halfLifeDays: number, asOf: strin
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StoreError('INVALID_BODY', '请求体必须是 JSON 对象。');
   return value as Record<string, unknown>;
+}
+
+function normalizeImportOptions(value: unknown): ImportOptions {
+  if (value === undefined) return { ...DEFAULT_IMPORT_OPTIONS };
+  const record = asRecord(value);
+  if (typeof record.restoreLayout !== 'boolean' || typeof record.restoreReviewPlan !== 'boolean') {
+    throw new StoreError('INVALID_BODY', '导入 options 必须包含 restoreLayout 和 restoreReviewPlan 布尔值。');
+  }
+  return {
+    restoreLayout: record.restoreLayout,
+    restoreReviewPlan: record.restoreReviewPlan,
+  };
 }
 
 function requireString(record: Record<string, unknown>, key: string): string {
@@ -455,6 +477,21 @@ export class Store {
         daily_budget INTEGER NOT NULL,
         concepts_json TEXT NOT NULL,
         recorded_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS imported_concepts (
+        namespace TEXT NOT NULL,
+        concept_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        source_revision TEXT NOT NULL,
+        PRIMARY KEY(namespace, concept_id)
+      );
+      CREATE TABLE IF NOT EXISTS import_receipts (
+        namespace TEXT NOT NULL,
+        import_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        PRIMARY KEY(namespace, import_id)
       );
       CREATE INDEX IF NOT EXISTS anchors_by_concept_time
         ON anchors(namespace, concept_id, occurred_at, recorded_at);
@@ -823,6 +860,60 @@ export class Store {
     const rows = this.db.prepare(`SELECT event_id, concept_id, source_revision, occurred_at, recorded_at, kind
       FROM anchors WHERE namespace = ? ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{ event_id: string; concept_id: string; source_revision: string; occurred_at: string; recorded_at: string; kind: 'review' | 'estimated' }>;
     return rows.map((row) => ({ eventId: row.event_id, conceptId: row.concept_id, sourceRevision: row.source_revision, occurredAt: row.occurred_at, recordedAt: row.recorded_at, kind: row.kind }));
+  }
+
+  /** Preserve the original review request shape for portable retries. In
+   * particular, an omitted occurredAt must remain omitted because it is part
+   * of the canonical idempotency payload even though the stored anchor always
+   * has a concrete occurredAt. */
+  private getAnchorRequests(): ReviewRequest[] {
+    const rows = this.db.prepare(`SELECT event_id, concept_id, source_revision, occurred_at, kind, request_payload
+      FROM anchors WHERE namespace = ? ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{
+        event_id: string; concept_id: string; source_revision: string; occurred_at: string;
+        kind: 'review' | 'estimated'; request_payload: string;
+      }>;
+    return rows.map((row) => {
+      try {
+        const parsed = JSON.parse(row.request_payload) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            && parsed.eventId === row.event_id
+            && parsed.conceptId === row.concept_id
+            && parsed.sourceRevision === row.source_revision
+            && (parsed.kind === 'review' || parsed.kind === 'estimated')
+            && (parsed.occurredAt === undefined || typeof parsed.occurredAt === 'string')) {
+          return parsed as unknown as ReviewRequest;
+        }
+      } catch {
+        // Fall through to a conservative legacy reconstruction below.
+      }
+      return {
+        eventId: row.event_id,
+        conceptId: row.concept_id,
+        sourceRevision: row.source_revision,
+        kind: row.kind,
+        occurredAt: row.occurred_at,
+      };
+    });
+  }
+
+  private getConfigRecordedAt(): Record<string, string> {
+    const rows = this.db.prepare(`SELECT revision, recorded_at
+      FROM config_history WHERE namespace = ? ORDER BY revision ASC`).all(this.namespace) as Array<{ revision: number; recorded_at: string }>;
+    const result: Record<string, string> = {};
+    for (const row of rows) result[String(row.revision)] = row.recorded_at;
+    return result;
+  }
+
+  private getImportedConcepts(): Array<Pick<Concept, 'id' | 'title' | 'source'>> {
+    const rows = this.db.prepare(`SELECT concept_id, title, source_path, source_revision
+      FROM imported_concepts WHERE namespace = ? ORDER BY concept_id ASC`).all(this.namespace) as Array<{
+        concept_id: string; title: string; source_path: string; source_revision: string;
+      }>;
+    return rows.map((row) => ({
+      id: row.concept_id,
+      title: row.title,
+      source: { path: row.source_path, revision: row.source_revision },
+    }));
   }
 
   getObservations(conceptId?: string, sourceRevision?: string): Observation[] {
@@ -1369,12 +1460,352 @@ export class Store {
     return layout;
   }
 
+  private buildPreparedImport(
+    data: unknown,
+    options: unknown,
+    source: ExportData['source'],
+    concepts: Concept[],
+    current?: ExportData,
+  ): PreparedImport {
+    const currentExport = current ?? this.exportData(source, concepts);
+    const importOptions = normalizeImportOptions(options);
+    return buildImportPlan({
+      data,
+      options: importOptions,
+      current: currentExport,
+      concepts,
+      sourceId: this.namespace,
+      now: iso(this.now()),
+    });
+  }
+
+  previewImport(
+    data: unknown,
+    options: unknown,
+    source: ExportData['source'],
+    concepts: Concept[],
+  ): ImportPreview {
+    return this.buildPreparedImport(data, options, source, concepts).preview;
+  }
+
+  private importEventConflict(eventId: string): never {
+    throw new StoreError('IMPORT_CONFLICT', `导入事件 ${eventId} 与当前知识空间中的记录不一致。`, 409);
+  }
+
+  private eventAlreadyImported(eventId: string, kind: 'anchor' | 'observation' | 'retention' | 'application', requestPayload: string): boolean {
+    const existing = this.findEvent(eventId);
+    if (!existing) return false;
+    if (existing.kind !== kind || existing.payload !== requestPayload) this.importEventConflict(eventId);
+    return true;
+  }
+
+  private insertImportedConfig(config: PreparedConfig): void {
+    if (!Number.isSafeInteger(config.revision) || config.revision < 1
+        || !finiteNumber(config.halfLifeDays) || typeof config.modelVersion !== 'string'
+        || !isValidInstant(config.recordedAt)) {
+      throw new StoreError('IMPORT_INVALID_DATA', '导入配置历史包含无效字段。');
+    }
+    const existing = this.db.prepare(`SELECT model_version, half_life_days, recorded_at
+      FROM config_history WHERE namespace = ? AND revision = ?`).get(this.namespace, config.revision) as {
+        model_version: string; half_life_days: number; recorded_at: string;
+      } | undefined;
+    if (existing) {
+      if (existing.model_version !== config.modelVersion || existing.half_life_days !== config.halfLifeDays) {
+        throw new StoreError('IMPORT_CONFLICT', `配置 revision ${config.revision} 与当前知识空间内容不一致。`, 409);
+      }
+      return;
+    }
+    this.db.prepare(`INSERT INTO config_history(namespace, revision, model_version, half_life_days, recorded_at)
+      VALUES (?, ?, ?, ?, ?)`).run(this.namespace, config.revision, config.modelVersion, config.halfLifeDays, config.recordedAt);
+  }
+
+  private insertImportedAnchor(event: AnchorEvent, request: ReviewRequest): void {
+    this.ensureEventId(event.eventId);
+    if (request.eventId !== event.eventId || request.conceptId !== event.conceptId
+        || request.sourceRevision !== event.sourceRevision || request.kind !== event.kind
+        || (request.kind === 'estimated' && request.occurredAt === undefined)) {
+      throw new StoreError('IMPORT_INVALID_DATA', `anchor ${event.eventId} 的原始请求与事件不一致。`);
+    }
+    const requestPayload = canonicalJson(request);
+    if (this.eventAlreadyImported(event.eventId, 'anchor', requestPayload)) return;
+    if (!isValidInstant(event.occurredAt) || !isValidInstant(event.recordedAt)) {
+      throw new StoreError('IMPORT_INVALID_DATA', `anchor ${event.eventId} 的时间字段无效。`);
+    }
+    this.db.prepare(`INSERT INTO anchors(namespace, event_id, concept_id, source_revision, occurred_at, recorded_at, kind, request_payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      this.namespace, event.eventId, event.conceptId, event.sourceRevision,
+      event.occurredAt, event.recordedAt, event.kind, requestPayload,
+    );
+  }
+
+  private observationRequestPayload(event: Observation): string {
+    const request = {
+      eventId: event.eventId,
+      conceptId: event.conceptId,
+      sourceRevision: event.sourceRevision,
+      observedAt: event.observedAt,
+      configRevision: event.configRevision,
+      anchorEventId: event.anchorEventId,
+      answer: event.answer,
+      rating: event.rating,
+      exposure: event.exposure,
+      observedExposure: event.observedExposure,
+      ...(event.learning ? { learning: event.learning } : {}),
+    };
+    return canonicalJson(request);
+  }
+
+  private insertImportedObservation(event: Observation): void {
+    this.ensureEventId(event.eventId);
+    const requestPayload = this.observationRequestPayload(event);
+    if (this.eventAlreadyImported(event.eventId, 'observation', requestPayload)) return;
+    if (!isValidInstant(event.observedAt) || !isValidInstant(event.recordedAt)
+        || !Number.isSafeInteger(event.configRevision) || !finiteNumber(event.halfLifeDays)
+        || (event.elapsedDays !== null && !finiteNumber(event.elapsedDays))
+        || (event.decay !== null && !finiteNumber(event.decay))) {
+      throw new StoreError('IMPORT_INVALID_DATA', `observation ${event.eventId} 的字段无效。`);
+    }
+    if (!this.getConfigAt(event.configRevision)) {
+      throw new StoreError('IMPORT_CONFLICT', `observation ${event.eventId} 引用的配置 revision 不存在。`, 409);
+    }
+    this.db.prepare(`INSERT INTO observations(
+      namespace, event_id, concept_id, source_revision, observed_at, recorded_at,
+      config_revision, half_life_days, anchor_event_id, elapsed_days, decay,
+      answer, rating, exposure, observed_exposure, learning_json, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      this.namespace,
+      event.eventId,
+      event.conceptId,
+      event.sourceRevision,
+      event.observedAt,
+      event.recordedAt,
+      event.configRevision,
+      event.halfLifeDays,
+      event.anchorEventId,
+      event.elapsedDays,
+      event.decay,
+      event.answer,
+      event.rating,
+      event.exposure,
+      event.observedExposure ? 1 : 0,
+      event.learning ? canonicalJson(event.learning) : null,
+      requestPayload,
+    );
+  }
+
+  private insertImportedRetention(event: RetentionEvent): void {
+    this.ensureEventId(event.eventId);
+    const requestPayload = canonicalJson({
+      eventId: event.eventId,
+      conceptId: event.conceptId,
+      sourceRevision: event.sourceRevision,
+      occurredAt: event.occurredAt,
+      active: event.active,
+      previousEventId: event.previousEventId,
+    });
+    if (this.eventAlreadyImported(event.eventId, 'retention', requestPayload)) return;
+    if (!isValidInstant(event.occurredAt) || !isValidInstant(event.recordedAt)) {
+      throw new StoreError('IMPORT_INVALID_DATA', `retention ${event.eventId} 的时间字段无效。`);
+    }
+    const currentPreviousEventId = this.getRetention(event.conceptId)?.eventId ?? null;
+    if (event.previousEventId !== currentPreviousEventId) {
+      throw new StoreError('IMPORT_CONFLICT', `retention ${event.eventId} 的链式前置记录不匹配。`, 409);
+    }
+    this.db.prepare(`INSERT INTO retentions(
+      namespace, event_id, concept_id, source_revision, occurred_at, recorded_at,
+      active, previous_event_id, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      this.namespace,
+      event.eventId,
+      event.conceptId,
+      event.sourceRevision,
+      event.occurredAt,
+      event.recordedAt,
+      event.active ? 1 : 0,
+      event.previousEventId,
+      requestPayload,
+    );
+  }
+
+  private insertImportedApplication(event: ApplicationRecord): void {
+    this.ensureEventId(event.eventId);
+    const requestPayload = canonicalJson({
+      eventId: event.eventId,
+      conceptId: event.conceptId,
+      sourceRevision: event.sourceRevision,
+      occurredAt: event.occurredAt,
+      kind: event.kind,
+      context: event.context,
+      content: event.content,
+      outcome: event.outcome,
+      assistance: event.assistance,
+      result: event.result,
+      limitations: event.limitations,
+      insight: event.insight,
+      correction: event.correction,
+      references: event.references,
+    });
+    if (this.eventAlreadyImported(event.eventId, 'application', requestPayload)) return;
+    if (!isValidInstant(event.occurredAt) || !isValidInstant(event.recordedAt)) {
+      throw new StoreError('IMPORT_INVALID_DATA', `application ${event.eventId} 的时间字段无效。`);
+    }
+    this.db.prepare(`INSERT INTO applications(
+      namespace, event_id, concept_id, source_revision, occurred_at, recorded_at,
+      kind, context, content, outcome, assistance, result, limitations,
+      insight, correction, references_text, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      this.namespace,
+      event.eventId,
+      event.conceptId,
+      event.sourceRevision,
+      event.occurredAt,
+      event.recordedAt,
+      event.kind,
+      event.context,
+      event.content,
+      event.outcome,
+      event.assistance,
+      event.result,
+      event.limitations,
+      event.insight,
+      event.correction,
+      event.references,
+      requestPayload,
+    );
+  }
+
+  private mergeImportedConcepts(concepts: Array<Pick<Concept, 'id' | 'title' | 'source'>>): void {
+    for (const concept of concepts) {
+      if (typeof concept.id !== 'string' || !concept.id.trim()
+          || typeof concept.title !== 'string' || !concept.source
+          || typeof concept.source.path !== 'string' || typeof concept.source.revision !== 'string') {
+        throw new StoreError('IMPORT_INVALID_DATA', '导入概念 manifest 包含无效字段。');
+      }
+      this.db.prepare(`INSERT INTO imported_concepts(namespace, concept_id, title, source_path, source_revision)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(namespace, concept_id) DO UPDATE SET
+          title = excluded.title,
+          source_path = excluded.source_path,
+          source_revision = excluded.source_revision`).run(
+        this.namespace, concept.id, concept.title, concept.source.path, concept.source.revision,
+      );
+    }
+  }
+
+  private writeImportedLayout(layout: Layout): void {
+    this.db.prepare(`INSERT INTO layouts(namespace, layout_json, recorded_at) VALUES (?, ?, ?)
+      ON CONFLICT(namespace) DO UPDATE SET layout_json = excluded.layout_json, recorded_at = excluded.recorded_at`).run(
+      this.namespace, canonicalJson(layout), iso(this.now()),
+    );
+  }
+
+  private writeImportedReviewPlan(plan: import('../shared/review-plan.js').ReviewPlan): void {
+    this.db.prepare(`INSERT INTO review_plans(namespace, revision, daily_budget, concepts_json, recorded_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(namespace) DO UPDATE SET
+        revision = excluded.revision,
+        daily_budget = excluded.daily_budget,
+        concepts_json = excluded.concepts_json,
+        recorded_at = excluded.recorded_at`).run(
+      this.namespace,
+      plan.revision,
+      plan.dailyBudget,
+      canonicalJson(plan.concepts),
+      iso(this.now()),
+    );
+  }
+
+  commitImport(
+    request: ImportCommitRequest,
+    source: ExportData['source'],
+    concepts: Concept[],
+    beforeWrite: (backup: ExportData) => string,
+  ): ImportReceipt {
+    if (!request || typeof request !== 'object' || Array.isArray(request)) {
+      throw new StoreError('INVALID_BODY', '导入提交请求必须是 JSON 对象。');
+    }
+    this.ensureEventId(request.importId);
+    if (request.confirmed !== true) throw new StoreError('IMPORT_NOT_CONFIRMED', '导入前必须确认预览结果。');
+    const requestHash = createHash('sha256').update(canonicalJson(request), 'utf8').digest('hex');
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      const existing = this.db.prepare(`SELECT request_hash, receipt_json
+        FROM import_receipts WHERE namespace = ? AND import_id = ?`).get(this.namespace, request.importId) as {
+          request_hash: string; receipt_json: string;
+        } | undefined;
+      if (existing) {
+        if (existing.request_hash !== requestHash) {
+          throw new StoreError('IMPORT_CONFLICT', 'importId 已被其他导入请求使用。', 409);
+        }
+        let original: ImportReceipt;
+        try { original = JSON.parse(existing.receipt_json) as ImportReceipt; } catch {
+          throw new StoreError('IMPORT_RECEIPT_CORRUPT', '导入收据数据无效，请检查本地数据。', 500);
+        }
+        this.db.exec('COMMIT');
+        return { ...original, status: 'duplicate' };
+      }
+
+      const current = this.exportData(source, concepts);
+      const prepared = this.buildPreparedImport(request.data, request.options, source, concepts, current);
+      if (prepared.preview.sourceId !== this.namespace || prepared.preview.token !== request.previewToken) {
+        throw new StoreError('IMPORT_STALE', '导入预览已过期，请重新生成预览。', 409);
+      }
+      if (!prepared.preview.canImport) {
+        throw new StoreError('IMPORT_REJECTED', '导入预览包含必须先处理的问题。', 409);
+      }
+      const backupId = beforeWrite(current);
+      if (typeof backupId !== 'string' || !backupId.trim()) {
+        throw new StoreError('IMPORT_BACKUP_FAILED', '导入前备份未返回有效标识。', 503);
+      }
+
+      for (const config of prepared.newConfigs) this.insertImportedConfig(config);
+      this.mergeImportedConcepts(prepared.metadataConcepts);
+      for (const anchor of prepared.newAnchors) {
+        const requestForAnchor = prepared.anchorRequests[anchor.eventId] ?? {
+          eventId: anchor.eventId,
+          conceptId: anchor.conceptId,
+          sourceRevision: anchor.sourceRevision,
+          kind: anchor.kind,
+          occurredAt: anchor.occurredAt,
+        };
+        this.insertImportedAnchor(anchor, requestForAnchor);
+      }
+      for (const observation of prepared.newObservations) this.insertImportedObservation(observation);
+      for (const retention of prepared.newRetentions) this.insertImportedRetention(retention);
+      for (const application of prepared.newApplications) this.insertImportedApplication(application);
+      if (request.options?.restoreLayout && prepared.mergedLayout) this.writeImportedLayout(prepared.mergedLayout);
+      if (request.options?.restoreReviewPlan && prepared.mergedReviewPlan) this.writeImportedReviewPlan(prepared.mergedReviewPlan);
+
+      const accepted: ImportReceipt = {
+        status: 'accepted',
+        importId: request.importId,
+        sourceId: this.namespace,
+        importedAt: iso(this.now()),
+        counts: prepared.preview.counts,
+        backupId,
+      };
+      this.db.prepare(`INSERT INTO import_receipts(namespace, import_id, request_hash, receipt_json)
+        VALUES (?, ?, ?, ?)`).run(this.namespace, request.importId, requestHash, canonicalJson(accepted));
+      this.db.exec('COMMIT');
+      return accepted;
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (error instanceof StoreError) throw error;
+      throw new StoreError('IMPORT_FAILED', safeSqliteMessage(error), 503);
+    }
+  }
+
   exportData(source: ExportData['source'], concepts: Concept[]): ExportData {
+    const liveConcepts = concepts.map((concept) => ({ id: concept.id, title: concept.title, source: concept.source }));
+    const mergedConcepts = new Map(this.getImportedConcepts().map((concept) => [concept.id, concept]));
+    // The current knowledge index is authoritative when an imported orphan
+    // has since become live again with the same stable concept ID.
+    for (const concept of liveConcepts) mergedConcepts.set(concept.id, concept);
     return {
       schemaVersion: 1,
       exportedAt: iso(this.now()),
       source,
-      concepts: concepts.map((concept) => ({ id: concept.id, title: concept.title, source: concept.source })),
+      concepts: [...mergedConcepts.values()].sort((left, right) => left.id.localeCompare(right.id)),
       config: this.getConfig(),
       configHistory: this.getConfigHistory(),
       anchors: this.getAnchors(),
@@ -1383,6 +1814,11 @@ export class Store {
       applications: this.getApplications(),
       reviewPlan: this.getReviewPlan(),
       layout: this.getLayout(),
+      restoreMetadata: {
+        sourceId: this.namespace,
+        anchorRequests: this.getAnchorRequests(),
+        configRecordedAt: this.getConfigRecordedAt(),
+      },
     };
   }
 }

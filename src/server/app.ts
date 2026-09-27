@@ -3,6 +3,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { Layout, ModelConfig, Snapshot } from '../shared/types.js';
+import { MAX_IMPORT_BYTES, type ImportCommitRequest } from '../shared/import-data.js';
+import { saveImportBackup } from './import-backup.js';
 import { reviewDayKey, type ReviewPlanResponse, type ReviewPlanUpdate } from '../shared/review-plan.js';
 import { isValidInstant } from '../core/time-model.js';
 import { buildLearningOverview } from '../core/learning-overview.js';
@@ -120,6 +122,10 @@ function originAllowed(value: string | undefined, servicePort: number): boolean 
 }
 
 function apiError(res: Response, error: unknown): void {
+  if (error && typeof error === 'object' && 'type' in error && error.type === 'entity.too.large') {
+    res.status(413).json({ error: { code: 'BODY_TOO_LARGE', message: '请求数据过大，请使用不超过 20 MiB 的学习数据备份。' } });
+    return;
+  }
   if (error instanceof StoreError) {
     res.status(error.status).json({ error: { code: error.code, message: error.message } });
     return;
@@ -283,7 +289,10 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   const sessionOf = (req: Request) => (req as AccountRequest).accountSession;
   const now = options.now ?? (() => new Date());
   const app = express() as LivingMemoryApp;
-  app.use(express.json({ limit: '1mb' }));
+  const jsonBody = express.json({ limit: '1mb' });
+  // Bulk restore is parsed only after account/source/token checks.
+  app.use((req, res, next) => /^\/api\/import\/(preview|commit)\/?$/i.test(req.path)
+    ? next() : jsonBody(req, res, next));
 
   app.use((req, res, next) => {
     if (!localPortAllowed(req.headers.host, port)) {
@@ -355,6 +364,23 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     }
     next();
   };
+
+  const importBody = express.json({ limit: MAX_IMPORT_BYTES + 4096 });
+  const requireImportSource = (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.header('x-lm-source-id')) { next(new StoreError('SOURCE_REQUIRED', '请确认当前知识空间后导入。')); return; }
+    next();
+  };
+  app.post('/api/import/preview', requireWrite, requireImportSource, importBody, asyncRoute((req, res) => {
+    const { source, store } = contextOf(req);
+    res.json(store.previewImport(req.body?.data, req.body?.options, source.index.source, source.index.concepts));
+  }));
+  app.post('/api/import/commit', requireWrite, requireImportSource, importBody, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
+    const receipt = store.commitImport(req.body as ImportCommitRequest, source.index.source, source.index.concepts,
+      (backup) => saveImportBackup(store.dbPath, store.namespace, backup));
+    if (receipt.status === 'accepted') changes.publish('import');
+    res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
+  }));
 
   app.post('/api/auth/logout', requireWrite, (req, res) => {
     const raw = requestSessionToken(req);

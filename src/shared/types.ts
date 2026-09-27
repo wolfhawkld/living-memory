@@ -196,7 +196,7 @@ export interface WriteReceipt {
 export interface ChangeNotification {
   sourceId: string;
   revision: number;
-  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application' | 'review-plan';
+  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application' | 'review-plan' | 'import';
 }
 
 export interface LayoutPosition { x: number; y: number; z: number }
@@ -215,4 +215,10 @@ export interface ExportData {
   applications?: ApplicationRecord[];
   reviewPlan?: import('./review-plan.js').ReviewPlan;
   layout: Layout;
+  /** Optional v1 additions for portable recovery; no account credentials or absolute root paths. */
+  restoreMetadata?: {
+    sourceId: string;
+    anchorRequests: ReviewRequest[];
+    configRecordedAt: Record<string, string>;
+  };
 }
