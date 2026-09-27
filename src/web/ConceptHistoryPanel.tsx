@@ -8,7 +8,9 @@ import type {
   MemoryState,
   Observation,
 } from '../shared/types';
+import type { CorrectionHistory } from '../shared/corrections';
 import { ApplicationMaterialPreview } from './ApplicationRecordDialog';
+import { ApplicationCorrectionPanel, type SaveCorrection } from './ApplicationCorrectionPanel';
 
 export interface ConceptHistoryPanelProps {
   history: ConceptHistory | null;
@@ -21,6 +23,11 @@ export interface ConceptHistoryPanelProps {
   pendingCount: number;
   simulated: boolean;
   concept?: Concept;
+  onSaveCorrection?: SaveCorrection;
+  correctionDisabled?: boolean;
+  pendingCorrectionApplications?: readonly string[];
+  onCorrectionEditingChange?: (applicationEventId: string, editing: boolean) => void;
+  correctionRecoveryVersions?: Readonly<Record<string, number>>;
 }
 
 export interface HistoryObservationAnswerProps {
@@ -198,11 +205,18 @@ function ObservationEntry({
   );
 }
 
-function ApplicationEntry({ event, history, concept, onRevealAnswer }: {
+function ApplicationEntry({ event, history, concept, onRevealAnswer, correctionHistory, correctionDisabled, pendingCorrection, onSaveCorrection, onRefreshHistory, onCorrectionEditingChange, recoveryVersion }: {
   event: ApplicationRecord;
   history: ConceptHistory;
   concept?: Concept;
   onRevealAnswer: () => void;
+  correctionHistory: CorrectionHistory | undefined;
+  correctionDisabled: boolean;
+  pendingCorrection: boolean;
+  recoveryVersion: number;
+  onSaveCorrection?: SaveCorrection;
+  onRefreshHistory: () => void;
+  onCorrectionEditingChange?: (applicationEventId: string, editing: boolean) => void;
 }): ReactElement {
   const [revealed, setRevealed] = useState(false);
   const fields = [
@@ -229,18 +243,54 @@ function ApplicationEntry({ event, history, concept, onRevealAnswer }: {
       {revealed ? <div className="concept-history-answer">
         {fields.filter(([, value]) => value).map(([label, value]) => <div key={label}><span className="concept-history-answer-label">{label}</span><p>{value}</p></div>)}
         {concept ? <ApplicationMaterialPreview concept={{ ...concept, source: { ...concept.source, revision: event.sourceRevision } }} record={event} /> : null}
+        <ApplicationCorrectionPanel
+          key={`${event.eventId}:${recoveryVersion}`}
+          application={event}
+          currentRevision={history.sourceRevision}
+          history={correctionHistory}
+          disabled={correctionDisabled}
+          pending={pendingCorrection}
+          onSave={onSaveCorrection}
+          onRefreshHistory={onRefreshHistory}
+          onEditingChange={(editing) => onCorrectionEditingChange?.(event.eventId, editing)}
+        />
       </div> : null}
     </div>
   </li>;
 }
 
-function HistoryEntry({ entry, history, concept, onRevealAnswer }: {
+function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrection, onRefreshHistory, correctionDisabled, pendingCorrectionApplications, onCorrectionEditingChange, correctionRecoveryVersions }: {
   entry: ConceptHistoryEntry;
   history: ConceptHistory;
   concept?: Concept;
   onRevealAnswer: () => void;
+  onSaveCorrection?: SaveCorrection;
+  onRefreshHistory: () => void;
+  correctionDisabled: boolean;
+  pendingCorrectionApplications: readonly string[];
+  correctionRecoveryVersions: Readonly<Record<string, number>>;
+  onCorrectionEditingChange?: (applicationEventId: string, editing: boolean) => void;
 }): ReactElement {
-  if (entry.type === 'application') return <ApplicationEntry event={entry.event} history={history} concept={concept} onRevealAnswer={onRevealAnswer} />;
+  if (entry.type === 'application') {
+    // An absent corrections field identifies an older service. If the field
+    // exists, a missing application key is an empty correction history.
+    const correctionHistory = history.corrections === undefined
+      ? undefined
+      : history.corrections[entry.event.eventId] ?? { latest: null, events: [], total: 0 };
+    return <ApplicationEntry
+      event={entry.event}
+      history={history}
+      concept={concept}
+      onRevealAnswer={onRevealAnswer}
+      correctionHistory={correctionHistory}
+      correctionDisabled={correctionDisabled}
+      pendingCorrection={pendingCorrectionApplications.includes(entry.event.eventId)}
+      recoveryVersion={correctionRecoveryVersions[entry.event.eventId] ?? 0}
+      onSaveCorrection={onSaveCorrection}
+      onRefreshHistory={onRefreshHistory}
+      onCorrectionEditingChange={onCorrectionEditingChange}
+    />;
+  }
   if (entry.type === 'retention') return <li className="concept-history-entry">
     <span className="concept-history-dot" aria-hidden="true" />
     <div className="concept-history-entry-card">
@@ -272,6 +322,11 @@ export function ConceptHistoryPanel({
   pendingCount,
   simulated,
   concept,
+  onSaveCorrection,
+  correctionDisabled = false,
+  pendingCorrectionApplications = [],
+  correctionRecoveryVersions = {},
+  onCorrectionEditingChange,
 }: ConceptHistoryPanelProps) {
   // Before the first effect decides whether history is needed, avoid claiming
   // that the concept has no history. A pending count is still useful here.
@@ -317,6 +372,12 @@ export function ConceptHistoryPanel({
                   history={history}
                   concept={concept}
                   onRevealAnswer={onRevealAnswer}
+                  onSaveCorrection={onSaveCorrection}
+                  onRefreshHistory={onRetry}
+                  correctionDisabled={correctionDisabled || loading || loadingMore || Boolean(error)}
+                  pendingCorrectionApplications={pendingCorrectionApplications}
+                  correctionRecoveryVersions={correctionRecoveryVersions}
+                  onCorrectionEditingChange={onCorrectionEditingChange}
                 />
               ))}
             </ol>

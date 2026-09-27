@@ -30,6 +30,12 @@ import type {
   IdentityLinkRequest,
   IdentityStatus,
 } from '../shared/identity.js';
+import type {
+  CorrectionEvent,
+  CorrectionHistory,
+  CorrectionRequest,
+  CorrectionStatus,
+} from '../shared/corrections.js';
 import {
   DEFAULT_IMPORT_OPTIONS,
   type ImportCommitRequest,
@@ -163,9 +169,54 @@ const LEARNING_BASES = ['self-check', 'application', 'unknown'] as const;
 const APPLICATION_KINDS = ['application', 'summary'] as const;
 const APPLICATION_OUTCOMES = ['success', 'partial', 'failure', 'unverified'] as const;
 const APPLICATION_ASSISTANCE = ['independent', 'resources', 'people-or-ai', 'mixed', 'unknown'] as const;
+const CORRECTION_STATUSES = ['resolved', 'dismissed', 'open'] as const;
+const EVENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 function isOneOf<T extends readonly string[]>(values: T, value: unknown): value is T[number] {
   return typeof value === 'string' && values.includes(value);
+}
+
+function correctionText(record: Record<string, unknown>): string {
+  const value = record.note;
+  if (value === undefined) return '';
+  if (typeof value !== 'string' || value.length > 4000) {
+    throw new StoreError('INVALID_BODY', '字段 note 必须是不超过 4000 个字符的字符串。');
+  }
+  return value;
+}
+
+function correctionEventId(value: string, label: string): string {
+  if (!EVENT_ID_PATTERN.test(value)) {
+    throw new StoreError('INVALID_EVENT_ID', `${label} 格式无效。`);
+  }
+  return value;
+}
+
+function normalizeCorrectionRequest(value: unknown): CorrectionRequest {
+  const record = asRecord(value);
+  const eventId = correctionEventId(requireString(record, 'eventId'), 'eventId');
+  const applicationEventId = correctionEventId(requireString(record, 'applicationEventId'), 'applicationEventId');
+  const previousRaw = record.previousEventId;
+  if (previousRaw !== null && (typeof previousRaw !== 'string' || !previousRaw.trim())) {
+    throw new StoreError('INVALID_BODY', 'previousEventId 必须是非空事件 ID 或 null。');
+  }
+  const previousEventId = previousRaw === null
+    ? null
+    : correctionEventId((previousRaw as string).trim(), 'previousEventId');
+  const status = requireString(record, 'status');
+  if (!isOneOf(CORRECTION_STATUSES, status)) {
+    throw new StoreError('INVALID_BODY', 'status 必须是 resolved、dismissed 或 open。');
+  }
+  return {
+    eventId,
+    applicationEventId,
+    conceptId: requireString(record, 'conceptId'),
+    sourceRevision: requireString(record, 'sourceRevision'),
+    occurredAt: normalizeDate(requireString(record, 'occurredAt'), 'INVALID_OCCURRED_AT'),
+    previousEventId,
+    status,
+    note: correctionText(record),
+  };
 }
 
 function applicationText(record: Record<string, unknown>, key: string, limit: number, required: boolean): string {
@@ -511,6 +562,20 @@ export class Store {
         request_payload TEXT NOT NULL,
         PRIMARY KEY(namespace, event_id)
       );
+      CREATE TABLE IF NOT EXISTS corrections (
+        namespace TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        application_event_id TEXT NOT NULL,
+        concept_id TEXT NOT NULL,
+        source_revision TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        previous_event_id TEXT,
+        status TEXT NOT NULL CHECK(status IN ('resolved', 'dismissed', 'open')),
+        note TEXT NOT NULL,
+        request_payload TEXT NOT NULL,
+        PRIMARY KEY(namespace, event_id)
+      );
       CREATE TABLE IF NOT EXISTS layouts (
         namespace TEXT PRIMARY KEY,
         layout_json TEXT NOT NULL,
@@ -573,6 +638,10 @@ export class Store {
         ON retentions(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
       CREATE INDEX IF NOT EXISTS applications_by_concept_history
         ON applications(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
+      CREATE INDEX IF NOT EXISTS corrections_by_application_history
+        ON corrections(namespace, application_event_id, occurred_at DESC, recorded_at DESC, event_id DESC);
+      CREATE INDEX IF NOT EXISTS corrections_by_concept_history
+        ON corrections(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
       CREATE INDEX IF NOT EXISTS identity_bindings_by_concept
         ON identity_bindings(namespace, concept_id, confirmed_at, operation_id);
     `);
@@ -647,7 +716,7 @@ export class Store {
     }
   }
 
-  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application'; payload: string } | null {
+  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction'; payload: string } | null {
     const anchor = this.db.prepare('SELECT request_payload FROM anchors WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (anchor) return { kind: 'anchor', payload: anchor.request_payload };
     const observation = this.db.prepare('SELECT request_payload FROM observations WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
@@ -655,7 +724,9 @@ export class Store {
     const retention = this.db.prepare('SELECT request_payload FROM retentions WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (retention) return { kind: 'retention', payload: retention.request_payload };
     const application = this.db.prepare('SELECT request_payload FROM applications WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    return application ? { kind: 'application', payload: application.request_payload } : null;
+    if (application) return { kind: 'application', payload: application.request_payload };
+    const correction = this.db.prepare('SELECT request_payload FROM corrections WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
+    return correction ? { kind: 'correction', payload: correction.request_payload } : null;
   }
 
   hasEvent(eventId: string): boolean {
@@ -663,7 +734,7 @@ export class Store {
   }
 
   private ensureEventId(eventId: string): void {
-    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(eventId)) throw new StoreError('INVALID_EVENT_ID', 'eventId 只能包含字母、数字、点、下划线、冒号或短横线，长度不超过 128。');
+    if (!EVENT_ID_PATTERN.test(eventId)) throw new StoreError('INVALID_EVENT_ID', 'eventId 只能包含字母、数字、点、下划线、冒号或短横线，长度不超过 128。');
   }
 
   addReview(input: ReviewRequest): StoreWriteResult {
@@ -1146,6 +1217,221 @@ export class Store {
     }));
   }
 
+  private correctionRequestPayload(request: CorrectionRequest): string {
+    return canonicalJson({
+      eventId: request.eventId,
+      applicationEventId: request.applicationEventId,
+      conceptId: request.conceptId,
+      sourceRevision: request.sourceRevision,
+      occurredAt: request.occurredAt,
+      previousEventId: request.previousEventId,
+      status: request.status,
+      note: request.note,
+    });
+  }
+
+  private correctionFromRow(row: {
+    event_id: string;
+    application_event_id: string;
+    concept_id: string;
+    source_revision: string;
+    occurred_at: string;
+    recorded_at: string;
+    previous_event_id: string | null;
+    status: CorrectionStatus;
+    note: string;
+  }): CorrectionEvent {
+    return {
+      eventId: row.event_id,
+      applicationEventId: row.application_event_id,
+      conceptId: row.concept_id,
+      sourceRevision: row.source_revision,
+      occurredAt: row.occurred_at,
+      recordedAt: row.recorded_at,
+      previousEventId: row.previous_event_id,
+      status: row.status,
+      note: row.note,
+    };
+  }
+
+  private correctionTail(applicationEventId: string): CorrectionEvent | null {
+    const rows = this.db.prepare(`
+      SELECT c.event_id, c.application_event_id, c.concept_id, c.source_revision,
+        c.occurred_at, c.recorded_at, c.previous_event_id, c.status, c.note
+      FROM corrections AS c
+      WHERE c.namespace = ? AND c.application_event_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM corrections AS child
+          WHERE child.namespace = c.namespace
+            AND child.application_event_id = c.application_event_id
+            AND child.previous_event_id = c.event_id
+        )
+    `).all(this.namespace, applicationEventId) as Array<{
+      event_id: string;
+      application_event_id: string;
+      concept_id: string;
+      source_revision: string;
+      occurred_at: string;
+      recorded_at: string;
+      previous_event_id: string | null;
+      status: CorrectionStatus;
+      note: string;
+    }>;
+    if (rows.length > 1) {
+      throw new StoreError('CORRECTION_CONFLICT', '修正历史链出现多个当前尾节点，无法安全追加。', 409);
+    }
+    return rows.length === 1 ? this.correctionFromRow(rows[0]) : null;
+  }
+
+  getCorrections(conceptId?: string, applicationEventId?: string): CorrectionEvent[] {
+    let query = `SELECT event_id, application_event_id, concept_id, source_revision,
+      occurred_at, recorded_at, previous_event_id, status, note
+      FROM corrections WHERE namespace = ?`;
+    const parameters: string[] = [this.namespace];
+    if (conceptId !== undefined) {
+      query += ' AND concept_id = ?';
+      parameters.push(conceptId);
+    }
+    if (applicationEventId !== undefined) {
+      query += ' AND application_event_id = ?';
+      parameters.push(applicationEventId);
+    }
+    query += ' ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC';
+    const rows = this.db.prepare(query).all(...parameters) as Array<{
+      event_id: string;
+      application_event_id: string;
+      concept_id: string;
+      source_revision: string;
+      occurred_at: string;
+      recorded_at: string;
+      previous_event_id: string | null;
+      status: CorrectionStatus;
+      note: string;
+    }>;
+    return rows.map((row) => this.correctionFromRow(row));
+  }
+
+  getCorrectionHistory(applicationEventId: string, limit = 50): CorrectionHistory {
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new StoreError('INVALID_HISTORY_LIMIT', '修正历史 limit 必须是正整数。');
+    }
+    const boundedLimit = Math.min(limit, 50);
+    const totalRow = this.db.prepare(`SELECT COUNT(*) AS count
+      FROM corrections WHERE namespace = ? AND application_event_id = ?`).get(this.namespace, applicationEventId) as { count: number };
+    const latest = this.correctionTail(applicationEventId);
+    const events: CorrectionEvent[] = [];
+    const visited = new Set<string>();
+    let current = latest;
+    while (current && events.length < boundedLimit && !visited.has(current.eventId)) {
+      visited.add(current.eventId);
+      events.push(current);
+      if (!current.previousEventId) {
+        current = null;
+        continue;
+      }
+      const previous = this.db.prepare(`SELECT event_id, application_event_id, concept_id, source_revision,
+        occurred_at, recorded_at, previous_event_id, status, note
+        FROM corrections
+        WHERE namespace = ? AND application_event_id = ? AND event_id = ?`).get(
+        this.namespace, applicationEventId, current.previousEventId,
+      ) as {
+        event_id: string;
+        application_event_id: string;
+        concept_id: string;
+        source_revision: string;
+        occurred_at: string;
+        recorded_at: string;
+        previous_event_id: string | null;
+        status: CorrectionStatus;
+        note: string;
+      } | undefined;
+      current = previous ? this.correctionFromRow(previous) : null;
+    }
+    return { latest, events, total: totalRow.count };
+  }
+
+  /** Append one immutable human decision to an application's correction chain. */
+  addCorrection(input: CorrectionRequest): StoreWriteResult {
+    const request = normalizeCorrectionRequest(input);
+    this.ensureEventId(request.eventId);
+    const requestPayload = this.correctionRequestPayload(request);
+    const existing = this.findEvent(request.eventId);
+    if (existing) {
+      if (existing.kind !== 'correction' || existing.payload !== requestPayload) {
+        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+      }
+      return { status: 'duplicate', eventId: request.eventId };
+    }
+
+    const now = this.now();
+    const nowMs = now.getTime();
+    if (parseDate(request.occurredAt) > nowMs) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
+    const recordedAt = iso(now);
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      // Re-check under the write lock. A concurrent writer may have claimed
+      // this event ID after the optimistic duplicate check above.
+      const concurrent = this.findEvent(request.eventId);
+      if (concurrent) {
+        if (concurrent.kind !== 'correction' || concurrent.payload !== requestPayload) {
+          throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        }
+        this.db.exec('COMMIT');
+        return { status: 'duplicate', eventId: request.eventId };
+      }
+
+      const parent = this.db.prepare(`SELECT concept_id, source_revision, occurred_at, correction
+        FROM applications WHERE namespace = ? AND event_id = ?`).get(this.namespace, request.applicationEventId) as {
+          concept_id: string;
+          source_revision: string;
+          occurred_at: string;
+          correction: string;
+        } | undefined;
+      if (!parent) throw new StoreError('APPLICATION_NOT_FOUND', '找不到同一知识空间中的应用记录。', 409);
+      if (parent.concept_id !== request.conceptId) {
+        throw new StoreError('CORRECTION_CONFLICT', '修正记录的 conceptId 与应用记录不一致。', 409);
+      }
+      if (!parent.correction.trim()) {
+        throw new StoreError('INVALID_BODY', '应用记录必须包含非空 correction 才能提交人工复核。');
+      }
+      if (request.status === 'resolved' && request.sourceRevision === parent.source_revision) {
+        throw new StoreError('CORRECTION_SOURCE_UNCHANGED', 'resolved 修正必须针对应用记录之后的新资料版本。', 409);
+      }
+      const tail = this.correctionTail(request.applicationEventId);
+      const currentPreviousEventId = tail?.eventId ?? null;
+      if (request.previousEventId !== currentPreviousEventId) {
+        throw new StoreError('CORRECTION_CONFLICT', '修正历史已变化，请重新读取当前尾节点后重试。', 409);
+      }
+      const lowerBound = tail ? parseDate(tail.occurredAt) : parseDate(parent.occurred_at);
+      const occurredAtMs = parseDate(request.occurredAt);
+      if (occurredAtMs < lowerBound) {
+        throw new StoreError('CORRECTION_CONFLICT', '修正发生时间不能早于应用记录或上一条修正。', 409);
+      }
+      this.db.prepare(`INSERT INTO corrections(
+        namespace, event_id, application_event_id, concept_id, source_revision,
+        occurred_at, recorded_at, previous_event_id, status, note, request_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        this.namespace,
+        request.eventId,
+        request.applicationEventId,
+        request.conceptId,
+        request.sourceRevision,
+        request.occurredAt,
+        recordedAt,
+        request.previousEventId,
+        request.status,
+        request.note,
+        requestPayload,
+      );
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (error instanceof StoreError) throw error;
+      throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
+    }
+    return { status: 'accepted', eventId: request.eventId };
+  }
+
   countObservations(): number {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM observations WHERE namespace = ?').get(this.namespace) as { count: number };
     return row.count;
@@ -1275,6 +1561,8 @@ export class Store {
         + (SELECT COUNT(*) FROM retentions WHERE namespace = ? AND concept_id = ?)
         + (SELECT COUNT(*) FROM applications WHERE namespace = ? AND concept_id = ?) AS total
     `).get(this.namespace, concept.id, this.namespace, concept.id, this.namespace, concept.id, this.namespace, concept.id) as { total: number };
+    const correctionCountRow = this.db.prepare(`SELECT COUNT(*) AS count
+      FROM corrections WHERE namespace = ? AND concept_id = ?`).get(this.namespace, concept.id) as { count: number };
 
     const hasNext = rows.length > limit;
     const page = hasNext ? rows.slice(0, limit) : rows;
@@ -1361,6 +1649,12 @@ export class Store {
     const states = this.getStates([concept], normalizedAsOf);
     const state = states[concept.id];
     if (!state) throw new StoreError('HISTORY_STATE_FAILED', '无法生成概念当前状态。', 500);
+    const corrections: Record<string, CorrectionHistory> = {};
+    for (const entry of page) {
+      if (entry.event_type === 'application') {
+        corrections[entry.event_id] = this.getCorrectionHistory(entry.event_id);
+      }
+    }
     return {
       sourceId: this.namespace,
       conceptId: concept.id,
@@ -1371,6 +1665,8 @@ export class Store {
       total: totalRow.total,
       nextCursor,
       learning: summarizeLearning(this.getObservations(concept.id, concept.source.revision)),
+      corrections,
+      correctionCount: correctionCountRow.count,
     };
   }
 
@@ -1946,7 +2242,7 @@ export class Store {
     throw new StoreError('IMPORT_CONFLICT', `导入事件 ${eventId} 与当前知识空间中的记录不一致。`, 409);
   }
 
-  private eventAlreadyImported(eventId: string, kind: 'anchor' | 'observation' | 'retention' | 'application', requestPayload: string): boolean {
+  private eventAlreadyImported(eventId: string, kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction', requestPayload: string): boolean {
     const existing = this.findEvent(eventId);
     if (!existing) return false;
     if (existing.kind !== kind || existing.payload !== requestPayload) this.importEventConflict(eventId);
@@ -2128,6 +2424,74 @@ export class Store {
     );
   }
 
+  private insertImportedCorrection(event: CorrectionEvent): void {
+    this.ensureEventId(event.eventId);
+    this.ensureEventId(event.applicationEventId);
+    if (event.previousEventId !== null) this.ensureEventId(event.previousEventId);
+    const requestPayload = this.correctionRequestPayload({
+      eventId: event.eventId,
+      applicationEventId: event.applicationEventId,
+      conceptId: event.conceptId,
+      sourceRevision: event.sourceRevision,
+      occurredAt: event.occurredAt,
+      previousEventId: event.previousEventId,
+      status: event.status,
+      note: event.note,
+    });
+    if (this.eventAlreadyImported(event.eventId, 'correction', requestPayload)) return;
+    if (!isValidInstant(event.occurredAt) || !isValidInstant(event.recordedAt)
+        || !isOneOf(CORRECTION_STATUSES, event.status)
+        || typeof event.note !== 'string' || event.note.length > 4000) {
+      throw new StoreError('IMPORT_INVALID_DATA', `correction ${event.eventId} 的字段无效。`);
+    }
+    const occurredAtMs = parseDate(event.occurredAt);
+    const recordedAtMs = parseDate(event.recordedAt);
+    if (recordedAtMs < occurredAtMs) {
+      throw new StoreError('IMPORT_INVALID_DATA', `correction ${event.eventId} 的 recordedAt 早于 occurredAt。`);
+    }
+    const parent = this.db.prepare(`SELECT concept_id, source_revision, occurred_at, correction
+      FROM applications WHERE namespace = ? AND event_id = ?`).get(this.namespace, event.applicationEventId) as {
+        concept_id: string;
+        source_revision: string;
+        occurred_at: string;
+        correction: string;
+      } | undefined;
+    if (!parent) throw new StoreError('IMPORT_CONFLICT', `correction ${event.eventId} 引用的应用记录不存在。`, 409);
+    if (parent.concept_id !== event.conceptId) {
+      throw new StoreError('IMPORT_CONFLICT', `correction ${event.eventId} 的 conceptId 与应用记录不一致。`, 409);
+    }
+    if (!parent.correction.trim()) {
+      throw new StoreError('IMPORT_INVALID_DATA', `correction ${event.eventId} 引用的应用记录没有 correction 内容。`);
+    }
+    if (event.status === 'resolved' && event.sourceRevision === parent.source_revision) {
+      throw new StoreError('IMPORT_CONFLICT', `correction ${event.eventId} 的 resolved sourceRevision 未发生变化。`, 409);
+    }
+    const tail = this.correctionTail(event.applicationEventId);
+    if (event.previousEventId !== (tail?.eventId ?? null)) {
+      throw new StoreError('IMPORT_CONFLICT', `correction ${event.eventId} 的链式前置记录不匹配。`, 409);
+    }
+    const lowerBound = tail ? parseDate(tail.occurredAt) : parseDate(parent.occurred_at);
+    if (occurredAtMs < lowerBound) {
+      throw new StoreError('IMPORT_INVALID_DATA', `correction ${event.eventId} 的 occurredAt 早于父记录或前置修正。`);
+    }
+    this.db.prepare(`INSERT INTO corrections(
+      namespace, event_id, application_event_id, concept_id, source_revision,
+      occurred_at, recorded_at, previous_event_id, status, note, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      this.namespace,
+      event.eventId,
+      event.applicationEventId,
+      event.conceptId,
+      event.sourceRevision,
+      event.occurredAt,
+      event.recordedAt,
+      event.previousEventId,
+      event.status,
+      event.note,
+      requestPayload,
+    );
+  }
+
   private mergeImportedConcepts(concepts: Array<Pick<Concept, 'id' | 'title' | 'source'>>): void {
     for (const concept of concepts) {
       if (typeof concept.id !== 'string' || !concept.id.trim()
@@ -2227,6 +2591,7 @@ export class Store {
       for (const observation of prepared.newObservations) this.insertImportedObservation(observation);
       for (const retention of prepared.newRetentions) this.insertImportedRetention(retention);
       for (const application of prepared.newApplications) this.insertImportedApplication(application);
+      for (const correction of prepared.newCorrections) this.insertImportedCorrection(correction);
       if (request.options?.restoreLayout && prepared.mergedLayout) this.writeImportedLayout(prepared.mergedLayout);
       if (request.options?.restoreReviewPlan && prepared.mergedReviewPlan) this.writeImportedReviewPlan(prepared.mergedReviewPlan);
 
@@ -2283,6 +2648,7 @@ export class Store {
       observations: this.getObservations(),
       retentions: this.getRetentions(),
       applications: this.getApplications(),
+      corrections: this.getCorrections(),
       reviewPlan: this.getReviewPlan(),
       layout: this.getLayout(),
       restoreMetadata: {
@@ -2328,6 +2694,10 @@ export function parseRetentionRequest(value: unknown): RetentionRequest {
 
 export function parseApplicationRequest(value: unknown): ApplicationRecordRequest {
   return normalizeApplicationRequest(value);
+}
+
+export function parseCorrectionRequest(value: unknown): CorrectionRequest {
+  return normalizeCorrectionRequest(value);
 }
 
 export function parseLearningEvidence(value: unknown, observedAt?: string): LearningEvidence | undefined {

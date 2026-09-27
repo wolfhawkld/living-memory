@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { closeApp, createApp, type LivingMemoryApp } from '../src/server/app.js';
 import type { ApplicationRecordRequest, Concept, ConceptHistory, ExportData, Snapshot } from '../src/shared/types.js';
 import { api, type SessionResponse } from '../src/web/api.ts';
+import type { CorrectionRequest } from '../src/shared/corrections.ts';
 
 interface ResponseData {
   status: number;
@@ -211,6 +212,86 @@ function baseApplication(concept: Concept, overrides: Partial<ApplicationRecordR
 function errorCode(response: ResponseData): string {
   return response.json<{ error?: { code?: string } }>().error?.code ?? '';
 }
+
+function correctionFor(application: ApplicationRecordRequest, overrides: Partial<CorrectionRequest> = {}): CorrectionRequest {
+  return {
+    eventId: `correction-${application.eventId}`, applicationEventId: application.eventId,
+    conceptId: application.conceptId, sourceRevision: application.sourceRevision,
+    occurredAt: NOW, previousEventId: null, status: 'dismissed', note: '核对后暂不采用。', ...overrides,
+  };
+}
+
+test('manual correction review follows current KG versions without changing memory or rewriting the original record', async () => {
+  const client = await running();
+  let feed: ChangeFeed | undefined;
+  try {
+    const currentSession = await session(client);
+    const headers = tokenHeaders(currentSession);
+    const concept = conceptAt(await snapshot(client));
+    const application = baseApplication(concept);
+    assert.equal((await client.request('/api/applications', { method: 'POST', headers, body: application })).status, 201);
+    const before = (await client.request('/api/export')).json<ExportData>();
+    const decision = correctionFor(application, { status: 'resolved', note: '已逐项核对并纳入。' });
+    assert.equal((await client.request('/api/corrections', { method: 'POST', body: decision })).status, 401);
+    assert.equal((await client.request('/api/corrections', {
+      method: 'POST', headers: { ...headers, 'x-lm-source-id': 'foreign-source' }, body: decision,
+    })).status, 409);
+    const unchanged = await client.request('/api/corrections', { method: 'POST', headers, body: decision });
+    assert.ok(unchanged.status >= 400 && unchanged.status < 500, unchanged.body);
+
+    writeFileSync(join(client.root, 'Math', 'Alpha.md'), conceptFile('Alpha', '根据修正建议完善了说明。'));
+    assert.equal((await client.request('/api/refresh', { method: 'POST', headers, body: {} })).status, 200);
+    const updated = await snapshot(client);
+    const current = conceptAt(updated);
+    assert.notEqual(current.source.revision, concept.source.revision);
+    const unresolved = (await client.request(`/api/concepts/${encodeURIComponent(concept.id)}/history`)).json<ConceptHistory>();
+    assert.equal(unresolved.corrections?.[application.eventId]?.latest, null, 'version changes alone do not resolve suggestions');
+
+    const stale = await client.request('/api/corrections', { method: 'POST', headers, body: decision });
+    assert.equal(stale.status, 409);
+    assert.equal(errorCode(stale), 'SOURCE_REVISION_MISMATCH');
+    decision.sourceRevision = current.source.revision;
+    feed = await openChanges(client);
+    await feed.next();
+    const accepted = await client.request('/api/corrections', { method: 'POST', headers, body: decision });
+    assert.equal(accepted.status, 201, accepted.body);
+    const notice = await feed.next();
+    assert.equal(notice.reason, 'correction');
+    assert.deepEqual(Object.keys(notice).sort(), ['reason', 'revision', 'sourceId']);
+    const history = (await client.request(`/api/concepts/${encodeURIComponent(concept.id)}/history`)).json<ConceptHistory>();
+    assert.equal(history.total, 1, 'decisions are nested under their original application');
+    assert.equal(history.correctionCount, 1);
+    assert.equal(history.corrections?.[application.eventId]?.latest?.status, 'resolved');
+    assert.equal(history.corrections?.[application.eventId]?.latest?.sourceRevision, current.source.revision);
+    assert.deepEqual((await snapshot(client)).states, updated.states);
+
+    const reopen = { ...decision, eventId: 'reopen-correction', previousEventId: decision.eventId, status: 'open' as const };
+    assert.equal((await client.request('/api/corrections', { method: 'POST', headers, body: reopen })).status, 201);
+    await feed.next();
+    const fork = await client.request('/api/corrections', {
+      method: 'POST', headers, body: { ...reopen, eventId: 'stale-concurrent-correction' },
+    });
+    assert.equal(fork.status, 409, fork.body);
+    const duplicate = await client.request('/api/corrections', { method: 'POST', headers, body: decision });
+    assert.equal(duplicate.status, 200, duplicate.body);
+    await assert.rejects(feed.next(100), /timed out/);
+    await feed.close();
+    feed = undefined;
+
+    writeFileSync(join(client.root, 'Math', 'Alpha.md'), conceptFile('Alpha', '再次修改后的知识正文。'));
+    await client.request('/api/refresh', { method: 'POST', headers, body: {} });
+    assert.equal((await client.request('/api/corrections', { method: 'POST', headers, body: decision })).status, 200);
+    const after = (await client.request('/api/export')).json<ExportData>();
+    assert.equal(after.corrections?.length, 2);
+    assert.deepEqual(after.applications, before.applications);
+    assert.deepEqual(after.anchors, before.anchors);
+    assert.deepEqual(after.observations, before.observations);
+    assert.deepEqual(after.retentions, before.retentions);
+  } finally {
+    await feed?.close();
+    await client.stop();
+  }
+});
 
 function openChanges(client: RunningApp, cookie?: string): Promise<ChangeFeed> {
   return new Promise<ChangeFeed>((resolve, reject) => {
@@ -507,6 +588,10 @@ test('account sessions isolate application records, exports and concept permissi
     assert.equal((await client.request('/api/applications', {
       method: 'POST', cookie: ownerCookie, headers: ownerHeaders, body: ownerApplication,
     })).status, 201);
+    const ownerCorrection = correctionFor(ownerApplication, { note: '只属于 owner 的复核说明。' });
+    assert.equal((await client.request('/api/corrections', {
+      method: 'POST', cookie: ownerCookie, headers: ownerHeaders, body: ownerCorrection,
+    })).status, 201);
 
     const created = await client.request('/api/admin/users', {
       method: 'POST', cookie: ownerCookie, headers: ownerHeaders,
@@ -541,11 +626,22 @@ test('account sessions isolate application records, exports and concept permissi
     assert.equal((await client.request('/api/applications', {
       method: 'POST', cookie: memberCookie, headers: memberHeaders, body: memberApplication,
     })).status, 201);
+    assert.equal((await client.request('/api/corrections', {
+      method: 'POST', cookie: memberCookie, headers: memberHeaders,
+      body: correctionFor(memberApplication, { note: '只属于 member 的复核说明。' }),
+    })).status, 201);
+    const foreignParent = await client.request('/api/corrections', {
+      method: 'POST', cookie: memberCookie, headers: memberHeaders,
+      body: correctionFor(memberApplication, { eventId: 'foreign-parent', applicationEventId: ownerApplication.eventId }),
+    });
+    assert.ok(foreignParent.status >= 400 && foreignParent.status < 500, foreignParent.body);
 
     const ownerExport = (await client.request('/api/export', { cookie: ownerCookie })).json<ExportData>();
     const memberExport = (await client.request('/api/export', { cookie: memberCookie })).json<ExportData>();
     assert.deepEqual(ownerExport.applications?.map((item) => item.eventId), ['owner-private-application']);
     assert.deepEqual(memberExport.applications?.map((item) => item.eventId), ['member-private-application']);
+    assert.deepEqual(ownerExport.corrections?.map((item) => item.applicationEventId), [ownerApplication.eventId]);
+    assert.deepEqual(memberExport.corrections?.map((item) => item.applicationEventId), [memberApplication.eventId]);
     assert.match(JSON.stringify(ownerExport), /只属于 owner/);
     assert.doesNotMatch(JSON.stringify(ownerExport), /只属于 member/);
     assert.match(JSON.stringify(memberExport), /只属于 member/);
@@ -619,6 +715,14 @@ test('web api renews a stale session and replays one frozen application without 
 
     const exported = JSON.parse(await (await api.exportData(currentSession.writeToken, currentSession.sourceId)).text()) as ExportData;
     assert.equal(exported.applications?.filter((item) => item.eventId === frozen.eventId).length, 1);
+    const correction = correctionFor(frozen, { eventId: 'web-api-correction-replay' });
+    assert.equal((await api.postCorrection(correction, oldSession.writeToken, oldSession.sourceId)).status, 'accepted');
+    assert.equal((await api.postCorrection(correction, oldSession.writeToken, oldSession.sourceId)).status, 'duplicate');
+    const correctionCalls = proxy.calls.filter((call) => call.path === '/api/corrections');
+    assert.equal(correctionCalls.length, 4);
+    assert.deepEqual(correctionCalls.map((call) => call.body), Array(4).fill(JSON.stringify(correction)));
+    const finalExport = JSON.parse(await (await api.exportData(currentSession.writeToken, currentSession.sourceId)).text()) as ExportData;
+    assert.equal(finalExport.corrections?.length, 1);
   } finally {
     restoreFetch?.();
     if (first) await first.stop();

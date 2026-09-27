@@ -14,6 +14,7 @@ import { createSessionRecovery, type LocalSession } from './session-recovery';
 import { inspectLayout } from '../shared/layout';
 import type { AccountUser } from '../shared/accounts';
 import type { LearningOverview } from '../shared/learning-overview';
+import type { CorrectionRequest } from '../shared/corrections';
 import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
 import type { ImportPreviewRequest, ImportPreview, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
@@ -75,6 +76,7 @@ export class ApiRequestError extends Error {
 const API_ROOT = '/api';
 const PENDING_KEY_PREFIX = 'living-memory.pending-writes.v1';
 const LAYOUT_RECOVERY_KEY_PREFIX = 'living-memory.layout-recovery.v1';
+const CORRECTION_RECOVERY_KEY_PREFIX = 'living-memory.correction-recovery.v1';
 
 type SessionRecoveryEvent = { kind: 'recovered'; session: LocalSession }
   | { kind: 'source-mismatch'; sourceId?: string };
@@ -125,6 +127,10 @@ function authenticatedJson<T>(path: string, init: RequestInit, writeToken: strin
 function pendingKey(sourceId: string | null | undefined): string | null {
   if (!sourceId?.trim()) return null;
   return `${PENDING_KEY_PREFIX}.${encodeURIComponent(sourceId.trim())}`;
+}
+
+function correctionRecoveryKey(sourceId: string): string {
+  return `${CORRECTION_RECOVERY_KEY_PREFIX}.${encodeURIComponent(sourceId.trim())}`;
 }
 
 /** Observe this space only. Browser storage events reach other tabs; the custom
@@ -208,6 +214,75 @@ function samePendingRequest(left: PendingWrite, right: PendingWrite): boolean {
 function samePendingSnapshot(entry: unknown, expected: PendingWrite): entry is PendingWrite {
   return hasPendingId(entry, expected.id) && (entry as PendingWrite).createdAt === expected.createdAt
     && samePendingRequest(entry as PendingWrite, expected);
+}
+
+function samePendingError(left: PendingWriteError | undefined, right: PendingWriteError | undefined): boolean {
+  if (!left || !right) return left === right;
+  return left.code === right.code && left.status === right.status && left.message === right.message
+    && left.retryable === right.retryable && left.attemptedAt === right.attemptedAt;
+}
+
+function sameCorrectionArchiveSnapshot(entry: unknown, expected: PendingWrite): entry is PendingWrite {
+  return samePendingSnapshot(entry, expected)
+    && (entry as PendingWrite).label === expected.label
+    && samePendingError((entry as PendingWrite).lastError, expected.lastError);
+}
+
+/** Only deterministic correction rejections may leave the pending queue. */
+export function canArchiveCorrectionWrite(write: PendingWrite): boolean {
+  return write.method === 'POST' && write.path === '/corrections'
+    && (write.lastError?.code === 'SOURCE_REVISION_MISMATCH' || write.lastError?.code === 'CORRECTION_CONFLICT');
+}
+
+function isCorrectionRecoveryEntry(entry: unknown, expected: PendingWrite): boolean {
+  if (!entry || typeof entry !== 'object' || !('write' in entry) || !('archivedAt' in entry)) return false;
+  const archivedAt = (entry as { archivedAt?: unknown }).archivedAt;
+  return typeof archivedAt === 'string' && archivedAt.length > 0
+    && sameCorrectionArchiveSnapshot((entry as { write?: unknown }).write, expected);
+}
+
+/**
+ * Preserve a deterministic correction rejection before removing it from the
+ * retry queue. The sync lock is acquired first so an in-flight sender cannot
+ * race the storage snapshot; the storage lock then protects the archive and
+ * exact queue deletion as one short critical section.
+ */
+export async function archivePendingCorrection(sourceId: string | null | undefined, expected: PendingWrite): Promise<boolean> {
+  const source = sourceId?.trim();
+  if (typeof window === 'undefined' || !source || !canArchiveCorrectionWrite(expected)) return false;
+  const queueStorageKey = pendingKey(source);
+  if (!queueStorageKey) return false;
+  const recoveryStorageKey = correctionRecoveryKey(source);
+  try {
+    return await withPendingSyncLock<boolean>(source,
+      () => withPendingStorageLock(source, () => {
+        const queue = pendingEntriesForUpdate(queueStorageKey);
+        const index = queue.findIndex(entry => sameCorrectionArchiveSnapshot(entry, expected));
+        if (index < 0) return false;
+        const current = queue[index] as PendingWrite;
+        if (!canArchiveCorrectionWrite(current)) return false;
+
+        const backups = pendingEntriesForUpdate(recoveryStorageKey);
+        if (!backups.some(entry => isCorrectionRecoveryEntry(entry, current))) {
+          backups.push({ write: current, archivedAt: new Date().toISOString() });
+          // Do this before touching the pending queue. A failed archive write
+          // leaves the original request available for another recovery attempt.
+          window.localStorage.setItem(recoveryStorageKey, JSON.stringify(backups));
+        }
+
+        const nextQueue = queue.slice();
+        nextQueue.splice(index, 1);
+        window.localStorage.setItem(queueStorageKey, JSON.stringify(nextQueue));
+        notifyPendingChanged(source);
+        return true;
+      }),
+      () => false,
+    );
+  } catch {
+    // Storage reads/writes and unavailable coordination are fail-closed: the
+    // request remains in the pending queue until the archive can be verified.
+    return false;
+  }
 }
 
 export async function queuePendingWrite(sourceId: string | null | undefined, write: Omit<PendingWrite, 'id' | 'createdAt'> & { id?: string }): Promise<PendingWrite | null> {
@@ -456,6 +531,8 @@ export const api = {
     writeJson<WriteReceipt>('/observations', payload, writeToken, sourceId),
   postApplication: (payload: ApplicationRecordRequest, writeToken: string, sourceId: string) =>
     writeJson<WriteReceipt>('/applications', payload, writeToken, sourceId),
+  postCorrection: (payload: CorrectionRequest, writeToken: string, sourceId: string) =>
+    writeJson<WriteReceipt>('/corrections', payload, writeToken, sourceId),
   putConfig: (payload: Pick<ModelConfig, 'halfLifeDays' | 'revision'>, writeToken: string, sourceId: string) =>
     authenticatedJson<ConfigWriteReceipt>('/config', {
       method: 'PUT',

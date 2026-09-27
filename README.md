@@ -43,6 +43,7 @@ npm start
 - [概念改名与移动后的历史衔接](docs/development/concept-identity.md)：人工预览确认路径对应，保留原学习时间与稳定身份，支持连续移动、冲突诊断和绑定前备份。
 - [待同步协调与超时恢复](docs/development/pending-sync.md)：按知识空间协调多个页面的队列；参数请求可按历史版本重复确认；请求超时保留原记录并释放同步锁。更新后需刷新所有项目页面。
 - [时间提示与回忆表现对照](docs/development/time-recall-comparison.md)：在知识薄弱点总览中查看冻结的历史时间指标与自评，分开估计日期和提示条件，定位近期仍模糊、较久仍清晰的概念。
+- [知识修正建议的人工跟进](docs/development/knowledge-corrections.md)：在原应用/总结下记录已纳入当前版本、暂不采用或重新打开，保留处理历史并支持导出恢复；决定不改变记忆时间。
 - [演示后的迭代 TODO（2026-09-22）](docs/planning/iteration-todo-2026-09-22.md)：当前完成范围、原有待办入口，以及学习历史、少量复习和场景调用的后续顺序。
 - [逐概念学习历史](docs/development/concept-history.md)：查看重温、补记与回忆观察，区分当前起点、旧版本、冻结观察值和待同步记录。
 - [Markdown 与大窗阅读](docs/development/markdown-reader.md)：渲染知识正文、表格与公式，打开大窗口阅读和调整字号。
@@ -85,4 +86,4 @@ npm start
 
 本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。项目许可证将在未来开源前确定。
 
-状态：2026-09-27，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)及 [Markdown 大窗阅读、图片附件与 Mermaid 渲染](docs/development/markdown-reader.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。已完成[场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)、[私人多账号](docs/development/private-accounts.md)，主题适配已覆盖页面、图谱及 [Mermaid/媒体](docs/development/theme-media.md)，用户已确认基础图谱主题体验。现已接入[少量复习入口](docs/development/brief-review.md)、[实际应用与总结记录](docs/development/application-records.md)、[知识薄弱点总览](docs/development/learning-overview.md)、[复习安排与中断续做](docs/development/review-arrangements.md)、[学习数据导入恢复](docs/development/learning-data-import.md)和[改名/移动后的历史衔接](docs/development/concept-identity.md)；应用/总结已获用户试用确认，442 项 Node 测试、构建与主题构建检查通过，复习安排浏览器试用按用户要求跳过，保留未验收；总览、导入恢复、历史衔接和其余专项视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，在线共享、语音链路及 Obsidian 宿主属于后续范围。
+状态：2026-09-27，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)及 [Markdown 大窗阅读、图片附件与 Mermaid 渲染](docs/development/markdown-reader.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。已完成[场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)、[私人多账号](docs/development/private-accounts.md)，主题适配已覆盖页面、图谱及 [Mermaid/媒体](docs/development/theme-media.md)，用户已确认基础图谱主题体验。现已接入[少量复习入口](docs/development/brief-review.md)、[实际应用与总结记录](docs/development/application-records.md)、[知识薄弱点总览](docs/development/learning-overview.md)、[复习安排与中断续做](docs/development/review-arrangements.md)、[学习数据导入恢复](docs/development/learning-data-import.md)和[改名/移动后的历史衔接](docs/development/concept-identity.md)；应用/总结已获用户试用确认，467 项 Node 测试、构建与主题构建检查通过，复习安排浏览器试用按用户要求跳过，保留未验收；总览、导入恢复、历史衔接和其余专项视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，在线共享、语音链路及 Obsidian 宿主属于后续范围。

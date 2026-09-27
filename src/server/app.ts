@@ -18,6 +18,7 @@ import { requestSessionToken, renewOwnerDevice, setSessionCookie, SESSION_COOKIE
 import { validateStoragePaths } from './storage-paths.js';
 import {
   parseApplicationRequest,
+  parseCorrectionRequest,
   parseObservationRequest,
   parseRetentionRequest,
   parseReviewRequest,
@@ -582,6 +583,17 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     }
     const receipt = store.addApplication(record);
     if (receipt.status === 'accepted') changes.publish('application');
+    res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
+  }));
+  app.post('/api/corrections', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
+    const decision = parseCorrectionRequest(req.body);
+    if (!store.hasEvent(decision.eventId)) {
+      const concept = conceptById(source, decision.conceptId);
+      if (decision.sourceRevision !== concept.source.revision) throw new StoreError('SOURCE_REVISION_MISMATCH', '资料版本已变化，请重新核对当前资料后记录处理结果。', 409);
+    }
+    const receipt = store.addCorrection(decision);
+    if (receipt.status === 'accepted') changes.publish('correction');
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.put('/api/config', requireWrite, asyncRoute((req, res) => {

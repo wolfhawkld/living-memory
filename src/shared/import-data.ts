@@ -3,7 +3,7 @@ import type { ModelConfig } from './types';
 export const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
 export interface ImportOptions { restoreLayout: boolean; restoreReviewPlan: boolean }
 export const DEFAULT_IMPORT_OPTIONS: ImportOptions = { restoreLayout: false, restoreReviewPlan: false };
-export type ImportEventKind = 'anchors' | 'observations' | 'retentions' | 'applications';
+export type ImportEventKind = 'anchors' | 'observations' | 'retentions' | 'applications' | 'corrections';
 export interface ImportIssue {
   severity: 'error' | 'warning';
   code: string;

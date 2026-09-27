@@ -129,7 +129,7 @@ test('export imports frozen history, config times, retention chain, applications
     const before = target.store.exportData(source, [concept]);
     const preview = target.store.previewImport(data, options, source, [concept]);
     assert.equal(preview.canImport, true, JSON.stringify(preview.issues));
-    assert.deepEqual(preview.counts.added, { anchors: 2, observations: 1, retentions: 2, applications: 1 });
+    assert.deepEqual(preview.counts.added, { anchors: 2, observations: 1, retentions: 2, applications: 1, corrections: 0 });
     assert.equal(preview.counts.configurations, 1);
     assert.equal(preview.layoutChanged, true);
     assert.equal(preview.reviewPlanChanged, true);
@@ -174,7 +174,7 @@ test('export imports frozen history, config times, retention chain, applications
     const replayPreview = target.store.previewImport(data, options, source, [concept]);
     assert.equal(replayPreview.canImport, true, JSON.stringify(replayPreview.issues));
     assert.equal(replayPreview.counts.duplicates, 6);
-    assert.deepEqual(replayPreview.counts.added, { anchors: 0, observations: 0, retentions: 0, applications: 0 });
+    assert.deepEqual(replayPreview.counts.added, { anchors: 0, observations: 0, retentions: 0, applications: 0, corrections: 0 });
     const replay: ImportCommitRequest = { ...request, importId: 'restore-2', previewToken: replayPreview.token };
     const replayReceipt = target.store.commitImport(replay, source, [concept], () => 'backup-restore-2');
     assert.equal(replayReceipt.status, 'accepted');

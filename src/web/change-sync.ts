@@ -23,6 +23,7 @@ const CHANGE_REASONS: ReadonlySet<ChangeNotification['reason']> = new Set([
   'config',
   'retention',
   'application',
+  'correction',
   'review-plan',
   'import',
   'identity',

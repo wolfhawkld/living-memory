@@ -148,6 +148,10 @@ export interface ConceptHistory {
   total: number;
   nextCursor: string | null;
   learning?: LearningSummary;
+  /** Decisions for application entries on this page. Each list is bounded. */
+  corrections?: Record<string, import('./corrections.js').CorrectionHistory>;
+  /** Append-only decision watermark across all pages of this concept. */
+  correctionCount?: number;
 }
 
 export interface KnowledgeGraph {
@@ -202,7 +206,7 @@ export interface WriteReceipt {
 export interface ChangeNotification {
   sourceId: string;
   revision: number;
-  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application' | 'review-plan' | 'import' | 'identity';
+  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application' | 'correction' | 'review-plan' | 'import' | 'identity';
 }
 
 export interface LayoutPosition { x: number; y: number; z: number }
@@ -221,6 +225,7 @@ export interface ExportData {
   observations: Observation[];
   retentions?: RetentionEvent[];
   applications?: ApplicationRecord[];
+  corrections?: import('./corrections.js').CorrectionEvent[];
   reviewPlan?: import('./review-plan.js').ReviewPlan;
   layout: Layout;
   /** Optional v1 additions for portable recovery; no account credentials or absolute root paths. */

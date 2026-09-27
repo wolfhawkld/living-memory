@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import type { ApplicationRecordRequest } from '../src/shared/types';
+import type { CorrectionRequest } from '../src/shared/corrections';
 import { createMemoryLockManager } from './helpers/memory-lock-manager.ts';
 import {
   ApiRequestError,
   api,
+  archivePendingCorrection,
+  canArchiveCorrectionWrite,
   flushPendingWrites,
   getPendingWrites,
   queuePendingWrite,
@@ -84,6 +87,30 @@ interface FetchCall {
 }
 
 type FetchHandler = (call: FetchCall) => Response | Promise<Response>;
+
+test('pending correction decisions retain their original parent, version and predecessor through conflicts and retries', async () => {
+  const payload: CorrectionRequest = {
+    eventId: 'offline-correction', applicationEventId: 'original-application', conceptId: 'concept',
+    sourceRevision: 'reviewed-version', occurredAt: '2026-09-20T10:00:00.000Z',
+    previousEventId: 'previous-decision', status: 'resolved', note: '核对结果\n保留说明',
+  };
+  for (const sourceId of ['space-a', 'space-b']) {
+    assert.ok(await queuePendingWrite(sourceId, { path: '/corrections', method: 'POST', payload,
+      eventId: payload.eventId, conceptId: payload.conceptId, label: '知识修正复核' }));
+  }
+  installFetch(() => jsonResponse({ error: { code: 'CORRECTION_CONFLICT', message: '处理历史已变化' } }, 409));
+  assert.equal((await flushPendingWrites('token', 'space-a')).failed, 1);
+  assert.deepEqual(getPendingWrites('space-a')[0].payload, payload);
+  installFetch((call) => {
+    assert.equal(call.path, '/api/corrections');
+    assert.equal(call.headers.get('x-lm-source-id'), 'space-a');
+    assert.deepEqual(JSON.parse(call.body!), payload);
+    return jsonResponse({ status: 'duplicate', eventId: payload.eventId });
+  });
+  assert.equal((await flushPendingWrites('token', 'space-a')).sent, 1);
+  assert.equal(getPendingWrites('space-a').length, 0);
+  assert.deepEqual(getPendingWrites('space-b')[0].payload, payload);
+});
 
 test('offline application records retain the original request and only flush within their own knowledge space', async () => {
   const payload: ApplicationRecordRequest = {
@@ -847,3 +874,118 @@ async function enqueueLayout(sourceId: string, id: string, payload: unknown, lab
   assert.ok(write, 'test layout queue write should be stored');
   return { write, payload };
 }
+
+function pendingStorageKey(sourceId: string): string {
+  return `living-memory.pending-writes.v1.${encodeURIComponent(sourceId)}`;
+}
+
+function correctionRecoveryKey(sourceId: string): string {
+  return `living-memory.correction-recovery.v1.${encodeURIComponent(sourceId)}`;
+}
+
+async function enqueueCorrection(sourceId: string, id: string): Promise<{ write: PendingWrite; payload: CorrectionRequest }> {
+  const payload: CorrectionRequest = {
+    eventId: id,
+    applicationEventId: `application-${id}`,
+    conceptId: `concept-${id}`,
+    sourceRevision: `revision-${id}`,
+    occurredAt: '2026-09-20T10:00:00.000Z',
+    previousEventId: null,
+    status: 'resolved',
+    note: `原始说明 ${id}`,
+  };
+  const write = await queuePendingWrite(sourceId, {
+    id,
+    method: 'POST',
+    path: '/corrections',
+    payload,
+    eventId: payload.eventId,
+    conceptId: payload.conceptId,
+    label: '知识修正复核',
+  });
+  assert.ok(write, 'test correction queue write should be stored');
+  return { write, payload };
+}
+
+async function rejectCorrection(sourceId: string): Promise<PendingWrite> {
+  installFetch(() => jsonResponse({ error: { code: 'CORRECTION_CONFLICT', message: '处理历史已变化' } }, 409));
+  const result = resultOf(await flushPendingWrites('token', sourceId));
+  assert.equal(result.failed, 1);
+  const write = stored(sourceId)[0];
+  assert.ok(write?.lastError);
+  assert.equal(write.lastError.code, 'CORRECTION_CONFLICT');
+  return write;
+}
+
+test('archives only deterministic correction conflicts, keeps the complete snapshot, and isolates namespaces', async () => {
+  const sourceA = 'source/correction-archive-A';
+  const sourceB = 'source/correction-archive-B';
+  await enqueueCorrection(sourceA, 'correction-archive-A');
+  await enqueueCorrection(sourceB, 'correction-archive-B');
+  const expectedA = await rejectCorrection(sourceA);
+  const expectedB = await rejectCorrection(sourceB);
+
+  assert.equal(canArchiveCorrectionWrite(expectedA), true);
+  assert.equal(canArchiveCorrectionWrite({ ...expectedA, path: '/reviews' }), false);
+  assert.equal(canArchiveCorrectionWrite({ ...expectedA, lastError: { ...expectedA.lastError!, code: 'REQUEST_TIMEOUT', retryable: true } }), false);
+
+  assert.equal(await archivePendingCorrection(sourceA, expectedA), true);
+  assert.deepEqual(stored(sourceA), []);
+  const archived = JSON.parse(storage.getItem(correctionRecoveryKey(sourceA)) ?? '[]') as Array<{ write: PendingWrite; archivedAt: string }>;
+  assert.equal(archived.length, 1);
+  assert.deepEqual(archived[0].write, expectedA);
+  assert.ok(Number.isFinite(Date.parse(archived[0].archivedAt)));
+
+  assert.deepEqual(stored(sourceB), [expectedB]);
+  assert.equal(storage.getItem(correctionRecoveryKey(sourceB)), null);
+  // The queue item is gone, while a repeated request never duplicates the archive.
+  assert.equal(await archivePendingCorrection(sourceA, expectedA), false);
+  assert.equal((JSON.parse(storage.getItem(correctionRecoveryKey(sourceA)) ?? '[]') as unknown[]).length, 1);
+});
+
+test('does not delete a rejected correction when its recovery backup cannot be written', async () => {
+  const sourceId = 'source/correction-archive-backup-failure';
+  await enqueueCorrection(sourceId, 'correction-backup-failure');
+  const expected = await rejectCorrection(sourceId);
+  storage.failSetKeys.add(correctionRecoveryKey(sourceId));
+
+  assert.equal(await archivePendingCorrection(sourceId, expected), false);
+  assert.deepEqual(stored(sourceId), [expected]);
+  assert.equal(storage.getItem(correctionRecoveryKey(sourceId)), null);
+});
+
+test('does not delete a correction request replaced after the caller captured its snapshot', async () => {
+  const sourceId = 'source/correction-archive-replaced';
+  await enqueueCorrection(sourceId, 'correction-replaced');
+  const expected = await rejectCorrection(sourceId);
+  const replacement = { ...expected, payload: { ...(expected.payload as CorrectionRequest), note: '已被替换的请求' } };
+  storage.setItem(pendingStorageKey(sourceId), JSON.stringify([replacement]));
+
+  assert.equal(await archivePendingCorrection(sourceId, expected), false);
+  assert.deepEqual(stored(sourceId), [replacement]);
+  assert.equal(storage.getItem(correctionRecoveryKey(sourceId)), null);
+});
+
+test('does not archive while another page is sending this source', async () => {
+  const sourceId = 'source/correction-archive-sync-busy';
+  await enqueueCorrection(sourceId, 'correction-sync-busy');
+  const expected = await rejectCorrection(sourceId);
+  const lockName = `living-memory.pending.sync.v1.${encodeURIComponent(sourceId)}`;
+  let release!: () => void;
+  let started!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const lockStarted = new Promise<void>((resolve) => { started = resolve; });
+  const heldLock = window.navigator.locks.request(lockName, { mode: 'exclusive' }, async () => {
+    started();
+    await held;
+  });
+  await lockStarted;
+  try {
+    assert.equal(await archivePendingCorrection(sourceId, expected), false);
+    assert.deepEqual(stored(sourceId), [expected]);
+    assert.equal(storage.getItem(correctionRecoveryKey(sourceId)), null);
+  } finally {
+    release();
+    await heldLock;
+  }
+});

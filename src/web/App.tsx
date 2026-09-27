@@ -17,6 +17,8 @@ import type {
 import {
   ApiRequestError,
   api,
+  archivePendingCorrection,
+  canArchiveCorrectionWrite,
   flushPendingWrites,
   getPendingWrites,
   queuePendingWrite,
@@ -56,7 +58,9 @@ import { LearningSummaryPanel } from './LearningSummaryPanel';
 import { ConfidenceInput, LearningEvidenceFields } from './LearningEvidenceFields';
 import { ScenarioPractice } from './ScenarioPractice';
 import { ApplicationRecordDialog } from './ApplicationRecordDialog';
+import type { SaveCorrection } from './ApplicationCorrectionPanel';
 import './application-record.css';
+import './application-correction.css';
 import { LearningOverviewDialog } from './LearningOverviewDialog';
 import { createLearningOverviewLoader, resolveOverviewSelection } from './learning-overview-loader';
 import './learning-overview.css';
@@ -246,6 +250,15 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const reviewPlanWriteRef = useRef(false);
   const briefActionRef = useRef(false);
   const learningWriteRef = useRef(false);
+  const correctionEditingRef = useRef(new Set<string>());
+  const [correctionRecoveryVersions, setCorrectionRecoveryVersions] = useState<Record<string, number>>({});
+  const onCorrectionEditingChange = useCallback((applicationEventId: string, editing: boolean) => {
+    if (editing) correctionEditingRef.current.add(applicationEventId);
+    else {
+      correctionEditingRef.current.delete(applicationEventId);
+      if (correctionEditingRef.current.size === 0) queueMicrotask(() => changeHandlersRef.current.flush());
+    }
+  }, []);
   const [scenarioOpen, setScenarioOpen] = useState(false);
   const [applicationDraft, setApplicationDraft] = useState<{ concept: Concept; sourceId: string } | null>(null);
   const [overviewOpen, setOverviewOpen] = useState(false);
@@ -468,6 +481,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       !ui.loading &&
       !briefActionRef.current &&
       !overviewOpenRef.current &&
+      correctionEditingRef.current.size === 0 &&
       !ui.hidden &&
       !ui.demoEnabled &&
       !ui.simulated &&
@@ -716,7 +730,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     };
   }, []);
 
-  const pendingConceptIds = useMemo(() => new Set(pendingWrites.filter((item) => item.path !== '/applications').map((item) => item.conceptId).filter((id): id is string => Boolean(id))), [pendingWrites]);
+  const pendingConceptIds = useMemo(() => new Set(pendingWrites.filter((item) => !['/applications', '/corrections'].includes(item.path)).map((item) => item.conceptId).filter((id): id is string => Boolean(id))), [pendingWrites]);
   const displaySnapshot = useMemo(() => {
     if (snapshot && demoEnabled && demoRecord) return projectDemoSnapshot(snapshot, demoRecord, simDays);
     if (!snapshot || pendingConceptIds.size === 0) return snapshot;
@@ -789,7 +803,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     sourceId, conceptId: selectedConcept?.id ?? '', sourceRevision: selectedConcept?.source.revision ?? '',
   }, historyEnabled, snapshot);
   const pendingLearningCount = pendingWrites.filter((write) => write.conceptId === selectedId
-    && (write.path === '/reviews' || write.path === '/observations' || write.path === '/retentions' || write.path === '/applications')).length;
+    && (write.path === '/reviews' || write.path === '/observations' || write.path === '/retentions' || write.path === '/applications' || write.path === '/corrections')).length;
+  const pendingCorrectionApplications = useMemo(() => pendingWrites.flatMap((write) => {
+    const payload = write.payload;
+    return write.path === '/corrections' && payload && typeof payload === 'object'
+      && 'applicationEventId' in payload && typeof payload.applicationEventId === 'string'
+      ? [payload.applicationEventId] : [];
+  }), [pendingWrites]);
   const selectedState = useMemo(() => {
     if (!selectedId || !displaySnapshot) return null;
     return displaySnapshot.states[selectedId] ?? null;
@@ -964,7 +984,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [attempt, briefSession, loadSnapshot, showNotice, sourceId, writeLocked, writeToken]);
 
   const writeWithRetry = useCallback(async (options: {
-    path: '/reviews' | '/observations' | '/retentions' | '/applications' | '/config' | '/layout';
+    path: '/reviews' | '/observations' | '/retentions' | '/applications' | '/corrections' | '/config' | '/layout';
     method: 'POST' | 'PUT';
     payload: unknown;
     eventId: string | null;
@@ -979,7 +999,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     } catch (writeError) {
       const retryable = writeError instanceof ApiRequestError && writeError.retryable;
       const timedOut = writeError instanceof ApiRequestError && writeError.code === 'REQUEST_TIMEOUT';
-      const changedEvidenceSource = (options.path === '/observations' || options.path === '/applications') && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
+      const changedEvidenceSource = ['/observations', '/applications', '/corrections'].includes(options.path) && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
       const expiredAccount = Boolean(options.eventId) && writeError instanceof ApiRequestError && writeError.code === 'AUTH_REQUIRED';
       if (retryable || changedEvidenceSource || expiredAccount) {
         const queued = await queuePendingWrite(sourceId, { method: options.method, path: options.path, payload: options.payload, eventId: options.eventId, conceptId: options.conceptId, label: options.label });
@@ -1083,7 +1103,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [attempt, beginRecall, briefSession, busyAction, selectedConcept, selectedState, snapshot, writeLocked]);
 
   const pendingReviewIds = useCallback(() => new Set(getPendingWrites(sourceId)
-    .filter((write) => write.path !== '/applications').map((write) => write.conceptId).filter((id): id is string => Boolean(id))), [sourceId]);
+    .filter((write) => !['/applications', '/corrections'].includes(write.path)).map((write) => write.conceptId).filter((id): id is string => Boolean(id))), [sourceId]);
 
   const briefExclusions = useCallback((response: ReviewPlanResponse) => new Set([
     ...pendingReviewIds(), ...reviewAllowance(response, getPendingWrites(sourceId)).excludedIds,
@@ -1396,6 +1416,28 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     }
   };
 
+  const saveCorrection: SaveCorrection = async (payload) => {
+    if (!writeToken || writeLocked || busyAction || learningWriteRef.current || !historyEnabled || simulated
+      || payload.conceptId !== selectedConcept?.id || pendingCorrectionApplications.includes(payload.applicationEventId)) {
+      return { ok: false, error: '当前无法保存修正复核，请保留说明并稍后重试。' };
+    }
+    learningWriteRef.current = true;
+    setBusyAction('correction');
+    try {
+      const result = await writeWithRetry({ path: '/corrections', method: 'POST', payload,
+        eventId: payload.eventId, conceptId: payload.conceptId, label: '知识修正复核',
+        send: () => api.postCorrection(payload, writeToken, sourceId) });
+      if (result.ok) {
+        showNotice({ tone: 'success', text: '修正处理结果已保存，可在原应用 / 总结记录下查看。' });
+        await reloadRealSnapshot();
+      }
+      return { ok: result.ok, queued: Boolean(result.queued), error: result.error };
+    } finally {
+      learningWriteRef.current = false;
+      setBusyAction(null);
+    }
+  };
+
   const saveRetention = async () => {
     if (!retentionConfirmation || !writeToken || writeLocked || busyAction) return;
     const payload = retentionConfirmation;
@@ -1550,6 +1592,28 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     } finally { setBusyAction(null); }
   }, [loadSnapshot, pendingWrites.length, refreshPendingState, showNotice, sourceId, importOpen, identityOpen, writeLocked, writeToken]);
 
+  const archiveCorrection = useCallback(async (write: PendingWrite) => {
+    if (!sourceId || writeLocked || busyAction || !canArchiveCorrectionWrite(write)) return;
+    if (!window.confirm('先保留原请求备份，再将此复核请求移出待同步队列？这不会撤销服务器上已保存的记录。之后可重新核对当前资料并保存新的决定。')) return;
+    setBusyAction('correction-recovery');
+    try {
+      const archived = await archivePendingCorrection(sourceId, write);
+      if (sourceIdRef.current !== sourceId) return;
+      if (!archived) {
+        showNotice({ tone: 'error', text: '未能安全备份并撤回请求，原记录仍保留。请等同步结束后重试，并确认浏览器允许本地存储。' });
+        return;
+      }
+      const payload = write.payload;
+      if (payload && typeof payload === 'object' && 'applicationEventId' in payload && typeof payload.applicationEventId === 'string') {
+        const id = payload.applicationEventId;
+        setCorrectionRecoveryVersions((before) => ({ ...before, [id]: (before[id] ?? 0) + 1 }));
+      }
+      refreshPendingState();
+      conceptHistory.onRetry();
+      showNotice({ tone: 'success', text: '原复核请求已备份在此浏览器并退出同步，可在原应用 / 总结下重新核对。' });
+    } finally { setBusyAction(null); }
+  }, [busyAction, conceptHistory.onRetry, refreshPendingState, showNotice, sourceId, writeLocked]);
+
   const setSimulatedDays = (value: number) => {
     if (domainBusy || briefActionRef.current) return;
     setSimDays(value);
@@ -1694,7 +1758,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
             })}
             {listedConcepts.length === 0 ? <EmptyPanel title={snapshot.concepts.length ? '当前领域暂无概念' : '知识空间还没有概念'} text={snapshot.concepts.length ? '切换知识域，或搜索知识库中的其他概念。' : '请先将知识 Markdown 放入此账号的知识目录，再点击刷新知识源。'} /> : null}
           </div>
-          <PendingWritesPanel writes={pendingWrites} />
+          <PendingWritesPanel writes={pendingWrites} onArchiveCorrection={archiveCorrection} disabled={writeLocked || Boolean(busyAction)} />
           <div className="left-footer"><span className={`sync-led${pendingWrites.length ? ' is-pending' : ''}`} /><span>{pendingWrites.length ? `${pendingWrites.length} 条记录等待同步` : '本地状态已同步'}</span>{pendingWrites.length ? <button type="button" className="sync-retry" onClick={() => void retryPending()} disabled={writeLocked || busyAction === 'pending'}>{busyAction === 'pending' ? '同步中…' : '重试同步'}</button> : null}</div>
         </aside>
 
@@ -1753,6 +1817,11 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
                 key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}
                 {...conceptHistory} pendingCount={pendingLearningCount} simulated={simulated}
                 concept={selectedConcept}
+                onSaveCorrection={saveCorrection}
+                correctionDisabled={writeLocked || simulated || Boolean(busyAction)}
+                pendingCorrectionApplications={pendingCorrectionApplications}
+                onCorrectionEditingChange={onCorrectionEditingChange}
+                correctionRecoveryVersions={correctionRecoveryVersions}
                 onRevealAnswer={() => markSourceViewed(selectedConcept.id)}
               /> : <p className="source-hint">{attempt ? '回忆任务期间隐藏学习历史与旧回答。' : demoEnabled ? '示例模式不展示真实学习历史；关闭示例后可查看已保存记录。' : '知识源正在切换，学习历史暂时隐藏。'}</p>}
               <CrossDomainPanel neighbors={crossDomainNeighbors} expandedIds={visibleExpandedIds} visibleIds={visibleIds} onToggle={toggleExpanded} onNavigate={changeDomain} disabled={domainBusy} canExpand={canExpand} />

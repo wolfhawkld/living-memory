@@ -36,6 +36,7 @@ test('change subscription handles unnamed frames, reconnects, and closes cleanly
   source.emit({ sourceId: 'source-a', revision: 2, reason: 'config' });
   source.emit({ sourceId: 'source-a', revision: 3, reason: 'retention' });
   source.emit({ sourceId: 'source-a', revision: 4, reason: 'application' });
+  source.emit({ sourceId: 'source-a', revision: 5, reason: 'correction' });
   source.emit({ sourceId: 'source-a', revision: 3, reason: 'named-event-is-ignored' });
   source.emit('not-json');
   source.emit({ sourceId: 'source-a', revision: 0, reason: 'connected' });
@@ -45,6 +46,7 @@ test('change subscription handles unnamed frames, reconnects, and closes cleanly
     { sourceId: 'source-a', revision: 2, reason: 'config' },
     { sourceId: 'source-a', revision: 3, reason: 'retention' },
     { sourceId: 'source-a', revision: 4, reason: 'application' },
+    { sourceId: 'source-a', revision: 5, reason: 'correction' },
   ]);
   assert.deepEqual(connections, [false, true]);
 

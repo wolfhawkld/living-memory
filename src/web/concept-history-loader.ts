@@ -39,7 +39,8 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
         publish({ ...state, history: null });
         throw new Error('知识来源或版本已变化，请刷新知识源后重新查看历史。');
       }
-      if (mode === 'more' && before && page.total !== before.total) {
+      const decisionsChanged = before && page.correctionCount !== before.correctionCount;
+      if (mode === 'more' && before && (page.total !== before.total || decisionsChanged)) {
         // Backdated insertions can fall on either side of the cursor. Start over
         // instead of silently presenting an incomplete history as complete.
         active = null;
@@ -48,12 +49,14 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
       let history = page;
       if (before && mode === 'more') {
         const seen = new Set(before.entries.map((entry) => `${entry.type}:${entry.event.eventId}`));
-        history = { ...page, entries: [...before.entries, ...page.entries.filter((entry) => !seen.has(`${entry.type}:${entry.event.eventId}`))] };
-      } else if (before && before.total === page.total && page.entries.length <= before.entries.length
+        history = { ...page, entries: [...before.entries, ...page.entries.filter((entry) => !seen.has(`${entry.type}:${entry.event.eventId}`))],
+          ...(page.corrections ? { corrections: { ...before.corrections, ...page.corrections } } : {}) };
+      } else if (before && !decisionsChanged && before.total === page.total && page.entries.length <= before.entries.length
         && page.entries.every((entry, index) => entry.type === before.entries[index].type && entry.event.eventId === before.entries[index].event.eventId)) {
         // Events are immutable. A clock-only refresh keeps loaded pages and open
         // answers while replacing the live anchor projection.
-        history = { ...page, entries: before.entries, nextCursor: before.nextCursor };
+        history = { ...page, entries: before.entries, nextCursor: before.nextCursor,
+          ...(page.corrections ? { corrections: { ...before.corrections, ...page.corrections } } : {}) };
       }
       publish({ history, loading: false, loadingMore: false, error: null });
     } catch (error) {

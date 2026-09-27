@@ -18,7 +18,7 @@ const data = {
 
 function counts() {
   return {
-    added: { anchors: 2, observations: 3, retentions: 1, applications: 2 },
+    added: { anchors: 2, observations: 3, retentions: 1, applications: 2, corrections: 0 },
     duplicates: 4,
     configurations: 1,
     matchedConcepts: 2,

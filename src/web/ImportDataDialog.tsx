@@ -13,12 +13,13 @@ import {
   type ImportReceipt,
 } from '../shared/import-data.js';
 
-const EVENT_KINDS: readonly ImportEventKind[] = ['anchors', 'observations', 'retentions', 'applications'];
+const EVENT_KINDS: readonly ImportEventKind[] = ['anchors', 'observations', 'retentions', 'applications', 'corrections'];
 const EVENT_LABELS: Record<ImportEventKind, string> = {
   anchors: '重温起点',
   observations: '回忆观察',
   retentions: '长期保持',
   applications: '应用 / 总结',
+  corrections: '知识修正复核',
 };
 
 export interface ImportDataDialogProps {

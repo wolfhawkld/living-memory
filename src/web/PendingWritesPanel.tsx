@@ -1,4 +1,4 @@
-import type { PendingWrite } from './api';
+import { canArchiveCorrectionWrite, type PendingWrite } from './api';
 import './pending-writes.css';
 
 const PATH_LABELS: Record<string, string> = {
@@ -8,6 +8,7 @@ const PATH_LABELS: Record<string, string> = {
   '/observations': '回忆观察',
   '/retentions': '长期保持状态',
   '/applications': '应用与总结记录',
+  '/corrections': '知识修正复核',
 };
 
 function writeLabel(write: PendingWrite): string {
@@ -53,7 +54,11 @@ function lastError(write: PendingWrite): { message: string; code: string } | nul
   };
 }
 
-export function PendingWritesPanel({ writes }: { writes: PendingWrite[] }) {
+export function PendingWritesPanel({ writes, onArchiveCorrection, disabled = false }: {
+  writes: PendingWrite[];
+  onArchiveCorrection?: (write: PendingWrite) => void;
+  disabled?: boolean;
+}) {
   if (writes.length === 0) return null;
 
   return (
@@ -85,6 +90,8 @@ export function PendingWritesPanel({ writes }: { writes: PendingWrite[] }) {
               ) : (
                 <div className="pending-writes-waiting">等待重试</div>
               )}
+              {onArchiveCorrection && canArchiveCorrectionWrite(write) ? <button type="button" className="sync-retry"
+                disabled={disabled} onClick={() => onArchiveCorrection(write)}>保留备份并撤回请求</button> : null}
             </article>
           );
         })}

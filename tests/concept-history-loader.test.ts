@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import type { ConceptHistory, ConceptHistoryEntry } from '../src/shared/types.ts';
 import { createConceptHistoryLoader, type HistoryFetcher } from '../src/web/concept-history-loader.ts';
 import { api } from '../src/web/api.ts';
+import type { CorrectionHistory } from '../src/shared/corrections.ts';
 
 const scope = { sourceId: 'synthetic-source', conceptId: 'math/布尔 & logic', sourceRevision: 'rev-1' };
 const asOf = '2026-09-22T10:00:00.000Z';
@@ -153,4 +154,46 @@ test('a learning change arriving during a read queues a refresh instead of losin
   await Promise.resolve();
   assert.equal(count, 2);
   assert.equal(loader.getSnapshot().history?.entries[0].event.eventId, 'new-review');
+});
+
+const emptyCorrections: CorrectionHistory = { latest: null, events: [], total: 0 };
+
+test('correction histories from loaded pages survive a clock-only refresh', async () => {
+  const loader = createConceptHistoryLoader(scope, async (_id, _source, options): Promise<ConceptHistory> => options.cursor
+    ? { ...page(['b'], 2), correctionCount: 0, corrections: { b: emptyCorrections } }
+    : { ...page(['a'], 2, 'next'), correctionCount: 0, corrections: { a: emptyCorrections } });
+  await loader.refresh();
+  await loader.loadMore();
+  await loader.refresh();
+  assert.deepEqual(Object.keys(loader.getSnapshot().history!.corrections!).sort(), ['a', 'b']);
+  assert.equal(loader.getSnapshot().history!.entries.length, 2);
+});
+
+test('a correction on a later page invalidates loaded history even with unchanged timeline totals', async () => {
+  let count = 0;
+  const loader = createConceptHistoryLoader(scope, async (_id, _source, options): Promise<ConceptHistory> => options.cursor
+    ? { ...page(['b'], 2), correctionCount: count, corrections: { b: emptyCorrections } }
+    : { ...page(['a'], 2, 'next'), correctionCount: count, corrections: { a: emptyCorrections } });
+  await loader.refresh();
+  await loader.loadMore();
+  count = 1;
+  await loader.refresh();
+  assert.deepEqual(loader.getSnapshot().history!.entries.map((item) => item.event.eventId), ['a']);
+  assert.deepEqual(Object.keys(loader.getSnapshot().history!.corrections!), ['a']);
+  assert.equal(loader.getSnapshot().history!.nextCursor, 'next');
+});
+
+test('a correction arriving during pagination reloads the head before exposing stale decisions', async () => {
+  let changed = false;
+  let calls = 0;
+  const loader = createConceptHistoryLoader(scope, async (_id, _source, options) => {
+    calls += 1;
+    if (options.cursor) { changed = true; return { ...page(['b'], 2), correctionCount: 1, corrections: {} }; }
+    return { ...page(['a'], 2, 'next'), correctionCount: changed ? 1 : 0, corrections: {} };
+  });
+  await loader.refresh();
+  await loader.loadMore();
+  assert.equal(calls, 3);
+  assert.equal(loader.getSnapshot().history!.correctionCount, 1);
+  assert.deepEqual(loader.getSnapshot().history!.entries.map((item) => item.event.eventId), ['a']);
 });

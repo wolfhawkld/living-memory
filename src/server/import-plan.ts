@@ -11,6 +11,7 @@ import type {
   RetentionEvent,
   ReviewRequest,
 } from '../shared/types.js';
+import type { CorrectionEvent } from '../shared/corrections.js';
 import {
   DEFAULT_DAILY_REVIEW_BUDGET,
   type ConceptReviewPreference,
@@ -29,6 +30,7 @@ import { DAY_MS, MODEL_VERSION } from '../shared/types.js';
 import { decayAt, isValidInstant } from '../core/time-model.js';
 import {
   parseApplicationRequest,
+  parseCorrectionRequest,
   parseLearningEvidence,
   parseObservationRequest,
   parseRetentionRequest,
@@ -58,6 +60,7 @@ export interface PreparedImport {
   newObservations: Observation[];
   newRetentions: RetentionEvent[];
   newApplications: ApplicationRecord[];
+  newCorrections: CorrectionEvent[];
   newConfigs: PreparedConfig[];
   mergedLayout: Layout;
   mergedReviewPlan: ReviewPlan;
@@ -71,12 +74,12 @@ const MAX_CONCEPTS = 10_000;
 const MAX_EVENTS = 50_000;
 const MAX_LAYOUT = 10_000;
 const MAX_ISSUE_OUTPUT = 100;
-const EVENT_KINDS = ['anchors', 'observations', 'retentions', 'applications'] as const;
+const EVENT_KINDS = ['anchors', 'observations', 'retentions', 'applications', 'corrections'] as const;
 const RECALL_RATINGS = ['clear', 'partial', 'blank'] as const;
 const EXPOSURES = ['unexposed', 'exposed', 'unknown'] as const;
 
 type EventKind = (typeof EVENT_KINDS)[number];
-type Event = AnchorEvent | Observation | RetentionEvent | ApplicationRecord;
+type Event = AnchorEvent | Observation | RetentionEvent | ApplicationRecord | CorrectionEvent;
 
 interface IssueState {
   all: ImportIssue[];
@@ -242,6 +245,7 @@ function validateExportEnvelope(data: unknown, now: string): Record<string, unkn
   requireArray(record.observations, 'observations');
   if (record.retentions !== undefined) requireArray(record.retentions, 'retentions');
   if (record.applications !== undefined) requireArray(record.applications, 'applications');
+  if (record.corrections !== undefined) requireArray(record.corrections, 'corrections');
   requireRecord(record.layout, 'layout');
   if (record.reviewPlan !== undefined) requireRecord(record.reviewPlan, 'reviewPlan');
   if (record.restoreMetadata !== undefined) requireRecord(record.restoreMetadata, 'restoreMetadata');
@@ -515,16 +519,47 @@ function validateApplication(
   return { ...parsed, eventId, conceptId, sourceRevision, occurredAt: occurredAt.raw, recordedAt: recordedAt.raw };
 }
 
+function validateCorrection(
+  value: unknown,
+  index: number,
+  nowMs: number,
+  state: IssueState,
+): CorrectionEvent {
+  const record = requireRecord(value, `corrections[${index}]`);
+  const eventId = validateEventId(record.eventId, `corrections[${index}].eventId`);
+  const applicationEventId = validateEventId(record.applicationEventId, `corrections[${index}].applicationEventId`);
+  const conceptId = requireString(record.conceptId, `corrections[${index}].conceptId`);
+  const sourceRevision = requireString(record.sourceRevision, `corrections[${index}].sourceRevision`);
+  const occurredAt = timestamp(record.occurredAt, `corrections[${index}].occurredAt`);
+  const recordedAt = timestamp(record.recordedAt, `corrections[${index}].recordedAt`);
+  validateTimeBounds(occurredAt, recordedAt, nowMs, eventId, conceptId, state, 'occurredAt');
+  const previousEventId = record.previousEventId === null
+    ? null
+    : validateEventId(record.previousEventId, `corrections[${index}].previousEventId`);
+  const parsed = parseCorrectionRequest(record);
+  return {
+    ...parsed,
+    eventId,
+    applicationEventId,
+    conceptId,
+    sourceRevision,
+    occurredAt: occurredAt.raw,
+    previousEventId,
+    recordedAt: recordedAt.raw,
+  };
+}
+
 function parseEventArrays(
   record: Record<string, unknown>,
   nowMs: number,
   state: IssueState,
-): { anchors: AnchorEvent[]; observations: Observation[]; retentions: RetentionEvent[]; applications: ApplicationRecord[] } {
+): { anchors: AnchorEvent[]; observations: Observation[]; retentions: RetentionEvent[]; applications: ApplicationRecord[]; corrections: CorrectionEvent[] } {
   const raw = {
     anchors: optionalArray(record, 'anchors'),
     observations: optionalArray(record, 'observations'),
     retentions: optionalArray(record, 'retentions'),
     applications: optionalArray(record, 'applications'),
+    corrections: optionalArray(record, 'corrections'),
   };
   if (eventCount(raw) > MAX_EVENTS) invalid(`事件总数不能超过 ${MAX_EVENTS}。`, 'IMPORT_LIMIT');
   return {
@@ -532,6 +567,7 @@ function parseEventArrays(
     observations: raw.observations.map((value, index) => validateObservation(value, index, nowMs, state)),
     retentions: raw.retentions.map((value, index) => validateRetention(value, index, nowMs, state)),
     applications: raw.applications.map((value, index) => validateApplication(value, index, nowMs, state)),
+    corrections: raw.corrections.map((value, index) => validateCorrection(value, index, nowMs, state)),
   };
 }
 
@@ -575,6 +611,7 @@ function collectCurrentEvents(current: ExportData): Map<string, EventIdentity> {
     ['observations', current.observations],
     ['retentions', current.retentions ?? []],
     ['applications', current.applications ?? []],
+    ['corrections', current.corrections ?? []],
   ] as const) {
     for (const event of events) map.set(eventKey(kind, event), { kind, event });
   }
@@ -586,32 +623,43 @@ function compareEventIdentity(left: Event, right: Event, kind: EventKind): boole
 }
 
 function classifyEventConflicts(
-  incoming: { anchors: AnchorEvent[]; observations: Observation[]; retentions: RetentionEvent[]; applications: ApplicationRecord[] },
+  incoming: { anchors: AnchorEvent[]; observations: Observation[]; retentions: RetentionEvent[]; applications: ApplicationRecord[]; corrections: CorrectionEvent[] },
   current: ExportData,
   mapping: ConceptMapping,
   state: IssueState,
-): { newAnchors: AnchorEvent[]; newObservations: Observation[]; newRetentions: RetentionEvent[]; newApplications: ApplicationRecord[]; duplicates: number } {
+): { newAnchors: AnchorEvent[]; newObservations: Observation[]; newRetentions: RetentionEvent[]; newApplications: ApplicationRecord[]; newCorrections: CorrectionEvent[]; duplicates: number } {
   const currentEvents = collectCurrentEvents(current);
-  const seen = new Map<string, EventIdentity>();
+  const currentByEventId = new Map<string, EventIdentity[]>();
+  for (const identity of currentEvents.values()) {
+    const sameId = currentByEventId.get(identity.event.eventId) ?? [];
+    sameId.push(identity);
+    currentByEventId.set(identity.event.eventId, sameId);
+  }
   const seenByEventId = new Map<string, EventIdentity>();
-  const result = { newAnchors: [] as AnchorEvent[], newObservations: [] as Observation[], newRetentions: [] as RetentionEvent[], newApplications: [] as ApplicationRecord[], duplicates: 0 };
+  const result = {
+    newAnchors: [] as AnchorEvent[],
+    newObservations: [] as Observation[],
+    newRetentions: [] as RetentionEvent[],
+    newApplications: [] as ApplicationRecord[],
+    newCorrections: [] as CorrectionEvent[],
+    duplicates: 0,
+  };
   for (const [kind, events] of [
     ['anchors', incoming.anchors],
     ['observations', incoming.observations],
     ['retentions', incoming.retentions],
     ['applications', incoming.applications],
+    ['corrections', incoming.corrections],
   ] as const) {
     for (const original of events) {
       const event = mappedConceptEvent(original, mapping) as Event;
       const identity = { kind, event } as EventIdentity;
-      const key = eventKey(kind, event);
       if (seenByEventId.has(event.eventId)) {
         addIssue(state, 'DUPLICATE_EVENT_ID', `导入文件内 eventId ${event.eventId} 重复。`, { eventId: event.eventId, conceptId: event.conceptId });
         continue;
       }
-      seen.set(key, identity);
       seenByEventId.set(event.eventId, identity);
-      const currentSameId = [...currentEvents.values()].filter((item) => item.event.eventId === event.eventId);
+      const currentSameId = currentByEventId.get(event.eventId) ?? [];
       if (currentSameId.length) {
         if (currentSameId.length !== 1 || currentSameId[0].kind !== kind || !compareEventIdentity(currentSameId[0].event, event, kind)) {
           addIssue(state, 'EVENT_CONFLICT', `eventId ${event.eventId} 与当前记录的类型或内容冲突。`, { eventId: event.eventId, conceptId: event.conceptId });
@@ -623,7 +671,8 @@ function classifyEventConflicts(
       if (kind === 'anchors') result.newAnchors.push(event as AnchorEvent);
       else if (kind === 'observations') result.newObservations.push(event as Observation);
       else if (kind === 'retentions') result.newRetentions.push(event as RetentionEvent);
-      else result.newApplications.push(event as ApplicationRecord);
+      else if (kind === 'applications') result.newApplications.push(event as ApplicationRecord);
+      else result.newCorrections.push(event as CorrectionEvent);
     }
   }
   return result;
@@ -814,6 +863,189 @@ function validateRetentionChain(
   return ordered;
 }
 
+function compareCorrectionChronology(left: CorrectionEvent, right: CorrectionEvent): number {
+  const occurred = compareTime(left.occurredAt, right.occurredAt);
+  if (occurred !== 0) return occurred;
+  const recorded = compareTime(left.recordedAt, right.recordedAt);
+  if (recorded !== 0) return recorded;
+  return left.eventId.localeCompare(right.eventId);
+}
+
+interface CorrectionChainValidationInput {
+  incoming: CorrectionEvent[];
+  newCorrections: CorrectionEvent[];
+  current: ExportData;
+  applications: ApplicationRecord[];
+  state: IssueState;
+}
+
+/**
+ * Validate correction references and the per-application append-only chain.
+ * Exact incoming duplicates are intentionally harmless: a backup may contain
+ * an older prefix while the live store already has later decisions. New
+ * records, however, must attach to the live tail and are returned in
+ * dependency order for the store transaction.
+ */
+function validateCorrectionChains(input: CorrectionChainValidationInput): CorrectionEvent[] {
+  const { incoming, newCorrections, current, applications, state } = input;
+  const applicationsById = new Map<string, ApplicationRecord>();
+  for (const application of current.applications ?? []) applicationsById.set(application.eventId, application);
+  for (const application of applications) applicationsById.set(application.eventId, application);
+
+  const currentCorrections = current.corrections ?? [];
+  const all = new Map<string, CorrectionEvent>();
+  for (const event of currentCorrections) all.set(event.eventId, event);
+  for (const event of incoming) if (!all.has(event.eventId)) all.set(event.eventId, event);
+  const newIds = new Set(newCorrections.map((event) => event.eventId));
+
+  for (const event of incoming) {
+    const application = applicationsById.get(event.applicationEventId);
+    if (!application) {
+      addIssue(state, 'CORRECTION_APPLICATION_NOT_FOUND', `修正处理事件 ${event.eventId} 引用的应用事件 ${event.applicationEventId} 不存在。`, { eventId: event.eventId, conceptId: event.conceptId });
+      continue;
+    }
+    if (application.conceptId !== event.conceptId) {
+      addIssue(state, 'CORRECTION_CONCEPT_MISMATCH', `修正处理事件 ${event.eventId} 与应用事件 ${event.applicationEventId} 不属于同一概念。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    if (!application.correction.trim()) {
+      addIssue(state, 'CORRECTION_SOURCE_EMPTY', `应用事件 ${event.applicationEventId} 没有可供人工处理的修正建议。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    // A resolved decision means the reviewed content now incorporates the
+    // suggestion, so it must point at a later/current content revision. An
+    // open or dismissed decision can still be recorded against the original
+    // application revision while the person is postponing that work.
+    if (event.status === 'resolved' && application.sourceRevision === event.sourceRevision) {
+      addIssue(state, 'CORRECTION_SOURCE_REVISION_MISMATCH', `修正处理事件 ${event.eventId} 的 resolved 状态必须引用不同于应用记录的检查版本。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    if (compareTime(application.occurredAt, event.occurredAt) > 0) {
+      addIssue(state, 'CORRECTION_BEFORE_APPLICATION', `修正处理事件 ${event.eventId} 早于其应用事件 ${event.applicationEventId}。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+  }
+
+  const children = new Map<string, CorrectionEvent>();
+  const roots = new Map<string, CorrectionEvent>();
+  for (const event of all.values()) {
+    if (event.previousEventId === null) {
+      const key = event.applicationEventId;
+      const root = roots.get(key);
+      if (root && root.eventId !== event.eventId) {
+        addIssue(state, 'CORRECTION_ROOT_BRANCH', `应用事件 ${key} 存在多个修正处理起点。`, { eventId: event.eventId, conceptId: event.conceptId });
+      } else {
+        roots.set(key, event);
+      }
+      continue;
+    }
+    const previous = all.get(event.previousEventId);
+    if (!previous) {
+      addIssue(state, 'CORRECTION_PREVIOUS_NOT_FOUND', `修正处理事件 ${event.eventId} 引用的前一事件 ${event.previousEventId} 不存在。`, { eventId: event.eventId, conceptId: event.conceptId });
+      continue;
+    }
+    if (previous.applicationEventId !== event.applicationEventId) {
+      addIssue(state, 'CORRECTION_APPLICATION_MISMATCH', `修正处理事件 ${event.eventId} 的前一事件属于另一个应用事件。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    if (previous.conceptId !== event.conceptId) {
+      addIssue(state, 'CORRECTION_CONCEPT_MISMATCH', `修正处理事件 ${event.eventId} 与前一事件不属于同一概念。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    if (compareTime(previous.occurredAt, event.occurredAt) > 0) {
+      addIssue(state, 'CORRECTION_BEFORE_PREVIOUS', `修正处理事件 ${event.eventId} 早于其前一事件 ${previous.eventId}。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    const child = children.get(previous.eventId);
+    if (child && child.eventId !== event.eventId) {
+      addIssue(state, 'CORRECTION_BRANCH', `修正处理事件 ${previous.eventId} 出现分叉。`, { eventId: event.eventId, conceptId: event.conceptId });
+    } else {
+      children.set(previous.eventId, event);
+    }
+  }
+
+  const reportedCycles = new Set<string>();
+  const completed = new Set<string>();
+  for (const start of all.values()) {
+    const path: string[] = [];
+    const positions = new Map<string, number>();
+    let cursor: CorrectionEvent | undefined = start;
+    while (cursor) {
+      if (completed.has(cursor.eventId)) break;
+      const previousPosition = positions.get(cursor.eventId);
+      if (previousPosition !== undefined) {
+        const cycle = path.slice(previousPosition).sort().join('|');
+        if (!reportedCycles.has(cycle)) {
+          reportedCycles.add(cycle);
+          addIssue(state, 'CORRECTION_CYCLE', `修正处理事件 ${start.eventId} 的 previousEventId 形成环。`, { eventId: start.eventId, conceptId: start.conceptId });
+        }
+        break;
+      }
+      positions.set(cursor.eventId, path.length);
+      path.push(cursor.eventId);
+      cursor = cursor.previousEventId === null ? undefined : all.get(cursor.previousEventId);
+    }
+    for (const eventId of path) completed.add(eventId);
+  }
+
+  const currentByApplication = new Map<string, CorrectionEvent[]>();
+  for (const event of currentCorrections) {
+    const list = currentByApplication.get(event.applicationEventId) ?? [];
+    list.push(event);
+    currentByApplication.set(event.applicationEventId, list);
+  }
+  const newByApplication = new Map<string, CorrectionEvent[]>();
+  for (const event of newCorrections) {
+    const list = newByApplication.get(event.applicationEventId) ?? [];
+    list.push(event);
+    newByApplication.set(event.applicationEventId, list);
+  }
+  for (const [applicationEventId, added] of newByApplication) {
+    const existing = currentByApplication.get(applicationEventId) ?? [];
+    const currentChildren = new Set(existing.map((event) => event.previousEventId).filter((id): id is string => id !== null));
+    const tails = existing.filter((event) => !currentChildren.has(event.eventId));
+    const newRoots = added.filter((event) => event.previousEventId === null || !newIds.has(event.previousEventId));
+    if (newRoots.length !== 1) {
+      addIssue(state, 'CORRECTION_CHAIN_ROOT_INVALID', `应用事件 ${applicationEventId} 的新增修正处理链必须只有一个起点。`, { conceptId: added[0]?.conceptId });
+      continue;
+    }
+    const root = newRoots[0];
+    if (tails.length > 1) {
+      addIssue(state, 'CORRECTION_CHAIN_TAIL_INVALID', `应用事件 ${applicationEventId} 的当前修正处理链存在多个尾部。`, { eventId: root.eventId, conceptId: root.conceptId });
+    } else if (tails.length === 1) {
+      if (root.previousEventId !== tails[0].eventId) {
+        addIssue(state, 'CORRECTION_CHAIN_NOT_AT_HEAD', `应用事件 ${applicationEventId} 的新增修正处理链没有接在当前尾部。`, { eventId: root.eventId, conceptId: root.conceptId });
+      }
+    } else if (root.previousEventId !== null && !currentChildren.has(root.previousEventId)) {
+      addIssue(state, 'CORRECTION_CHAIN_ROOT_INVALID', `应用事件 ${applicationEventId} 的首个修正处理事件必须从空 previousEventId 开始。`, { eventId: root.eventId, conceptId: root.conceptId });
+    }
+  }
+
+  const indegree = new Map<string, number>();
+  const newChildren = new Map<string, CorrectionEvent[]>();
+  for (const event of newCorrections) indegree.set(event.eventId, 0);
+  for (const event of newCorrections) {
+    if (event.previousEventId === null || !newIds.has(event.previousEventId)) continue;
+    indegree.set(event.eventId, (indegree.get(event.eventId) ?? 0) + 1);
+    const list = newChildren.get(event.previousEventId) ?? [];
+    list.push(event);
+    newChildren.set(event.previousEventId, list);
+  }
+  const ready = [...newCorrections].filter((event) => indegree.get(event.eventId) === 0).sort(compareCorrectionChronology);
+  let readyIndex = 0;
+  const ordered: CorrectionEvent[] = [];
+  while (readyIndex < ready.length) {
+    const event = ready[readyIndex];
+    readyIndex += 1;
+    ordered.push(event);
+    for (const child of newChildren.get(event.eventId) ?? []) {
+      const next = (indegree.get(child.eventId) ?? 0) - 1;
+      indegree.set(child.eventId, next);
+      if (next === 0) {
+        ready.push(child);
+      }
+    }
+  }
+  if (ordered.length !== newCorrections.length) {
+    const seen = new Set(ordered.map((event) => event.eventId));
+    ordered.push(...newCorrections.filter((event) => !seen.has(event.eventId)).sort(compareCorrectionChronology));
+  }
+  return ordered;
+}
+
 function validateLayout(value: unknown, label: string): Layout {
   const record = requireRecord(value, label);
   const entries = Object.entries(record);
@@ -988,6 +1220,7 @@ function sortTokenCollections(value: ExportData): ExportData {
   copy.observations = [...copy.observations].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.retentions = [...(copy.retentions ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.applications = [...(copy.applications ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
+  copy.corrections = [...(copy.corrections ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   return copy;
 }
 
@@ -1017,6 +1250,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     observations: optionalArray(record, 'observations'),
     retentions: optionalArray(record, 'retentions'),
     applications: optionalArray(record, 'applications'),
+    corrections: optionalArray(record, 'corrections'),
   };
   const references = collectReferences(rawEvents, record);
   const state: IssueState = { all: [], errors: 0 };
@@ -1030,8 +1264,9 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   const mappedObservations = parsedEvents.observations.map((event) => mappedConceptEvent(event, mapping));
   const mappedRetentions = parsedEvents.retentions.map((event) => mappedConceptEvent(event, mapping));
   const mappedApplications = parsedEvents.applications.map((event) => mappedConceptEvent(event, mapping));
+  const mappedCorrections = parsedEvents.corrections.map((event) => mappedConceptEvent(event, mapping));
 
-  for (const event of [...mappedAnchors, ...mappedObservations, ...mappedRetentions, ...mappedApplications]) {
+  for (const event of [...mappedAnchors, ...mappedObservations, ...mappedRetentions, ...mappedApplications, ...mappedCorrections]) {
     if (event.sourceRevision && event.conceptId && input.concepts.some((concept) => concept.id === event.conceptId && concept.source.revision !== event.sourceRevision)) {
       addIssue(state, 'OLD_SOURCE_REVISION', `事件 ${event.eventId} 使用了当前概念的旧来源版本，将保留为历史记录。`, { severity: 'warning', eventId: event.eventId, conceptId: event.conceptId });
     }
@@ -1039,6 +1274,13 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   validateFrozenObservations(parsedEvents.observations, parsedEvents.anchors, input.current, [...configMerge.merged], mapping, state);
   const classified = classifyEventConflicts(parsedEvents, input.current, mapping, state);
   const orderedRetentions = validateRetentionChain(parsedEvents.retentions, input.current, mapping, state);
+  const orderedCorrections = validateCorrectionChains({
+    incoming: mappedCorrections,
+    newCorrections: classified.newCorrections,
+    current: input.current,
+    applications: classified.newApplications,
+    state,
+  });
   const currentLayout = validateLayout(input.current.layout, 'current.layout');
   const incomingLayout = validateLayout(record.layout, 'layout');
   const layout = mergeLayout(currentLayout, incomingLayout, mapping, options.restoreLayout);
@@ -1057,6 +1299,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     observations: mappedObservations,
     retentions: mappedRetentions,
     applications: mappedApplications,
+    corrections: mappedCorrections,
     ...(record.reviewPlan !== undefined ? { reviewPlan: mapReviewPlan(incomingPlan, mapping) } : {}),
     layout: mapLayout(incomingLayout, mapping),
   };
@@ -1076,6 +1319,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
       observations: classified.newObservations.length,
       retentions: classified.newRetentions.length,
       applications: classified.newApplications.length,
+      corrections: classified.newCorrections.length,
     },
     duplicates: classified.duplicates,
     configurations: configMerge.newConfigs.length,
@@ -1104,6 +1348,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     newObservations: classified.newObservations,
     newRetentions: orderedRetentions.filter((event) => classified.newRetentions.some((candidate) => candidate.eventId === event.eventId)),
     newApplications: classified.newApplications,
+    newCorrections: orderedCorrections,
     newConfigs: configMerge.newConfigs,
     mergedLayout: layout.value,
     mergedReviewPlan: reviewPlan.value,
