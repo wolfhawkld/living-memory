@@ -336,3 +336,17 @@
   font-size: 9px;
   text-align: center;
 }
+.concept-history-focus {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--ui-accent-border, #355987);
+  border-radius: 6px;
+  background: var(--ui-accent-soft, #10243a);
+  color: var(--ui-text-muted, #b8c9df);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.concept-history-focus p { margin: 0; line-height: 1.6; }
+.concept-history-focus code { font-size: 10px; }

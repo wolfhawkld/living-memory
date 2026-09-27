@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { closeApp, createApp, type LivingMemoryApp } from '../src/server/app.js';
-import type { ApplicationRecordRequest, Concept, ExportData, Snapshot } from '../src/shared/types.js';
+import type { ApplicationRecordRequest, Concept, ConceptHistory, ExportData, Snapshot } from '../src/shared/types.js';
 import type { LearningOverview, LearningOverviewItem } from '../src/shared/learning-overview.js';
 
 interface ResponseData {
@@ -538,4 +538,123 @@ test('time comparison keeps historical H and review dates across new reviews, co
     assert.equal(alpha.evidence.previousObservations, 1);
     assert.deepEqual(alpha.timeRecall!.buckets, [], 'old version observations are not matched to current content');
   } finally { await client.stop(); }
+});
+
+test('focused application history returns one old record, keeps correction metadata, and remains read-only', async () => {
+  const client = await running({ limit: 1 });
+  try {
+    const currentSession = await session(client);
+    const initial = await snapshot(client);
+    const alpha = conceptAt(initial, 'Math/Alpha.md');
+    const headers = tokenHeaders(currentSession);
+    const eventIds: string[] = [];
+    for (let index = 0; index < 25; index += 1) {
+      const eventId = `history-${String(index).padStart(2, '0')}`;
+      eventIds.push(eventId);
+      const response = await client.request('/api/applications', {
+        method: 'POST', headers,
+        body: application(alpha, eventId, { occurredAt: `2026-02-${String(index + 1).padStart(2, '0')}T00:00:00Z` }),
+      });
+      assert.equal(response.status, 201);
+    }
+    const before = (await client.request('/api/export', { headers })).json<ExportData>();
+    const regular = await client.request(`/api/concepts/${encodeURIComponent(alpha.id)}/history?limit=20`, { headers });
+    assert.equal(regular.status, 200);
+    const regularHistory = regular.json<ConceptHistory>();
+    assert.equal(regularHistory.entries.length, 20);
+    assert.ok(regularHistory.nextCursor);
+
+    const focused = await client.request(`/api/concepts/${encodeURIComponent(alpha.id)}/history?limit=1&applicationEventId=${eventIds[0]}`, { headers });
+    assert.equal(focused.status, 200);
+    const focusedHistory = focused.json<{
+      entries: Array<{ type: string; event: { eventId: string } }>;
+      total: number;
+      nextCursor: string | null;
+      focusedApplicationEventId?: string;
+      corrections?: Record<string, unknown>;
+    }>();
+    assert.equal(focusedHistory.entries.length, 1);
+    assert.equal(focusedHistory.entries[0]?.type, 'application');
+    assert.equal(focusedHistory.entries[0]?.event.eventId, eventIds[0]);
+    assert.equal(focusedHistory.total, 1);
+    assert.equal(focusedHistory.nextCursor, null);
+    assert.equal(focusedHistory.focusedApplicationEventId, eventIds[0]);
+    assert.deepEqual(Object.keys(focusedHistory.corrections ?? {}), [eventIds[0]]);
+
+    const withCursor = await client.request(`/api/concepts/${encodeURIComponent(alpha.id)}/history?cursor=${encodeURIComponent(regularHistory.nextCursor!)}&applicationEventId=${eventIds[0]}`, { headers });
+    assert.equal(withCursor.status, 400);
+    assert.equal(errorCode(withCursor), 'INVALID_HISTORY_CURSOR');
+    const invalidId = await client.request(`/api/concepts/${encodeURIComponent(alpha.id)}/history?applicationEventId=bad%20id`, { headers });
+    assert.equal(invalidId.status, 400);
+    assert.equal(errorCode(invalidId), 'INVALID_EVENT_ID');
+    const wrongConcept = conceptAt(initial, 'Math/Beta.md');
+    const wrongConceptFocus = await client.request(`/api/concepts/${encodeURIComponent(wrongConcept.id)}/history?applicationEventId=${eventIds[0]}`, { headers });
+    assert.equal(wrongConceptFocus.status, 404);
+    assert.equal(errorCode(wrongConceptFocus), 'APPLICATION_NOT_FOUND');
+    assert.deepEqual((await client.request('/api/export', { headers })).json<ExportData>(), before);
+  } finally {
+    await client.stop();
+  }
+});
+
+test('learning overview corrections and focused history remain account-private', async () => {
+  const fixture = sourceFixture();
+  let client: RunningApp | undefined;
+  try {
+    client = await running({ root: fixture.root, dataDir: fixture.dataDir, accountsEnabled: true });
+    const setup = await client.request('/api/auth/setup', {
+      method: 'POST', body: { username: 'owner', password: 'owner-password-2026' },
+    });
+    assert.equal(setup.status, 201);
+    const ownerCookie = cookieFrom(setup);
+    const owner = await session(client, ownerCookie);
+    const ownerHeaders = tokenHeaders(owner);
+    const ownerSnapshot = await snapshot(client, ownerCookie);
+    const ownerConcept = conceptAt(ownerSnapshot, 'Math/Alpha.md');
+    const ownerApplication = application(ownerConcept, 'owner-correction-application');
+    assert.equal((await client.request('/api/applications', {
+      method: 'POST', cookie: ownerCookie, headers: ownerHeaders, body: ownerApplication,
+    })).status, 201);
+    const ownerOverview = (await client.request('/api/learning-overview', {
+      cookie: ownerCookie, headers: { 'x-lm-source-id': owner.sourceId },
+    })).json<LearningOverview>();
+    assert.equal(ownerOverview.corrections?.items.length, 1);
+    assert.equal(ownerOverview.corrections?.items[0]?.applicationEventId, ownerApplication.eventId);
+    assert.doesNotMatch(JSON.stringify(ownerOverview.corrections), /PRIVATE_APPLICATION_CORRECTION|PRIVATE_APPLICATION_CONTENT/);
+
+    const created = await client.request('/api/admin/users', {
+      method: 'POST', cookie: ownerCookie, headers: ownerHeaders,
+      body: { username: 'member', password: 'member-password-2026' },
+    });
+    assert.equal(created.status, 201);
+    const memberId = created.json<{ user: { id: string } }>().user.id;
+    const memberRoot = join(fixture.dataDir, 'users', memberId, 'knowledge');
+    mkdirSync(join(memberRoot, 'Math'), { recursive: true });
+    writeFileSync(join(memberRoot, 'Math', 'Alpha.md'), conceptFile('Alpha', '成员摘要', 'MEMBER_PRIVATE_SOURCE_BODY'));
+    const login = await client.request('/api/auth/login', {
+      method: 'POST', body: { username: 'member', password: 'member-password-2026' },
+    });
+    assert.equal(login.status, 200);
+    const memberCookie = cookieFrom(login);
+    const member = await session(client, memberCookie);
+    const memberHeaders = tokenHeaders(member);
+    assert.equal((await client.request('/api/refresh', {
+      method: 'POST', cookie: memberCookie, headers: memberHeaders, body: {},
+    })).status, 200);
+    const memberSnapshot = await snapshot(client, memberCookie);
+    const memberConcept = conceptAt(memberSnapshot, 'Math/Alpha.md');
+    const foreignFocus = await client.request(`/api/concepts/${encodeURIComponent(memberConcept.id)}/history?applicationEventId=${ownerApplication.eventId}`, {
+      cookie: memberCookie, headers: { 'x-lm-source-id': member.sourceId },
+    });
+    assert.equal(foreignFocus.status, 404);
+    assert.equal(errorCode(foreignFocus), 'APPLICATION_NOT_FOUND');
+    const memberOverview = (await client.request('/api/learning-overview', {
+      cookie: memberCookie, headers: { 'x-lm-source-id': member.sourceId },
+    })).json<LearningOverview>();
+    assert.deepEqual(memberOverview.corrections?.items, []);
+    assert.equal(memberOverview.corrections?.unavailableCount, 0);
+  } finally {
+    if (client) await client.stop();
+    fixture.cleanup();
+  }
 });

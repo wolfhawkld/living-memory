@@ -124,6 +124,30 @@ test('scenario evidence metadata is visible but scenario and applicability stay 
   assert.doesNotMatch(html, /场景里的敏感线索|核对补充的答案线索|秘密的原始回答/);
 });
 
+test('focused history locates one application without revealing its content and offers the full timeline', () => {
+  const event: ApplicationRecord = {
+    eventId: 'older-application', conceptId: 'concept-1', sourceRevision: 'revision-1',
+    occurredAt: '2026-08-01T10:00:00.000Z', recordedAt: '2026-08-01T10:01:00.000Z',
+    kind: 'summary', context: '私有场景', content: '私有总结', result: '', limitations: '',
+    insight: '', correction: '尚未展开的修正建议', references: '',
+    assistance: 'independent', outcome: 'unverified',
+  };
+  const html = panel({
+    focusedApplicationEventId: event.eventId,
+    onClearFocus: () => undefined,
+    history: history({ entries: [{ type: 'application', event }], total: 1, focusedApplicationEventId: event.eventId }),
+  });
+  assert.match(html, /当前定位 1 条/);
+  assert.match(html, /older-application/);
+  assert.match(html, /查看全部学习历史/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /私有场景|私有总结|尚未展开的修正建议|加载更多历史/);
+  for (const overrides of [{ loading: true }, { error: '记录不存在' }]) {
+    const pending = panel({ history: null, focusedApplicationEventId: event.eventId, onClearFocus: () => undefined, ...overrides });
+    assert.match(pending, /查看全部学习历史/);
+  }
+});
+
 test('manual retention events are labeled as decisions and preserve the paused original anchor', () => {
   const event = { eventId: 'hold-1', conceptId: 'concept-1', sourceRevision: 'revision-1', occurredAt: '2026-09-19T10:00:00Z', recordedAt: '2026-09-19T10:00:00Z', active: true, previousEventId: null };
   const html = panel({ history: history({ state: state({ status: 'retained', decay: null, elapsedDays: null, retention: event }),

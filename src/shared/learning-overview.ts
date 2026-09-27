@@ -31,6 +31,8 @@ export interface LearningOverview {
   sourceId: string;
   asOf: string;
   items: LearningOverviewItem[];
+  /** Absent on older services; absence must not be displayed as zero suggestions. */
+  corrections?: import('./correction-overview.js').CorrectionOverview;
 }
 
 export type LearningOverviewFilter = 'all' | 'recall' | 'scenario' | 'calibration' | 'unobserved';

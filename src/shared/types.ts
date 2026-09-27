@@ -150,6 +150,8 @@ export interface ConceptHistory {
   learning?: LearningSummary;
   /** Decisions for application entries on this page. Each list is bounded. */
   corrections?: Record<string, import('./corrections.js').CorrectionHistory>;
+  /** When present, entries contains only the requested application/summary. */
+  focusedApplicationEventId?: string;
   /** Append-only decision watermark across all pages of this concept. */
   correctionCount?: number;
 }

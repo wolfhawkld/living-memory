@@ -193,6 +193,14 @@ function parseHistoryCursor(value: unknown): string | undefined {
   return value;
 }
 
+function parseHistoryApplicationEventId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) {
+    throw new StoreError('INVALID_EVENT_ID', 'applicationEventId 格式无效。');
+  }
+  return value;
+}
+
 function parseReviewPlanTimeZone(value: unknown): string {
   if (value === undefined) return 'UTC';
   if (typeof value !== 'string' || value.length === 0 || value.length > 64 || value.trim() !== value) {
@@ -469,7 +477,11 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     const concept = conceptById(source, conceptId);
     const limit = parseHistoryLimit(req.query.limit);
     const cursor = parseHistoryCursor(req.query.cursor);
-    const history = store.getConceptHistory(concept, now().toISOString(), limit, cursor);
+    const applicationEventId = parseHistoryApplicationEventId(req.query.applicationEventId);
+    if (cursor !== undefined && applicationEventId !== undefined) {
+      throw new StoreError('INVALID_HISTORY_CURSOR', '聚焦单条应用历史时不能同时使用分页游标。');
+    }
+    const history = store.getConceptHistory(concept, now().toISOString(), limit, cursor, applicationEventId);
     res.set('Cache-Control', 'no-store').json(history);
   }));
   app.get('/api/learning-overview', asyncRoute((req, res) => {
@@ -480,6 +492,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       sourceId: source.namespace, asOf, concepts,
       states: store.getStates(concepts, asOf),
       observations: store.getObservations(), applications: store.getApplications(),
+      corrections: store.getCorrections(),
       anchors: store.getAnchors(),
     }));
   }));

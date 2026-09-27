@@ -1437,10 +1437,22 @@ export class Store {
     return row.count;
   }
 
-  getConceptHistory(concept: Concept, asOf: string, limit: number, rawCursor?: string): ConceptHistory {
+  getConceptHistory(
+    concept: Concept,
+    asOf: string,
+    limit: number,
+    rawCursor?: string,
+    applicationEventId?: string,
+  ): ConceptHistory {
     const normalizedAsOf = normalizeDate(asOf, 'INVALID_HISTORY_AS_OF');
     const cursor = rawCursor === undefined ? null : decodeHistoryCursor(rawCursor);
     if (cursor && (cursor.namespace !== this.namespace || cursor.conceptId !== concept.id)) invalidHistoryCursor();
+    if (applicationEventId !== undefined && !EVENT_ID_PATTERN.test(applicationEventId)) {
+      throw new StoreError('INVALID_EVENT_ID', 'applicationEventId 格式无效。');
+    }
+    if (cursor && applicationEventId !== undefined) {
+      throw new StoreError('INVALID_HISTORY_CURSOR', '聚焦单条应用历史时不能同时使用分页游标。');
+    }
 
     type HistoryRow = {
       event_type: 'anchor' | 'observation' | 'retention' | 'application';
@@ -1474,16 +1486,25 @@ export class Store {
       learning_json: string | null;
     };
 
-    const keyset = cursor ? `
-      WHERE event_at < ?
-         OR (event_at = ? AND recorded_at < ?)
-         OR (event_at = ? AND recorded_at = ? AND event_id < ?)` : '';
+    const historyPredicates: string[] = [];
+    if (applicationEventId !== undefined) historyPredicates.push("event_type = 'application' AND event_id = ?");
+    if (cursor) {
+      historyPredicates.push(`(
+        event_at < ?
+        OR (event_at = ? AND recorded_at < ?)
+        OR (event_at = ? AND recorded_at = ? AND event_id < ?)
+      )`);
+    }
+    const historyFilter = historyPredicates.length > 0
+      ? `WHERE ${historyPredicates.join(' AND ')}`
+      : '';
     const queryParameters: Array<string | number> = [
       this.namespace, concept.id,
       this.namespace, concept.id,
       this.namespace, concept.id,
       this.namespace, concept.id,
     ];
+    if (applicationEventId !== undefined) queryParameters.push(applicationEventId);
     if (cursor) {
       queryParameters.push(
         cursor.eventAt,
@@ -1549,18 +1570,34 @@ export class Store {
         half_life_days, anchor_event_id, elapsed_days, decay, answer, rating, exposure,
         observed_exposure, learning_json
       FROM history
-      ${keyset}
+      ${historyFilter}
       ORDER BY event_at DESC, recorded_at DESC, event_id DESC
       LIMIT ?
     `).all(...queryParameters) as HistoryRow[];
 
-    const totalRow = this.db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM anchors WHERE namespace = ? AND concept_id = ?)
-        + (SELECT COUNT(*) FROM observations WHERE namespace = ? AND concept_id = ?)
-        + (SELECT COUNT(*) FROM retentions WHERE namespace = ? AND concept_id = ?)
-        + (SELECT COUNT(*) FROM applications WHERE namespace = ? AND concept_id = ?) AS total
-    `).get(this.namespace, concept.id, this.namespace, concept.id, this.namespace, concept.id, this.namespace, concept.id) as { total: number };
+    const totalParameters: Array<string> = applicationEventId === undefined
+      ? [
+        this.namespace, concept.id,
+        this.namespace, concept.id,
+        this.namespace, concept.id,
+        this.namespace, concept.id,
+      ]
+      : [this.namespace, concept.id, applicationEventId];
+    const totalRow = this.db.prepare(applicationEventId === undefined
+      ? `
+        SELECT
+          (SELECT COUNT(*) FROM anchors WHERE namespace = ? AND concept_id = ?)
+          + (SELECT COUNT(*) FROM observations WHERE namespace = ? AND concept_id = ?)
+          + (SELECT COUNT(*) FROM retentions WHERE namespace = ? AND concept_id = ?)
+          + (SELECT COUNT(*) FROM applications WHERE namespace = ? AND concept_id = ?) AS total
+      `
+      : `
+        SELECT COUNT(*) AS total
+        FROM applications WHERE namespace = ? AND concept_id = ? AND event_id = ?
+      `).get(...totalParameters) as { total: number };
+    if (applicationEventId !== undefined && totalRow.total === 0) {
+      throw new StoreError('APPLICATION_NOT_FOUND', '找不到同一知识空间和概念中的应用记录。', 404);
+    }
     const correctionCountRow = this.db.prepare(`SELECT COUNT(*) AS count
       FROM corrections WHERE namespace = ? AND concept_id = ?`).get(this.namespace, concept.id) as { count: number };
 
@@ -1664,6 +1701,7 @@ export class Store {
       entries,
       total: totalRow.total,
       nextCursor,
+      ...(applicationEventId === undefined ? {} : { focusedApplicationEventId: applicationEventId }),
       learning: summarizeLearning(this.getObservations(concept.id, concept.source.revision)),
       corrections,
       correctionCount: correctionCountRow.count,

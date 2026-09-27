@@ -3,7 +3,7 @@ import { api } from './api';
 import { createConceptHistoryLoader, EMPTY_HISTORY_STATE, type HistoryScope } from './concept-history-loader';
 
 export function useConceptHistory(scope: HistoryScope, enabled: boolean, refreshKey: unknown) {
-  const loader = useMemo(() => createConceptHistoryLoader(scope, api.getConceptHistory), [scope.sourceId, scope.conceptId, scope.sourceRevision]);
+  const loader = useMemo(() => createConceptHistoryLoader(scope, api.getConceptHistory), [scope.sourceId, scope.conceptId, scope.sourceRevision, scope.applicationEventId]);
   const state = useSyncExternalStore(loader.subscribe, loader.getSnapshot, loader.getSnapshot);
   useEffect(() => () => loader.clear(), [loader, enabled]);
   useEffect(() => {

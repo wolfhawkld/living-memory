@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type {
   ApplicationRecord,
   AnchorEvent,
@@ -28,6 +28,8 @@ export interface ConceptHistoryPanelProps {
   pendingCorrectionApplications?: readonly string[];
   onCorrectionEditingChange?: (applicationEventId: string, editing: boolean) => void;
   correctionRecoveryVersions?: Readonly<Record<string, number>>;
+  focusedApplicationEventId?: string;
+  onClearFocus?: () => void;
 }
 
 export interface HistoryObservationAnswerProps {
@@ -326,21 +328,36 @@ export function ConceptHistoryPanel({
   correctionDisabled = false,
   pendingCorrectionApplications = [],
   correctionRecoveryVersions = {},
+  focusedApplicationEventId,
+  onClearFocus,
   onCorrectionEditingChange,
 }: ConceptHistoryPanelProps) {
+  const sectionRef = useRef<HTMLElement>(null);
+  const resolvedFocus = history?.focusedApplicationEventId;
+  useEffect(() => {
+    if (!focusedApplicationEventId || resolvedFocus !== focusedApplicationEventId) return;
+    sectionRef.current?.scrollIntoView({ block: 'nearest' });
+    sectionRef.current?.focus({ preventScroll: true });
+  }, [focusedApplicationEventId, resolvedFocus]);
   // Before the first effect decides whether history is needed, avoid claiming
   // that the concept has no history. A pending count is still useful here.
-  if (!history && !loading && !error && pendingCount <= 0) return null;
+  if (!history && !loading && !error && pendingCount <= 0 && !focusedApplicationEventId) return null;
 
   return (
-    <section className="concept-history-panel" aria-label="概念学习历史" aria-busy={loading || loadingMore ? true : undefined}>
+    <section ref={sectionRef} tabIndex={focusedApplicationEventId ? -1 : undefined} className="concept-history-panel" aria-label="概念学习历史" aria-busy={loading || loadingMore ? true : undefined}>
       <div className="concept-history-heading">
         <div>
           <span className="concept-history-kicker">真实记录</span>
           <h2>学习历史</h2>
         </div>
-        {history ? <span className="concept-history-total">已保存 {history.total} 条</span> : null}
+        {history ? <span className="concept-history-total">{focusedApplicationEventId ? '当前定位' : '已保存'} {history.total} 条</span> : null}
       </div>
+
+      {focusedApplicationEventId ? <div className="concept-history-focus" role="status">
+        <p>正在查看指定应用 / 总结记录。展开正文后可处理修正建议。</p>
+        <code>{focusedApplicationEventId}</code>
+        <button type="button" className="concept-history-answer-toggle" onClick={onClearFocus} disabled={!onClearFocus}>查看全部学习历史</button>
+      </div> : null}
 
       <PendingNotice count={pendingCount} />
       {simulated ? <p className="concept-history-simulated" role="status">当前为时间预览，真实学习历史不会随预览时间改变。</p> : null}

@@ -509,10 +509,11 @@ export const api = {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal,
     });
   },
-  getConceptHistory: (conceptId: string, sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) => {
+  getConceptHistory: (conceptId: string, sourceId: string, options: { limit?: number; cursor?: string; applicationEventId?: string; signal?: AbortSignal } = {}) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
     const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
     if (options.cursor) params.set('cursor', options.cursor);
+    if (options.applicationEventId) params.set('applicationEventId', options.applicationEventId);
     return requestJson<ConceptHistory>(`/concepts/${encodeURIComponent(conceptId)}/history?${params}`, {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
     });

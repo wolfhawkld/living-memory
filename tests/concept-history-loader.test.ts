@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ConceptHistory, ConceptHistoryEntry } from '../src/shared/types.ts';
+import type { ApplicationRecord, ConceptHistory, ConceptHistoryEntry } from '../src/shared/types.ts';
 import { createConceptHistoryLoader, type HistoryFetcher } from '../src/web/concept-history-loader.ts';
 import { api } from '../src/web/api.ts';
 import type { CorrectionHistory } from '../src/shared/corrections.ts';
@@ -157,6 +157,56 @@ test('a learning change arriving during a read queues a refresh instead of losin
 });
 
 const emptyCorrections: CorrectionHistory = { latest: null, events: [], total: 0 };
+
+const focusedApplication: ApplicationRecord = {
+  eventId: 'old-application', conceptId: scope.conceptId, sourceRevision: 'original-revision',
+  occurredAt: asOf, recordedAt: asOf, kind: 'summary', context: '', content: 'private summary',
+  outcome: 'unverified', assistance: 'unknown', result: '', limitations: '', insight: '', correction: 'private proposal', references: '',
+};
+const focusedPage = (): ConceptHistory => ({ ...page([], 1), entries: [{ type: 'application', event: focusedApplication }],
+  focusedApplicationEventId: focusedApplication.eventId, corrections: { [focusedApplication.eventId]: emptyCorrections }, correctionCount: 0 });
+
+test('focused history forwards the application ID without a cursor and remains focused through refresh', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    const url = new URL(String(input), 'http://synthetic.invalid');
+    assert.equal(url.searchParams.get('applicationEventId'), focusedApplication.eventId);
+    assert.equal(url.searchParams.get('cursor'), null);
+    return new Response(JSON.stringify(focusedPage()));
+  });
+  const loader = createConceptHistoryLoader({ ...scope, applicationEventId: focusedApplication.eventId }, api.getConceptHistory);
+  await loader.refresh();
+  await loader.loadMore();
+  await loader.refresh();
+  assert.equal(loader.getSnapshot().history?.entries[0].event.eventId, focusedApplication.eventId);
+  assert.equal(loader.getSnapshot().history?.nextCursor, null);
+});
+
+test('focused history refuses unsupported, wrong-target and unexpectedly unfiltered responses', async () => {
+  const cases: Partial<ConceptHistory>[] = [
+    { focusedApplicationEventId: undefined }, { focusedApplicationEventId: 'other' }, { total: 20 },
+    { nextCursor: 'unexpected-more' }, { entries: [] }, { entries: [entry('anchor')] },
+    { entries: [{ type: 'application', event: { ...focusedApplication, eventId: 'other' } }] },
+  ];
+  for (const invalid of cases) {
+    const loader = createConceptHistoryLoader({ ...scope, applicationEventId: focusedApplication.eventId }, async () => ({ ...focusedPage(), ...invalid }));
+    await loader.refresh();
+    assert.equal(loader.getSnapshot().history, null);
+    assert.match(loader.getSnapshot().error ?? '', /未能定位/);
+  }
+  const normalLoader = createConceptHistoryLoader(scope, async () => focusedPage());
+  await normalLoader.refresh();
+  assert.equal(normalLoader.getSnapshot().history, null, 'a focused response cannot replace the full history');
+});
+
+test('clearing a focused read cannot inject its late record into the next history scope', async () => {
+  const pending = deferred<ConceptHistory>();
+  const loader = createConceptHistoryLoader({ ...scope, applicationEventId: focusedApplication.eventId }, async () => pending.promise);
+  const reading = loader.refresh();
+  loader.clear();
+  pending.resolve(focusedPage());
+  await reading;
+  assert.equal(loader.getSnapshot().history, null);
+});
 
 test('correction histories from loaded pages survive a clock-only refresh', async () => {
   const loader = createConceptHistoryLoader(scope, async (_id, _source, options): Promise<ConceptHistory> => options.cursor

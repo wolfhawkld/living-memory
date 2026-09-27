@@ -8,8 +8,8 @@ export interface HistoryLoadState {
 }
 
 export const EMPTY_HISTORY_STATE: HistoryLoadState = { history: null, loading: false, loadingMore: false, error: null };
-export interface HistoryScope { sourceId: string; conceptId: string; sourceRevision: string }
-export type HistoryFetcher = (conceptId: string, sourceId: string, options: { limit: number; cursor?: string; signal: AbortSignal }) => Promise<ConceptHistory>;
+export interface HistoryScope { sourceId: string; conceptId: string; sourceRevision: string; applicationEventId?: string }
+export type HistoryFetcher = (conceptId: string, sourceId: string, options: { limit: number; cursor?: string; applicationEventId?: string; signal: AbortSignal }) => Promise<ConceptHistory>;
 
 /** One concept/source lifetime; late responses cannot enter a new selection or recall task. */
 export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: HistoryFetcher) {
@@ -33,11 +33,17 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
     const cursor = mode === 'more' ? before?.nextCursor ?? undefined : undefined;
     publish({ ...state, loading: mode === 'refresh', loadingMore: mode === 'more', error: null });
     try {
-      const page = await fetchHistory(scope.conceptId, scope.sourceId, { limit: 20, cursor, signal: request.signal });
+      const page = await fetchHistory(scope.conceptId, scope.sourceId, { limit: 20, cursor, applicationEventId: scope.applicationEventId, signal: request.signal });
       if (active !== request || request.signal.aborted) return;
       if (page.sourceId !== scope.sourceId || page.conceptId !== scope.conceptId || page.sourceRevision !== scope.sourceRevision) {
         publish({ ...state, history: null });
         throw new Error('知识来源或版本已变化，请刷新知识源后重新查看历史。');
+      }
+      if (page.focusedApplicationEventId !== scope.applicationEventId || (scope.applicationEventId
+        && (page.entries.length !== 1 || page.total !== 1 || page.nextCursor !== null
+          || page.entries[0].type !== 'application' || page.entries[0].event.eventId !== scope.applicationEventId))) {
+        publish({ ...state, history: null });
+        throw new Error('未能定位指定的应用 / 总结记录，请刷新后重试，或查看全部历史。');
       }
       const decisionsChanged = before && page.correctionCount !== before.correctionCount;
       if (mode === 'more' && before && (page.total !== before.total || decisionsChanged)) {

@@ -12,10 +12,12 @@ import type {
   LearningOverviewFilter,
   OverviewObservation,
 } from '../shared/learning-overview.js';
+import type { CorrectionEvent } from '../shared/corrections.js';
 import { domainIdOf } from './domain-view.js';
 import { summarizeLearning } from './learning-evidence.js';
 import { isValidInstant } from './time-model.js';
 import { buildTimeRecallSummary } from './time-recall.js';
+import { buildCorrectionOverview } from './correction-overview.js';
 
 /** Inputs used to build the privacy-preserving learning overview. */
 export interface LearningOverviewInput {
@@ -25,6 +27,8 @@ export interface LearningOverviewInput {
   states: Readonly<Record<string, MemoryState>>;
   observations: readonly Observation[];
   applications: readonly ApplicationRecord[];
+  /** Optional for compatibility with clients/fixtures predating corrections. */
+  corrections?: readonly CorrectionEvent[];
   anchors?: readonly AnchorEvent[];
 }
 
@@ -240,6 +244,7 @@ export function buildLearningOverview({
   states,
   observations,
   applications,
+  corrections,
   anchors = [],
 }: LearningOverviewInput): LearningOverview {
   const asOfTimestamp = parseTimestamp(asOf) ?? Number.NaN;
@@ -330,7 +335,14 @@ export function buildLearningOverview({
     items.push(item);
   }
 
-  return { sourceId, asOf, items };
+  return {
+    sourceId,
+    asOf,
+    items,
+    ...(corrections === undefined
+      ? {}
+      : { corrections: buildCorrectionOverview({ concepts, applications, corrections, asOf }) }),
+  };
 }
 
 /** Filter and prioritize overview items for a focused review of learning evidence. */

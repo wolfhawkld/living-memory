@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { LearningOverview, LearningOverviewItem } from '../src/shared/learning-overview';
 import type { Concept, Snapshot } from '../src/shared/types';
-import { createLearningOverviewLoader, resolveOverviewSelection } from '../src/web/learning-overview-loader';
+import { createLearningOverviewLoader, resolveCorrectionOverviewSelection, resolveOverviewSelection } from '../src/web/learning-overview-loader';
+import type { CorrectionOverviewItem } from '../src/shared/correction-overview';
 import { api, ApiRequestError } from '../src/web/api';
 
 const sourceId = 'private-space';
@@ -94,4 +95,24 @@ test('navigation checks fresh full-index identity and source version before sele
   assert.throws(() => resolveOverviewSelection(sourceId, overview(), item, snapshot), /不在当前总览/);
   assert.throws(() => resolveOverviewSelection(sourceId, data, item, { ...snapshot, concepts: [] }), /移除或更新/);
   assert.throws(() => resolveOverviewSelection(sourceId, data, item, { ...snapshot, concepts: [{ ...concept, source: { ...concept.source, revision: 'v2' } }] }), /移除或更新/);
+});
+
+test('correction navigation binds the exact application to its private concept and freshly read content version', () => {
+  const concept: Concept = { id: 'beyond-graph-limit', title: '目标概念', domain: 'Other', aliases: [], body: '', summary: '', source: { path: 'Other/Target.md', revision: 'v2' } };
+  const item: CorrectionOverviewItem = { applicationEventId: 'old-application', conceptId: concept.id,
+    title: concept.title, domainId: 'Other', sourceRevision: 'v2', applicationRevision: 'v1', kind: 'summary',
+    occurredAt: '2026-01-01T00:00:00Z', recordedAt: '2026-01-01T00:00:00Z', status: 'open',
+    latestEventId: null, latestOccurredAt: null, reviewedRevision: null, sourceChanged: true, needsRecheck: false };
+  const data = { ...overview(), corrections: { items: [item], unavailableCount: 0 } };
+  const snapshot: Snapshot = { concepts: [concept], links: [], source: { name: 'test', mode: 'local', conceptCount: 1, limit: 1, diagnostics: [] },
+    config: { modelVersion: 'time-only-v0', revision: 1, halfLifeDays: 7 }, states: {}, observationsCount: 0, asOf: data.asOf };
+  assert.equal(resolveCorrectionOverviewSelection(sourceId, data, item, snapshot), concept);
+  assert.throws(() => resolveCorrectionOverviewSelection('another-account', data, item, snapshot), /知识空间已变化/);
+  assert.throws(() => resolveCorrectionOverviewSelection(sourceId, overview(), item, snapshot), /不在当前总览/);
+  for (const changed of [{ applicationEventId: 'another-application' }, { conceptId: 'other' }, { sourceRevision: 'v3' }]) {
+    assert.throws(() => resolveCorrectionOverviewSelection(sourceId, data, { ...item, ...changed }, snapshot), /不在当前总览/);
+  }
+  assert.throws(() => resolveCorrectionOverviewSelection(sourceId, data, item, { ...snapshot, concepts: [] }), /移除或更新/);
+  assert.throws(() => resolveCorrectionOverviewSelection(sourceId, data, item, { ...snapshot,
+    concepts: [{ ...concept, source: { ...concept.source, revision: 'v3' } }] }), /移除或更新/);
 });

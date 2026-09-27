@@ -1,5 +1,6 @@
 import type { LearningOverview, LearningOverviewItem } from '../shared/learning-overview';
 import type { Concept, Snapshot } from '../shared/types';
+import type { CorrectionOverviewItem } from '../shared/correction-overview';
 
 export interface OverviewLoadState { overview: LearningOverview | null; loading: boolean; error: string | null }
 export const EMPTY_OVERVIEW_STATE: OverviewLoadState = { overview: null, loading: false, error: null };
@@ -45,6 +46,17 @@ export function resolveOverviewSelection(sourceId: string, overview: LearningOve
   if (sourceId !== overview.sourceId) throw new Error('知识空间已变化，请关闭总览并重新连接。');
   if (!overview.items.some((row) => row.conceptId === item.conceptId && row.sourceRevision === item.sourceRevision)) {
     throw new Error('这条概念记录已不在当前总览中，请刷新总览。');
+  }
+  const concept = snapshot.concepts.find((candidate) => candidate.id === item.conceptId);
+  if (!concept || concept.source.revision !== item.sourceRevision) throw new Error('概念已移动、移除或更新，请刷新总览后再查看。');
+  return concept;
+}
+
+export function resolveCorrectionOverviewSelection(sourceId: string, overview: LearningOverview, item: CorrectionOverviewItem, snapshot: Snapshot): Concept {
+  if (sourceId !== overview.sourceId) throw new Error('知识空间已变化，请关闭总览并重新连接。');
+  if (!overview.corrections?.items.some((row) => row.applicationEventId === item.applicationEventId
+    && row.conceptId === item.conceptId && row.sourceRevision === item.sourceRevision)) {
+    throw new Error('这条修正建议已不在当前总览中，请刷新总览。');
   }
   const concept = snapshot.concepts.find((candidate) => candidate.id === item.conceptId);
   if (!concept || concept.source.revision !== item.sourceRevision) throw new Error('概念已移动、移除或更新，请刷新总览后再查看。');
