@@ -18,6 +18,7 @@ import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan
 import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
 import type { ImportPreviewRequest, ImportPreview, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
 import { PendingCoordinationError, withPendingStorageLock, withPendingSyncLock } from './pending-coordination';
+import { BULK_REQUEST_TIMEOUT_MS, RequestDeadlineError, withRequestDeadline } from './request-deadline';
 
 export type SessionResponse = LocalSession & { user?: AccountUser };
 
@@ -322,7 +323,7 @@ export async function clearPendingWrites(sourceId: string | null | undefined): P
   }
 }
 
-async function parseError(response: Response): Promise<ApiRequestError> {
+async function parseError(response: Response, signal: AbortSignal): Promise<ApiRequestError> {
   let message = `请求失败（${response.status}）`;
   let code = 'HTTP_ERROR';
   try {
@@ -335,6 +336,7 @@ async function parseError(response: Response): Promise<ApiRequestError> {
   } catch {
     // Some infrastructure errors return an empty body. The HTTP status remains useful.
   }
+  signal.throwIfAborted();
   if ((code === 'AUTH_REQUIRED' || code === 'SOURCE_MISMATCH') && typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('lm-auth-required'));
   }
@@ -345,42 +347,55 @@ async function parseError(response: Response): Promise<ApiRequestError> {
   });
 }
 
-async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-  let response: Response;
+async function requestBody<T>(path: string, init: RequestInit, consume: (response: Response) => Promise<T>, bulk = false): Promise<T> {
   try {
-    response = await fetch(`${API_ROOT}${path}`, {
-      credentials: 'same-origin',
-      ...init,
-      headers: {
-        Accept: 'application/json',
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-        ...init.headers,
-      },
-    });
-  } catch {
-    throw new ApiRequestError('本地服务暂时不可达，请检查服务是否正在运行。', {
-      code: 'NETWORK_OFFLINE',
-      retryable: true,
-    });
+    return await withRequestDeadline(async signal => {
+      let response: Response;
+      try {
+        response = await fetch(`${API_ROOT}${path}`, {
+          credentials: 'same-origin',
+          ...init,
+          signal,
+          headers: {
+            Accept: 'application/json',
+            ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+            ...init.headers,
+          },
+        });
+      } catch {
+        signal.throwIfAborted();
+        throw new ApiRequestError('本地服务暂时不可达，请检查服务是否正在运行。', {
+          code: 'NETWORK_OFFLINE', retryable: true,
+        });
+      }
+      signal.throwIfAborted();
+      if (!response.ok) throw await parseError(response, signal);
+      const result = await consume(response);
+      signal.throwIfAborted();
+      return result;
+    }, { signal: init.signal, ...(bulk ? { timeoutMs: BULK_REQUEST_TIMEOUT_MS } : {}) });
+  } catch (error) {
+    // Explicit view cancellation remains a cancellation, even if a caller used
+    // a custom error as its abort reason.
+    if (init.signal?.aborted && error === init.signal.reason) throw error;
+    if (error instanceof RequestDeadlineError) {
+      const preview = path === '/import/preview' || path === '/identities/preview';
+      const writing = !preview && !['GET', 'HEAD'].includes((init.method ?? 'GET').toUpperCase());
+      throw new ApiRequestError(writing
+        ? '请求等待超时，保存结果尚未确认。请保留原记录，恢复连接后重试。'
+        : '请求等待超时，请检查本地服务后重试。', { code: 'REQUEST_TIMEOUT', retryable: true });
+    }
+    throw error;
   }
-  if (!response.ok) throw await parseError(response);
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
 }
 
-async function requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_ROOT}${path}`, {
-      credentials: 'same-origin',
-      ...init,
-      headers: { Accept: 'application/json', ...init.headers },
-    });
-  } catch {
-    throw new ApiRequestError('本地服务暂时不可达，请稍后重试。', { code: 'NETWORK_OFFLINE', retryable: true });
-  }
-  if (!response.ok) throw await parseError(response);
-  return response.blob();
+function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return requestBody(path, init, async response => response.status === 204 ? undefined as T : await response.json() as T,
+    path === '/import/preview' || path === '/import/commit');
+}
+
+function requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  return requestBody(path, init, response => response.blob(), true);
 }
 
 export async function writeJson<T>(path: string, payload: unknown, writeToken: string, sourceId: string): Promise<T> {
@@ -521,6 +536,9 @@ async function sendPendingBatch(writeToken: string, sourceId: string): Promise<P
       await savePendingError(sourceId, write, detail);
       const { attemptedAt: _attemptedAt, ...failure } = detail;
       failures.push({ ...failure, id: write.id, label: typeof write.label === 'string' && write.label.trim() ? write.label : '待同步记录' });
+      // One stalled connection should not spend another full deadline on every
+      // remaining record while holding the cross-tab sender lock.
+      if (detail.code === 'REQUEST_TIMEOUT') break;
       // Keep the original id, payload and timestamps, including on non-retryable
       // conflicts. Showing the rejection is safer than silently rewriting history.
     }

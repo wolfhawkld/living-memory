@@ -97,8 +97,11 @@ function pendingSyncNotice(result: PendingSyncResult): Notice {
   const configNotice = result.duplicateConfigs ? `${result.duplicateConfigs} 条参数请求此前已生效，本次未再次改动配置。` : '';
   const failure = result.failures[0];
   if (failure) {
-    const progress = result.sent > 0 ? `已同步 ${result.sent} 条，另有 ${result.failed} 条未完成。` : '';
-    return { tone: 'error', text: `${progress}${repairNotice}${configNotice}${failure.label}：${failure.message}` };
+    const timedOut = result.failures.some(item => item.code === 'REQUEST_TIMEOUT');
+    const progress = result.sent > 0 ? `已同步 ${result.sent} 条。` : '';
+    const failedCount = !timedOut && result.sent > 0 ? `另有 ${result.failed} 条未完成。` : '';
+    const timeoutNotice = timedOut ? '本轮同步已暂停，其余记录保留待重试。' : '';
+    return { tone: 'error', text: `${progress}${failedCount}${repairNotice}${configNotice}${failure.label}：${failure.message}${timeoutNotice}` };
   }
   return result.sent > 0 ? { tone: 'success', text: `已同步 ${result.sent} 条待处理记录。${repairNotice}${configNotice}` } : null;
 }
@@ -974,6 +977,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       return { ok: true, result };
     } catch (writeError) {
       const retryable = writeError instanceof ApiRequestError && writeError.retryable;
+      const timedOut = writeError instanceof ApiRequestError && writeError.code === 'REQUEST_TIMEOUT';
       const changedEvidenceSource = (options.path === '/observations' || options.path === '/applications') && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
       const expiredAccount = Boolean(options.eventId) && writeError instanceof ApiRequestError && writeError.code === 'AUTH_REQUIRED';
       if (retryable || changedEvidenceSource || expiredAccount) {
@@ -982,11 +986,16 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           refreshPendingState();
           showNotice({ tone: 'info', text: expiredAccount ? '登录已失效，原记录已保存在此账号知识空间的待同步队列；重新登录后可重试。' : changedEvidenceSource
             ? '知识源已变化，原记录已保存在原知识源的待同步队列；重新连接原知识源后可重试。'
-            : '网络暂时不可用，原记录已保存到待同步队列。' });
+            : timedOut
+              ? '保存结果尚未确认，原记录已保留到待同步队列，可稍后原样重试。'
+              : '网络暂时不可用，原记录已保存到待同步队列。' });
           return { ok: false, queued: true };
         }
-        showNotice({ tone: 'error', text: '网络暂时不可用，这条记录尚未保存；请保持当前页面并重试。' });
-        return { ok: false, queued: false, unsaved: true, error: '记录尚未保存；请保留当前页面，确认浏览器已更新且允许本地存储后重试。' };
+        const message = timedOut
+          ? '保存结果尚未确认，浏览器也未能缓存原记录；请保留当前页面，确认浏览器允许本地存储后重试。'
+          : '记录尚未保存；请保留当前页面，确认浏览器已更新且允许本地存储后重试。';
+        showNotice({ tone: 'error', text: message });
+        return { ok: false, queued: false, unsaved: true, error: message };
       }
       showNotice({ tone: 'error', text: errorMessage(writeError) });
       return { ok: false, queued: false, error: errorMessage(writeError) };

@@ -33,7 +33,9 @@ test('history API encodes concept paths and sends a source-bound, uncached read 
     assert.equal(init?.method ?? 'GET', 'GET');
     assert.equal(new Headers(init?.headers).get('x-lm-source-id'), scope.sourceId);
     assert.equal(init?.cache, 'no-store');
-    assert.equal(init?.signal, signal);
+    assert.ok(init?.signal instanceof AbortSignal);
+    assert.notEqual(init.signal, signal, 'transport uses an internal signal so a deadline cannot abort the caller');
+    assert.equal(init.signal.aborted, signal.aborted, 'caller cancellation state is reflected when the transport starts');
     assert.equal(init?.body, undefined);
     return new Response(JSON.stringify(page()), { status: 200 });
   });

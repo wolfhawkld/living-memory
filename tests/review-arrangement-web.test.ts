@@ -122,7 +122,11 @@ test('review plan requests use source-scoped authentication, no-store reads, and
     await api.putReviewPlan({ revision: 0, dailyBudget: 3 }, 'test-csrf', 'user-a', 'Asia/Shanghai');
     assert.match(calls[0].path, /timeZone=Asia%2FShanghai/);
     assert.equal(calls[0].init?.cache, 'no-store');
-    assert.equal(calls[0].init?.signal, controller.signal);
+    assert.ok(calls[0].init?.signal instanceof AbortSignal);
+    assert.notEqual(calls[0].init.signal, controller.signal,
+      'transport uses an internal signal so a deadline cannot abort the caller');
+    assert.equal(calls[0].init.signal.aborted, controller.signal.aborted,
+      'caller cancellation state is reflected when the transport starts');
     assert.equal(new Headers(calls[0].init?.headers).get('x-lm-source-id'), 'user-a');
     assert.equal(new Headers(calls[1].init?.headers).get('x-lm-token'), 'test-csrf');
     assert.equal(calls[1].init?.method, 'PUT');

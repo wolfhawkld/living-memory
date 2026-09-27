@@ -23,7 +23,9 @@ test('overview read is namespace-bound, uncached and cancellable, without a writ
     assert.equal(new Headers(init?.headers).get('x-lm-source-id'), sourceId);
     assert.equal(new Headers(init?.headers).get('x-lm-token'), null);
     assert.equal(init?.cache, 'no-store');
-    assert.equal(init?.signal, signal);
+    assert.ok(init?.signal instanceof AbortSignal);
+    assert.notEqual(init.signal, signal, 'transport uses an internal signal so a deadline cannot abort the caller');
+    assert.equal(init.signal.aborted, signal.aborted, 'caller cancellation state is reflected when the transport starts');
     assert.equal(init?.body, undefined);
     return new Response(JSON.stringify(overview()));
   });
