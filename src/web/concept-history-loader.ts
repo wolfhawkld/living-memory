@@ -39,6 +39,11 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
         publish({ ...state, history: null });
         throw new Error('知识来源或版本已变化，请刷新知识源后重新查看历史。');
       }
+      if (page.progress && (page.progress.conceptId !== scope.conceptId
+        || page.progress.sourceRevision !== scope.sourceRevision || page.progress.asOf !== page.asOf)) {
+        publish({ ...state, history: null });
+        throw new Error('回忆变化记录与当前概念或资料版本不一致，请刷新后重试。');
+      }
       if (page.focusedApplicationEventId !== scope.applicationEventId || (scope.applicationEventId
         && (page.entries.length !== 1 || page.total !== 1 || page.nextCursor !== null
           || page.entries[0].type !== 'application' || page.entries[0].event.eventId !== scope.applicationEventId))) {

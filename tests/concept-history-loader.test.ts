@@ -4,6 +4,7 @@ import type { ApplicationRecord, ConceptHistory, ConceptHistoryEntry } from '../
 import { createConceptHistoryLoader, type HistoryFetcher } from '../src/web/concept-history-loader.ts';
 import { api } from '../src/web/api.ts';
 import type { CorrectionHistory } from '../src/shared/corrections.ts';
+import type { LearningProgress } from '../src/shared/learning-progress.ts';
 
 const scope = { sourceId: 'synthetic-source', conceptId: 'math/布尔 & logic', sourceRevision: 'rev-1' };
 const asOf = '2026-09-22T10:00:00.000Z';
@@ -21,6 +22,28 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+
+function progress(): LearningProgress {
+  const empty = () => ({ total: 0, previous: null, latest: null, intervalDays: null, conditions: 'insufficient' as const });
+  return { conceptId: scope.conceptId, sourceRevision: scope.sourceRevision, asOf,
+    tasks: { concept: empty(), scenario: empty() }, excluded: { previousRevision: 0, invalidTime: 0 } };
+}
+
+test('progress metadata stays bound to its concept, version and history snapshot', async () => {
+  for (const mismatch of [{ conceptId: 'other' }, { sourceRevision: 'old' }, { asOf: '2020-01-01T00:00:00Z' }]) {
+    const loader = createConceptHistoryLoader(scope, async () => ({ ...page(), progress: { ...progress(), ...mismatch } }));
+    await loader.refresh();
+    assert.equal(loader.getSnapshot().history, null);
+    assert.match(loader.getSnapshot().error ?? '', /回忆变化记录/);
+  }
+  let response = { ...page(['same-entry']), progress: progress() };
+  const loader = createConceptHistoryLoader(scope, async () => response);
+  await loader.refresh();
+  response = { ...response, progress: { ...progress(), excluded: { previousRevision: 2, invalidTime: 0 } } };
+  await loader.refresh();
+  assert.deepEqual(loader.getSnapshot().history?.progress, response.progress,
+    'reusing immutable timeline entries must still replace live progress metadata');
+});
 
 test('history API encodes concept paths and sends a source-bound, uncached read with cancellation', async (t) => {
   let calls = 0;

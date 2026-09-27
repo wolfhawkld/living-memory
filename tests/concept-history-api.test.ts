@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { closeApp, createApp, type LivingMemoryApp } from '../src/server/app.js';
-import type { ConceptHistory } from '../src/shared/types.js';
+import type { ConceptHistory, Snapshot } from '../src/shared/types.js';
 
 interface ResponseData {
   status: number;
@@ -160,6 +160,8 @@ test('concept history returns empty state, full-index concepts, cache policy, an
     assert.deepEqual(history.entries, []);
     assert.equal(history.total, 0);
     assert.equal(history.nextCursor, null);
+    assert.equal(history.progress?.tasks.concept.total, 0);
+    assert.equal(history.progress?.tasks.scenario.total, 0);
 
     for (const query of ['?limit=0', '?limit=101', '?limit=1.5', '?limit=abc', '?limit=']) {
       const response = await client.request(historyPath(hidden.id, query));
@@ -300,6 +302,8 @@ test('concept history preserves stored observation values and projects current s
     assert.equal(unchangedObservation.event.decay, storedObservation.event.decay);
     assert.equal(afterConfigAndAnchor.state.anchor?.eventId, newerReview.eventId);
     assert.equal(afterConfigAndAnchor.asOf, '2026-01-06T00:00:00.000Z');
+    assert.deepEqual(afterConfigAndAnchor.progress?.tasks, before.progress?.tasks,
+      'new anchors and H settings do not rewrite frozen comparison points');
 
     writeFileSync(join(client.root, 'Cognition', 'Math', 'Boolean.md'), conceptFile('布尔逻辑', '真值判断已经改变'));
     assert.equal((await client.request('/api/refresh', { method: 'POST', headers, body: {} })).status, 200);
@@ -307,6 +311,8 @@ test('concept history preserves stored observation values and projects current s
     assert.notEqual(afterSourceChange.sourceRevision, before.sourceRevision);
     assert.equal(afterSourceChange.state.status, 'pending');
     assert.ok(afterSourceChange.entries.some((entry) => entry.event.eventId === review.eventId));
+    assert.equal(afterSourceChange.progress?.excluded.previousRevision, 1);
+    assert.equal(afterSourceChange.progress?.tasks.concept.total, 0);
   } finally {
     await client.stop();
   }
@@ -349,4 +355,62 @@ test('concept history remains isolated by source namespace and does not mutate r
     if (secondFixture) secondFixture.cleanup();
     rmSync(sharedDataDir, { recursive: true, force: true });
   }
+});
+
+test('learning progress reads complete concept history across pages and separates tasks without exposing answers', async () => {
+  const client = await running();
+  try {
+    const credentials = await session(client);
+    const snapshot = (await client.request('/api/snapshot?scope=all')).json<Snapshot>();
+    const concept = snapshot.concepts.find((item) => item.title === '布尔逻辑')!;
+    const other = snapshot.concepts.find((item) => item.title === '分类器')!;
+    const headers = tokenHeaders(credentials.writeToken, credentials.sourceId);
+    assert.equal((await client.request('/api/reviews', { method: 'POST', headers, body: {
+      eventId: 'progress-anchor', conceptId: concept.id, sourceRevision: concept.source.revision,
+      kind: 'review', occurredAt: '2026-01-01T00:00:00Z',
+    } })).status, 201);
+    for (const item of [
+      { id: 'concept-before', task: 'concept', day: 3, rating: 'partial' },
+      { id: 'concept-after', task: 'concept', day: 5, rating: 'clear' },
+      { id: 'scenario-before', task: 'scenario', day: 4, rating: 'blank' },
+      { id: 'scenario-after', task: 'scenario', day: 6, rating: 'partial' },
+    ] as const) {
+      const observedAt = `2026-01-0${item.day}T00:00:00Z`;
+      const result = await client.request('/api/observations', { method: 'POST', headers, body: {
+        eventId: item.id, conceptId: concept.id, sourceRevision: concept.source.revision,
+        observedAt, configRevision: snapshot.config.revision, anchorEventId: 'progress-anchor',
+        answer: 'PRIVATE_PROGRESS_ANSWER', rating: item.rating, exposure: 'unexposed', observedExposure: false,
+        learning: { task: item.task, confidence: 70, confidenceAt: observedAt,
+          cue: 'independent', outcome: item.id.endsWith('after') ? 'success' : 'partial', basis: 'self-check',
+          ...(item.task === 'scenario' ? { scenario: 'PRIVATE_PROGRESS_SCENARIO', applicability: 'PRIVATE_PROGRESS_APPLICABILITY' } : {}),
+        },
+      } });
+      assert.equal(result.status, 201, result.body);
+    }
+    for (let index = 0; index < 21; index += 1) {
+      assert.equal((await client.request('/api/reviews', { method: 'POST', headers, body: {
+        eventId: `recent-${index}`, conceptId: concept.id, sourceRevision: concept.source.revision,
+        kind: 'review', occurredAt: '2026-01-20T00:00:00Z',
+      } })).status, 201);
+    }
+    const before = (await client.request('/api/export')).json<unknown>();
+    const first = (await client.request(historyPath(concept.id, '?limit=20'))).json<ConceptHistory>();
+    assert.ok(first.entries.every((entry) => entry.type === 'anchor'));
+    assert.ok(first.nextCursor);
+    assert.equal(first.progress?.tasks.concept.total, 2);
+    assert.equal(first.progress?.tasks.concept.previous?.eventId, 'concept-before');
+    assert.equal(first.progress?.tasks.concept.latest?.eventId, 'concept-after');
+    assert.equal(first.progress?.tasks.concept.intervalDays, 2);
+    assert.equal(first.progress?.tasks.concept.latest?.elapsedDays, 4, 'the original anchor is retained');
+    assert.equal(first.progress?.tasks.scenario.previous?.eventId, 'scenario-before');
+    assert.equal(first.progress?.tasks.scenario.latest?.eventId, 'scenario-after');
+    assert.equal(first.progress?.tasks.scenario.conditions, 'same');
+    assert.doesNotMatch(JSON.stringify(first.progress), /PRIVATE_PROGRESS_|"answer"|"applicability"/);
+    const next = (await client.request(historyPath(concept.id, `?limit=20&cursor=${encodeURIComponent(first.nextCursor!)}`))).json<ConceptHistory>();
+    assert.deepEqual(next.progress, first.progress);
+    const otherHistory = (await client.request(historyPath(other.id))).json<ConceptHistory>();
+    assert.equal(otherHistory.progress?.tasks.concept.total, 0);
+    assert.equal(otherHistory.progress?.tasks.scenario.total, 0);
+    assert.deepEqual((await client.request('/api/export')).json<unknown>(), before);
+  } finally { await client.stop(); }
 });

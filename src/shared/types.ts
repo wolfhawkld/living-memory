@@ -148,6 +148,8 @@ export interface ConceptHistory {
   total: number;
   nextCursor: string | null;
   learning?: LearningSummary;
+  /** Latest two observations per task across the concept's complete history. */
+  progress?: import('./learning-progress.js').LearningProgress;
   /** Decisions for application entries on this page. Each list is bounded. */
   corrections?: Record<string, import('./corrections.js').CorrectionHistory>;
   /** When present, entries contains only the requested application/summary. */

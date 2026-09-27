@@ -55,6 +55,7 @@ import {
 import { DAY_MS, MODEL_VERSION } from '../shared/types.js';
 import { decayAt, isValidInstant, projectMemory } from '../core/time-model.js';
 import { summarizeLearning } from '../core/learning-evidence.js';
+import { buildLearningProgress } from '../core/learning-progress.js';
 import { buildImportPlan, type PreparedConfig, type PreparedImport } from './import-plan.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 7;
@@ -1692,6 +1693,7 @@ export class Store {
         corrections[entry.event_id] = this.getCorrectionHistory(entry.event_id);
       }
     }
+    const conceptObservations = this.getObservations(concept.id);
     return {
       sourceId: this.namespace,
       conceptId: concept.id,
@@ -1702,7 +1704,9 @@ export class Store {
       total: totalRow.total,
       nextCursor,
       ...(applicationEventId === undefined ? {} : { focusedApplicationEventId: applicationEventId }),
-      learning: summarizeLearning(this.getObservations(concept.id, concept.source.revision)),
+      learning: summarizeLearning(conceptObservations.filter((event) => event.sourceRevision === concept.source.revision)),
+      progress: buildLearningProgress({ conceptId: concept.id, sourceRevision: concept.source.revision,
+        observations: conceptObservations, asOf: normalizedAsOf }),
       corrections,
       correctionCount: correctionCountRow.count,
     };

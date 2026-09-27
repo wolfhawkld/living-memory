@@ -469,6 +469,18 @@ test('learning overview enforces read source identity and account-private namesp
     assert.deepEqual(memberOverview.items[0].timeRecall?.buckets, []);
     assert.notEqual(memberOverview.items[0].conceptId, ownerConcept.id);
 
+    const ownerHistory = (await client.request(`/api/concepts/${encodeURIComponent(ownerConcept.id)}/history`, {
+      cookie: ownerCookie, headers: { 'x-lm-source-id': owner.sourceId },
+    })).json<ConceptHistory>();
+    const memberHistory = (await client.request(`/api/concepts/${encodeURIComponent(memberConcept.id)}/history`, {
+      cookie: memberCookie, headers: { 'x-lm-source-id': member.sourceId },
+    })).json<ConceptHistory>();
+    assert.equal(ownerHistory.progress?.tasks.concept.total, 1);
+    assert.equal(ownerHistory.progress?.tasks.concept.latest?.eventId, 'owner-time-observation');
+    assert.equal(memberHistory.progress?.tasks.concept.total, 0);
+    assert.equal(memberHistory.progress?.tasks.scenario.total, 0);
+    assert.doesNotMatch(JSON.stringify(memberHistory.progress), /owner-time-observation/);
+
     const ownerResponse = JSON.stringify(ownerOverview);
     const memberResponse = JSON.stringify(memberOverview);
     assert.doesNotMatch(ownerResponse, /OWNER_PRIVATE_RECORD|MEMBER_PRIVATE_RECORD|MEMBER_PRIVATE_SOURCE_BODY/);
