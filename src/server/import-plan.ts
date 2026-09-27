@@ -43,6 +43,8 @@ export interface ImportPlanInput {
   concepts: Concept[];
   sourceId: string;
   now: string;
+  /** Server-registered path history for confirmed stable concept IDs. */
+  acceptedPaths?: Record<string, string[]>;
 }
 
 /** A config row ready for a store import transaction. */
@@ -274,6 +276,7 @@ function buildConceptMapping(
   backupConcepts: ExportData['concepts'],
   liveConcepts: Concept[],
   references: Set<string>,
+  acceptedPaths: Record<string, string[]> | undefined,
   state: IssueState,
 ): ConceptMapping {
   const byId = new Map<string, string | null>();
@@ -294,12 +297,21 @@ function buildConceptMapping(
     const liveByIdItem = liveById.get(backup.id);
     if (liveByIdItem) {
       if (liveByIdItem.source.path !== backup.source.path) {
-        byId.set(backup.id, null);
-        unresolved.add(backup.id);
-        addIssue(state, 'CONCEPT_ID_PATH_MISMATCH', `概念 ID ${backup.id} 的来源路径与当前知识源不同，已阻止自动映射。`, { severity: 'error', conceptId: backup.id });
-        matches.push({ fromId: backup.id, toId: null, title: backup.title, path: backup.source.path, backupRevision: backup.source.revision, currentRevision: liveByIdItem.source.revision, match: 'unresolved' });
-        metadata.push(backup);
-        continue;
+        const registeredPaths = acceptedPaths && Object.prototype.hasOwnProperty.call(acceptedPaths, backup.id)
+          ? acceptedPaths[backup.id]
+          : undefined;
+        const pathWasAccepted = Array.isArray(registeredPaths)
+          && registeredPaths.includes(backup.source.path)
+          && registeredPaths.includes(liveByIdItem.source.path);
+        if (!pathWasAccepted) {
+          byId.set(backup.id, null);
+          unresolved.add(backup.id);
+          addIssue(state, 'CONCEPT_ID_PATH_MISMATCH', `概念 ID ${backup.id} 的来源路径与当前知识源不同，已阻止自动映射。`, { severity: 'error', conceptId: backup.id });
+          matches.push({ fromId: backup.id, toId: null, title: backup.title, path: backup.source.path, backupRevision: backup.source.revision, currentRevision: liveByIdItem.source.revision, match: 'unresolved' });
+          metadata.push(backup);
+          continue;
+        }
+        addIssue(state, 'CONCEPT_ID_PATH_ACCEPTED', `概念 ID ${backup.id} 的历史路径 ${backup.source.path} 与当前路径 ${liveByIdItem.source.path} 均已由服务端登记确认，按稳定 ID 保留映射。`, { severity: 'warning', conceptId: backup.id });
       }
       byId.set(backup.id, liveByIdItem.id);
       matches.push({ fromId: backup.id, toId: liveByIdItem.id, title: backup.title, path: backup.source.path, backupRevision: backup.source.revision, currentRevision: liveByIdItem.source.revision, match: 'id' });
@@ -979,6 +991,15 @@ function sortTokenCollections(value: ExportData): ExportData {
   return copy;
 }
 
+function sortAcceptedPaths(value: Record<string, string[]> | undefined): Record<string, string[]> {
+  const result: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
+  for (const key of Object.keys(value ?? {}).sort()) {
+    const paths = value?.[key];
+    result[key] = Array.isArray(paths) ? [...new Set(paths)].sort() : [];
+  }
+  return result;
+}
+
 /**
  * Validate an export and prepare a pure, deterministic restore plan. No store
  * or filesystem is touched; callers must inspect preview.canImport before a
@@ -999,7 +1020,10 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   };
   const references = collectReferences(rawEvents, record);
   const state: IssueState = { all: [], errors: 0 };
-  const mapping = buildConceptMapping(backupConcepts, input.concepts, references, state);
+  if (Array.isArray(record.identityBindings) && record.identityBindings.length > 0) {
+    addIssue(state, 'IDENTITY_BINDINGS_UNTRUSTED', '备份中的 identityBindings 仅供确认时核对，不会授权路径映射或自动创建绑定；导入仍按当前知识空间的路径和版本关联。', { severity: 'warning' });
+  }
+  const mapping = buildConceptMapping(backupConcepts, input.concepts, references, input.acceptedPaths, state);
   const parsedEvents = parseEventArrays(record, now.ms, state);
   const configMerge = mergeConfigs(record, input.current, exportedAt.raw, state);
   const mappedAnchors = parsedEvents.anchors.map((event) => mappedConceptEvent(event, mapping));
@@ -1045,7 +1069,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   }
 
   const metadataForToken = input.concepts.map((concept) => ({ id: concept.id, path: concept.source.path, revision: concept.source.revision })).sort((a, b) => a.id.localeCompare(b.id));
-  const token = stableHash({ data: sortTokenCollections(normalizedInput), options, current: sortTokenCollections(stripExportedAt(input.current) as ExportData), liveConcepts: metadataForToken, sourceId: input.sourceId });
+  const token = stableHash({ data: sortTokenCollections(normalizedInput), options, current: sortTokenCollections(stripExportedAt(input.current) as ExportData), liveConcepts: metadataForToken, acceptedPaths: sortAcceptedPaths(input.acceptedPaths), sourceId: input.sourceId });
   const counts: ImportCounts = {
     added: {
       anchors: classified.newAnchors.length,

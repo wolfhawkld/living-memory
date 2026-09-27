@@ -14,6 +14,7 @@ import { inspectLayout } from '../shared/layout';
 import type { AccountUser } from '../shared/accounts';
 import type { LearningOverview } from '../shared/learning-overview';
 import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
+import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
 import type { ImportPreviewRequest, ImportPreview, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
 
 export type SessionResponse = LocalSession & { user?: AccountUser };
@@ -327,6 +328,13 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 }
 
 export const api = {
+  getIdentityStatus: (sourceId: string) => requestJson<IdentityStatus>('/identities', {
+    cache: 'no-store', headers: { 'x-lm-source-id': sourceId },
+  }),
+  previewIdentityLink: (request: IdentityLinkRequest, token: string, sourceId: string) =>
+    writeJson<IdentityLinkPreview>('/identities/preview', request, token, sourceId),
+  commitIdentityLink: (request: IdentityLinkCommit, token: string, sourceId: string) =>
+    writeJson<IdentityLinkReceipt>('/identities/commit', request, token, sourceId),
   previewImport: (payload: ImportPreviewRequest, writeToken: string, sourceId: string) =>
     writeJson<ImportPreview>('/import/preview', payload, writeToken, sourceId),
   commitImport: (payload: ImportCommitRequest, writeToken: string, sourceId: string) =>

@@ -21,6 +21,14 @@ import type {
   RetentionRequest,
   ReviewRequest,
 } from '../shared/types.js';
+import type {
+  IdentityBinding,
+  IdentityConcept,
+  IdentityLinkCommit,
+  IdentityLinkPreview,
+  IdentityLinkRequest,
+  IdentityStatus,
+} from '../shared/identity.js';
 import {
   DEFAULT_IMPORT_OPTIONS,
   type ImportCommitRequest,
@@ -43,6 +51,7 @@ import { summarizeLearning } from '../core/learning-evidence.js';
 import { buildImportPlan, type PreparedConfig, type PreparedImport } from './import-plan.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 7;
+const IDENTITY_DEFAULT_PREFERENCE: ConceptReviewPreference = { focus: false, deferUntil: null };
 
 export interface StoreOptions {
   dataDir?: string;
@@ -86,6 +95,10 @@ function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+}
+
+function sameCanonicalJson(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
 }
 
 function iso(value: Date): string {
@@ -280,6 +293,37 @@ function safeSqliteMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
   if (/UNIQUE|constraint/i.test(message)) return '数据已存在或与已有事件冲突。';
   return '本地学习记录暂时无法保存，请稍后重试。';
+}
+
+function identityId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > 512) {
+    throw new StoreError('INVALID_IDENTITY', `${label} 必须是长度不超过 512 的非空字符串。`);
+  }
+  return value.trim();
+}
+
+function identityPath(value: unknown, label: string, nullable = false): string | null {
+  if (value === null && nullable) return null;
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > 4096) {
+    throw new StoreError('INVALID_IDENTITY', `${label} 必须是长度不超过 4096 的非空路径。`);
+  }
+  return value.trim();
+}
+
+function isDefaultReviewPreference(value: ConceptReviewPreference | null): boolean {
+  return value === null || (value.focus === IDENTITY_DEFAULT_PREFERENCE.focus && value.deferUntil === IDENTITY_DEFAULT_PREFERENCE.deferUntil);
+}
+
+function emptyIdentityConcept(conceptId: string, title = ''): IdentityConcept {
+  return {
+    conceptId,
+    title,
+    path: null,
+    sourceRevision: null,
+    counts: { anchors: 0, observations: 0, retentions: 0, applications: 0 },
+    hasLayout: false,
+    preference: null,
+  };
 }
 
 function validateReviewBudget(value: unknown): number {
@@ -486,6 +530,29 @@ export class Store {
         source_revision TEXT NOT NULL,
         PRIMARY KEY(namespace, concept_id)
       );
+      CREATE TABLE IF NOT EXISTS identity_catalog (
+        namespace TEXT NOT NULL,
+        concept_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        source_path TEXT,
+        source_revision TEXT,
+        PRIMARY KEY(namespace, concept_id)
+      );
+      CREATE TABLE IF NOT EXISTS identity_bindings (
+        namespace TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        raw_concept_id TEXT NOT NULL,
+        concept_id TEXT NOT NULL,
+        from_path TEXT,
+        to_path TEXT NOT NULL,
+        source_revision TEXT NOT NULL,
+        confirmed_at TEXT NOT NULL,
+        backup_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        PRIMARY KEY(namespace, operation_id),
+        UNIQUE(namespace, raw_concept_id)
+      );
       CREATE TABLE IF NOT EXISTS import_receipts (
         namespace TEXT NOT NULL,
         import_id TEXT NOT NULL,
@@ -505,6 +572,8 @@ export class Store {
         ON retentions(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
       CREATE INDEX IF NOT EXISTS applications_by_concept_history
         ON applications(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
+      CREATE INDEX IF NOT EXISTS identity_bindings_by_concept
+        ON identity_bindings(namespace, concept_id, confirmed_at, operation_id);
     `);
     // CREATE TABLE IF NOT EXISTS does not update an existing SQLite table.
     // Keep the evidence column additive so databases created by older builds
@@ -914,6 +983,50 @@ export class Store {
       title: row.title,
       source: { path: row.source_path, revision: row.source_revision },
     }));
+  }
+
+  private getIdentityCatalog(): Array<{ id: string; title: string; path: string | null; revision: string | null }> {
+    const rows = this.db.prepare(`SELECT concept_id, title, source_path, source_revision
+      FROM identity_catalog WHERE namespace = ? ORDER BY concept_id ASC`).all(this.namespace) as Array<{
+        concept_id: string; title: string; source_path: string | null; source_revision: string | null;
+      }>;
+    return rows.map((row) => ({
+      id: row.concept_id,
+      title: row.title,
+      path: row.source_path,
+      revision: row.source_revision,
+    }));
+  }
+
+  getIdentityBindings(): IdentityBinding[] {
+    const rows = this.db.prepare(`SELECT operation_id, raw_concept_id, concept_id, from_path,
+      to_path, source_revision, confirmed_at, backup_id
+      FROM identity_bindings WHERE namespace = ? ORDER BY confirmed_at ASC, operation_id ASC`).all(this.namespace) as Array<{
+        operation_id: string; raw_concept_id: string; concept_id: string; from_path: string | null;
+        to_path: string; source_revision: string; confirmed_at: string; backup_id: string;
+      }>;
+    return rows.map((row) => ({
+      operationId: row.operation_id,
+      rawConceptId: row.raw_concept_id,
+      conceptId: row.concept_id,
+      fromPath: row.from_path,
+      toPath: row.to_path,
+      sourceRevision: row.source_revision,
+      confirmedAt: row.confirmed_at,
+      backupId: row.backup_id,
+    }));
+  }
+
+  getIdentityAcceptedPaths(): Record<string, string[]> {
+    const paths: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
+    for (const binding of this.getIdentityBindings()) {
+      const values = paths[binding.conceptId] ?? [];
+      if (binding.fromPath && !values.includes(binding.fromPath)) values.push(binding.fromPath);
+      if (!values.includes(binding.toPath)) values.push(binding.toPath);
+      paths[binding.conceptId] = values;
+    }
+    for (const conceptId of Object.keys(paths)) paths[conceptId].sort();
+    return paths;
   }
 
   getObservations(conceptId?: string, sourceRevision?: string): Observation[] {
@@ -1460,6 +1573,329 @@ export class Store {
     return layout;
   }
 
+  /** Remember the current, already identity-projected source metadata. */
+  rememberConcepts(concepts: Concept[]): void {
+    if (!Array.isArray(concepts)) throw new StoreError('INVALID_IDENTITY', 'concepts 必须是数组。');
+    const seen = new Set<string>();
+    const rows = concepts.map((concept) => {
+      if (!concept || typeof concept !== 'object') throw new StoreError('INVALID_IDENTITY', 'concepts 包含无效概念。');
+      const id = identityId(concept.id, 'concept.id');
+      if (seen.has(id)) throw new StoreError('INVALID_IDENTITY', `concepts 中存在重复 ID：${id}。`);
+      seen.add(id);
+      const title = typeof concept.title === 'string' ? concept.title : '';
+      const path = identityPath(concept.source?.path, 'concept.source.path');
+      const revision = identityPath(concept.source?.revision, 'concept.source.revision');
+      return { id, title, path, revision };
+    });
+    if (rows.length === 0) return;
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      for (const row of rows) {
+        this.db.prepare(`INSERT INTO identity_catalog(namespace, concept_id, title, source_path, source_revision)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(namespace, concept_id) DO UPDATE SET
+            title = excluded.title,
+            source_path = excluded.source_path,
+            source_revision = excluded.source_revision`).run(
+          this.namespace, row.id, row.title, row.path, row.revision,
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (error instanceof StoreError) throw error;
+      throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
+    }
+  }
+
+  getIdentityStatus(concepts: Concept[]): IdentityStatus {
+    if (!Array.isArray(concepts)) throw new StoreError('INVALID_IDENTITY', 'concepts 必须是数组。');
+    const liveById = new Map<string, Concept>();
+    for (const concept of concepts) {
+      const id = identityId(concept?.id, 'concept.id');
+      if (liveById.has(id)) throw new StoreError('INVALID_IDENTITY', `当前知识源存在重复概念 ID：${id}。`);
+      liveById.set(id, concept);
+    }
+
+    const bindings = this.getIdentityBindings();
+    const boundRawIds = new Set(bindings.map((binding) => binding.rawConceptId));
+    const metadata = new Map<string, { title: string; path: string | null; revision: string | null }>();
+    for (const concept of this.getImportedConcepts()) {
+      metadata.set(concept.id, { title: concept.title, path: concept.source.path, revision: concept.source.revision });
+    }
+    // The identity catalog is the local source of truth for a remembered ID;
+    // imported metadata remains a fallback for older/orphaned records.
+    for (const concept of this.getIdentityCatalog()) {
+      metadata.set(concept.id, { title: concept.title, path: concept.path, revision: concept.revision });
+    }
+    const latestBindingByConcept = new Map<string, IdentityBinding>();
+    for (const binding of bindings) latestBindingByConcept.set(binding.conceptId, binding);
+    for (const binding of latestBindingByConcept.values()) {
+      if (!metadata.has(binding.conceptId)) {
+        metadata.set(binding.conceptId, { title: '', path: binding.toPath, revision: binding.sourceRevision });
+      }
+    }
+
+    type IdentityCountRow = { concept_id: string; anchors: number; observations: number; retentions: number; applications: number };
+    const countRows = this.db.prepare(`
+      SELECT concept_id,
+        SUM(CASE WHEN event_kind = 'anchors' THEN event_count ELSE 0 END) AS anchors,
+        SUM(CASE WHEN event_kind = 'observations' THEN event_count ELSE 0 END) AS observations,
+        SUM(CASE WHEN event_kind = 'retentions' THEN event_count ELSE 0 END) AS retentions,
+        SUM(CASE WHEN event_kind = 'applications' THEN event_count ELSE 0 END) AS applications
+      FROM (
+        SELECT concept_id, 'anchors' AS event_kind, COUNT(*) AS event_count
+          FROM anchors WHERE namespace = ? GROUP BY concept_id
+        UNION ALL
+        SELECT concept_id, 'observations' AS event_kind, COUNT(*) AS event_count
+          FROM observations WHERE namespace = ? GROUP BY concept_id
+        UNION ALL
+        SELECT concept_id, 'retentions' AS event_kind, COUNT(*) AS event_count
+          FROM retentions WHERE namespace = ? GROUP BY concept_id
+        UNION ALL
+        SELECT concept_id, 'applications' AS event_kind, COUNT(*) AS event_count
+          FROM applications WHERE namespace = ? GROUP BY concept_id
+      )
+      GROUP BY concept_id`).all(this.namespace, this.namespace, this.namespace, this.namespace) as IdentityCountRow[];
+    const counts = new Map<string, IdentityCountRow>();
+    for (const row of countRows) counts.set(row.concept_id, row);
+
+    const layout = this.getLayout();
+    const plan = this.getReviewPlan();
+    const references = new Set<string>([
+      ...metadata.keys(),
+      ...liveById.keys(),
+      ...counts.keys(),
+      ...Object.keys(layout),
+      ...Object.keys(plan.concepts),
+      ...bindings.map((binding) => binding.conceptId),
+    ]);
+    const identityConcept = (id: string, live?: Concept): IdentityConcept => {
+      const row = counts.get(id);
+      const source = live
+        ? { title: live.title, path: live.source.path, revision: live.source.revision }
+        : metadata.get(id) ?? { title: '', path: null, revision: null };
+      const preference = Object.prototype.hasOwnProperty.call(plan.concepts, id) ? plan.concepts[id] : null;
+      return {
+        conceptId: id,
+        title: source.title,
+        path: source.path,
+        sourceRevision: source.revision,
+        counts: {
+          anchors: row?.anchors ?? 0,
+          observations: row?.observations ?? 0,
+          retentions: row?.retentions ?? 0,
+          applications: row?.applications ?? 0,
+        },
+        hasLayout: Object.prototype.hasOwnProperty.call(layout, id),
+        preference,
+      };
+    };
+
+    const targets = [...liveById.entries()]
+      .map(([id, concept]) => identityConcept(id, concept))
+      .sort((left, right) => left.conceptId.localeCompare(right.conceptId));
+    const liveIds = new Set(liveById.keys());
+    const orphans = [...references]
+      .filter((id) => !liveIds.has(id) && !boundRawIds.has(id))
+      .map((id) => identityConcept(id))
+      .sort((left, right) => left.conceptId.localeCompare(right.conceptId));
+    return { sourceId: this.namespace, orphans, targets, bindings };
+  }
+
+  private identityToken(source: ExportData['source'], concepts: Concept[], request: IdentityLinkRequest, status: IdentityStatus): string {
+    const current = this.exportData(source, concepts);
+    const currentWithoutTime = { ...current, exportedAt: '' };
+    const live = concepts.map((concept) => ({ id: concept.id, path: concept.source.path, revision: concept.source.revision }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    return createHash('sha256').update(canonicalJson({
+      request,
+      current: currentWithoutTime,
+      live,
+      catalog: this.getIdentityCatalog(),
+      status,
+      bindings: status.bindings,
+    }), 'utf8').digest('hex');
+  }
+
+  previewIdentityLink(
+    request: IdentityLinkRequest,
+    source: ExportData['source'],
+    concepts: Concept[],
+  ): IdentityLinkPreview {
+    if (!request || typeof request !== 'object' || Array.isArray(request)) {
+      throw new StoreError('INVALID_BODY', '身份关联请求必须是 JSON 对象。');
+    }
+    const fromConceptId = identityId(request.fromConceptId, 'fromConceptId');
+    const toConceptId = identityId(request.toConceptId, 'toConceptId');
+    const normalizedRequest = { fromConceptId, toConceptId };
+    const status = this.getIdentityStatus(concepts);
+    const from = status.orphans.find((item) => item.conceptId === fromConceptId) ?? emptyIdentityConcept(fromConceptId);
+    const targetConcept = concepts.find((concept) => concept.id === toConceptId);
+    const to = targetConcept
+      ? status.targets.find((item) => item.conceptId === toConceptId) ?? emptyIdentityConcept(toConceptId, targetConcept.title)
+      : emptyIdentityConcept(toConceptId);
+    const issues: IdentityLinkPreview['issues'] = [];
+    const error = (code: string, message: string): void => { issues.push({ severity: 'error', code, message }); };
+    const warning = (code: string, message: string): void => { issues.push({ severity: 'warning', code, message }); };
+    const bindingsByRaw = new Map(status.bindings.map((binding) => [binding.rawConceptId, binding]));
+    const canonicalIds = new Set(status.bindings.map((binding) => binding.conceptId));
+
+    if (!status.orphans.some((item) => item.conceptId === fromConceptId)) {
+      error('IDENTITY_FROM_NOT_FOUND', `找不到待关联的失联概念 ${fromConceptId}。`);
+    }
+    if (bindingsByRaw.has(fromConceptId)) {
+      error('IDENTITY_FROM_RAW_ALIAS', `概念 ${fromConceptId} 已是已登记路径别名，请从稳定概念 ID 发起下一次移动。`);
+    }
+    if (!targetConcept) error('IDENTITY_TARGET_NOT_FOUND', `找不到当前目标概念 ${toConceptId}。`);
+    if (fromConceptId === toConceptId) error('IDENTITY_SAME_CONCEPT', '来源概念和目标概念必须不同。');
+    if (bindingsByRaw.has(toConceptId)) error('IDENTITY_TARGET_RAW_ALIAS', `目标概念 ${toConceptId} 已是已登记路径别名。`);
+    if (canonicalIds.has(toConceptId)) error('IDENTITY_TARGET_CANONICAL', `目标概念 ${toConceptId} 已是稳定身份，不能再次作为原始目标。`);
+    if (targetConcept && (to.counts.anchors + to.counts.observations + to.counts.retentions + to.counts.applications > 0)) {
+      error('IDENTITY_TARGET_HAS_HISTORY', `目标概念 ${toConceptId} 已有学习历史，不能合并两套身份。`);
+    }
+    if (targetConcept && !isDefaultReviewPreference(to.preference)) {
+      error('IDENTITY_TARGET_HAS_PREFERENCE', `目标概念 ${toConceptId} 已有非默认复习安排，不能合并两套身份。`);
+    }
+
+    const revisionMatches = Boolean(from.sourceRevision && targetConcept && from.sourceRevision === targetConcept.source.revision);
+    if (!revisionMatches && targetConcept) {
+      warning('IDENTITY_SOURCE_REVISION_MISMATCH', '来源版本与当前目标版本不同；历史事件将保留原版本，当前起点可能保持待确认。');
+    }
+    const layoutAction: IdentityLinkPreview['layoutAction'] = from.hasLayout
+      ? 'keep-original'
+      : to.hasLayout ? 'adopt-target' : 'none';
+    return {
+      sourceId: this.namespace,
+      token: this.identityToken(source, concepts, normalizedRequest, status),
+      canLink: !issues.some((issue) => issue.severity === 'error'),
+      from,
+      to,
+      revisionMatches,
+      issues,
+      layoutAction,
+    };
+  }
+
+  commitIdentityLink(
+    request: IdentityLinkCommit,
+    source: ExportData['source'],
+    concepts: Concept[],
+    beforeWrite: (backup: ExportData) => string,
+  ): import('../shared/identity.js').IdentityLinkReceipt {
+    if (!request || typeof request !== 'object' || Array.isArray(request)) {
+      throw new StoreError('INVALID_BODY', '身份关联提交请求必须是 JSON 对象。');
+    }
+    const operationId = identityId(request.operationId, 'operationId');
+    this.ensureEventId(operationId);
+    if (request.confirmed !== true) throw new StoreError('IDENTITY_NOT_CONFIRMED', '身份关联提交前必须确认预览结果。');
+    const normalizedRequest: IdentityLinkCommit = {
+      operationId,
+      fromConceptId: identityId(request.fromConceptId, 'fromConceptId'),
+      toConceptId: identityId(request.toConceptId, 'toConceptId'),
+      previewToken: identityId(request.previewToken, 'previewToken'),
+      confirmed: true,
+    };
+    const requestHash = createHash('sha256').update(canonicalJson(normalizedRequest), 'utf8').digest('hex');
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      const existing = this.db.prepare(`SELECT request_hash, receipt_json
+        FROM identity_bindings WHERE namespace = ? AND operation_id = ?`).get(this.namespace, operationId) as {
+          request_hash: string; receipt_json: string;
+        } | undefined;
+      if (existing) {
+        if (existing.request_hash !== requestHash) throw new StoreError('IDENTITY_CONFLICT', 'operationId 已被其他身份关联请求使用。', 409);
+        let original: import('../shared/identity.js').IdentityLinkReceipt;
+        try { original = JSON.parse(existing.receipt_json) as import('../shared/identity.js').IdentityLinkReceipt; } catch {
+          throw new StoreError('IDENTITY_RECEIPT_CORRUPT', '身份关联收据数据无效，请检查本地数据。', 500);
+        }
+        this.db.exec('COMMIT');
+        return { ...original, status: 'duplicate' };
+      }
+
+      const current = this.exportData(source, concepts);
+      const preview = this.previewIdentityLink(normalizedRequest, source, concepts);
+      if (preview.sourceId !== this.namespace || preview.token !== normalizedRequest.previewToken) {
+        throw new StoreError('IDENTITY_STALE', '身份关联预览已过期，请重新生成预览。', 409);
+      }
+      if (!preview.canLink) throw new StoreError('IDENTITY_REJECTED', '身份关联预览包含必须先处理的问题。', 409);
+      const backupId = beforeWrite(current);
+      if (typeof backupId !== 'string' || !backupId.trim()) {
+        throw new StoreError('IDENTITY_BACKUP_FAILED', '身份关联前备份未返回有效标识。', 503);
+      }
+
+      const confirmedAt = iso(this.now());
+      const binding: IdentityBinding = {
+        operationId,
+        rawConceptId: preview.to.conceptId,
+        conceptId: preview.from.conceptId,
+        fromPath: preview.from.path,
+        toPath: preview.to.path as string,
+        sourceRevision: preview.to.sourceRevision as string,
+        confirmedAt,
+        backupId,
+      };
+      const receipt: import('../shared/identity.js').IdentityLinkReceipt = {
+        status: 'accepted',
+        operationId,
+        sourceId: this.namespace,
+        conceptId: binding.conceptId,
+        linkedPath: binding.toPath,
+        confirmedAt,
+        backupId,
+      };
+      this.db.prepare(`INSERT INTO identity_bindings(
+        namespace, operation_id, raw_concept_id, concept_id, from_path, to_path,
+        source_revision, confirmed_at, backup_id, request_hash, receipt_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        this.namespace,
+        binding.operationId,
+        binding.rawConceptId,
+        binding.conceptId,
+        binding.fromPath,
+        binding.toPath,
+        binding.sourceRevision,
+        binding.confirmedAt,
+        binding.backupId,
+        requestHash,
+        canonicalJson(receipt),
+      );
+      this.db.prepare(`INSERT INTO identity_catalog(namespace, concept_id, title, source_path, source_revision)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(namespace, concept_id) DO UPDATE SET
+          title = excluded.title,
+          source_path = excluded.source_path,
+          source_revision = excluded.source_revision`).run(
+        this.namespace,
+        binding.conceptId,
+        preview.to.title,
+        binding.toPath,
+        binding.sourceRevision,
+      );
+
+      const layout = this.getLayout();
+      const hadLayoutRow = this.db.prepare('SELECT 1 AS present FROM layouts WHERE namespace = ?').get(this.namespace) !== undefined;
+      const oldPosition = Object.prototype.hasOwnProperty.call(layout, binding.conceptId) ? layout[binding.conceptId] : undefined;
+      const targetPosition = Object.prototype.hasOwnProperty.call(layout, binding.rawConceptId) ? layout[binding.rawConceptId] : undefined;
+      if (!oldPosition && targetPosition) layout[binding.conceptId] = { ...targetPosition };
+      if (Object.prototype.hasOwnProperty.call(layout, binding.rawConceptId)) delete layout[binding.rawConceptId];
+      const layoutChanged = !sameCanonicalJson(layout, this.getLayout());
+      if (layoutChanged || hadLayoutRow && !Object.keys(layout).length) {
+        this.db.prepare(`INSERT INTO layouts(namespace, layout_json, recorded_at) VALUES (?, ?, ?)
+          ON CONFLICT(namespace) DO UPDATE SET layout_json = excluded.layout_json, recorded_at = excluded.recorded_at`).run(
+          this.namespace, canonicalJson(layout), confirmedAt,
+        );
+      }
+
+      this.db.exec('COMMIT');
+      return receipt;
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (error instanceof StoreError) throw error;
+      throw new StoreError('IDENTITY_FAILED', safeSqliteMessage(error), 503);
+    }
+  }
+
   private buildPreparedImport(
     data: unknown,
     options: unknown,
@@ -1476,6 +1912,7 @@ export class Store {
       concepts,
       sourceId: this.namespace,
       now: iso(this.now()),
+      acceptedPaths: this.getIdentityAcceptedPaths(),
     });
   }
 
@@ -1796,8 +2233,24 @@ export class Store {
   }
 
   exportData(source: ExportData['source'], concepts: Concept[]): ExportData {
-    const liveConcepts = concepts.map((concept) => ({ id: concept.id, title: concept.title, source: concept.source }));
-    const mergedConcepts = new Map(this.getImportedConcepts().map((concept) => [concept.id, concept]));
+    const bindings = this.getIdentityBindings();
+    const boundRawIds = new Set(bindings.map((binding) => binding.rawConceptId));
+    const liveConcepts = concepts
+      .filter((concept) => !boundRawIds.has(concept.id))
+      .map((concept) => ({ id: concept.id, title: concept.title, source: concept.source }));
+    const catalogConcepts = this.getIdentityCatalog()
+      .filter((concept) => concept.path !== null && concept.revision !== null && !boundRawIds.has(concept.id))
+      .map((concept) => ({
+        id: concept.id,
+        title: concept.title,
+        source: { path: concept.path as string, revision: concept.revision as string },
+      }));
+    const mergedConcepts = new Map(this.getImportedConcepts()
+      .filter((concept) => !boundRawIds.has(concept.id))
+      .map((concept) => [concept.id, concept]));
+    // The remembered catalog supplements imported metadata, while the current
+    // knowledge index remains authoritative for a live stable ID.
+    for (const concept of catalogConcepts) mergedConcepts.set(concept.id, concept);
     // The current knowledge index is authoritative when an imported orphan
     // has since become live again with the same stable concept ID.
     for (const concept of liveConcepts) mergedConcepts.set(concept.id, concept);
@@ -1806,6 +2259,7 @@ export class Store {
       exportedAt: iso(this.now()),
       source,
       concepts: [...mergedConcepts.values()].sort((left, right) => left.id.localeCompare(right.id)),
+      identityBindings: bindings,
       config: this.getConfig(),
       configHistory: this.getConfigHistory(),
       anchors: this.getAnchors(),

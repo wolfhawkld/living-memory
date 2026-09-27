@@ -5,6 +5,8 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { Layout, ModelConfig, Snapshot } from '../shared/types.js';
 import { MAX_IMPORT_BYTES, type ImportCommitRequest } from '../shared/import-data.js';
 import { saveImportBackup } from './import-backup.js';
+import type { IdentityLinkCommit, IdentityLinkRequest } from '../shared/identity.js';
+import { applyIdentityBindings } from './identity-source.js';
 import { reviewDayKey, type ReviewPlanResponse, type ReviewPlanUpdate } from '../shared/review-plan.js';
 import { isValidInstant } from '../core/time-model.js';
 import { buildLearningOverview } from '../core/learning-overview.js';
@@ -255,13 +257,15 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   const dataDir = options.dataDir ?? process.env.LM_DATA_DIR ?? 'data/local';
   const staticDir = options.staticDir ?? resolve(process.cwd(), 'dist');
   validateStoragePaths({ root, dataDir, staticDir, accountsEnabled: Boolean(options.accountsEnabled), dbPath: options.dbPath });
-  const initialSource = loadKnowledgeGraph({ root, limit: sourceLimit(options), includePrefix: sourceInclude(options) });
-  const store = new Store({ dataDir, dbPath: options.dbPath, namespace: initialSource.namespace, now: options.now });
+  const initialRawSource = loadKnowledgeGraph({ root, limit: sourceLimit(options), includePrefix: sourceInclude(options) });
+  const store = new Store({ dataDir, dbPath: options.dbPath, namespace: initialRawSource.namespace, now: options.now });
+  const initialSource = applyIdentityBindings(initialRawSource, store.getIdentityBindings());
+  store.rememberConcepts(initialSource.index.concepts);
   const token = options.token ?? randomBytes(32).toString('hex');
   const accounts = options.accountsEnabled ? new Accounts({ dataDir, now: options.now }) : null;
   if (accounts) renewOwnerDevice(accounts, dataDir, port);
-  type KnowledgeContext = { source: KnowledgeSource; store: Store; changes: ReturnType<typeof createChangeFeed>; root: string; includePrefix?: string };
-  const initialContext: KnowledgeContext = { source: initialSource, store, changes: createChangeFeed(initialSource.namespace), root, includePrefix: sourceInclude(options) };
+  type KnowledgeContext = { rawSource: KnowledgeSource; source: KnowledgeSource; store: Store; changes: ReturnType<typeof createChangeFeed>; root: string; includePrefix?: string };
+  const initialContext: KnowledgeContext = { rawSource: initialRawSource, source: initialSource, store, changes: createChangeFeed(initialSource.namespace), root, includePrefix: sourceInclude(options) };
   const userContexts = new Map<string, KnowledgeContext>();
   const contextForUser = (userId: string): KnowledgeContext => {
     if (!accounts || userId === accounts.ownerId()) return initialContext;
@@ -269,16 +273,20 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     if (existing) return existing;
     const privateRoot = join(dataDir, 'users', userId, 'knowledge');
     mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
-    const privateSource = loadKnowledgeGraph({ root: privateRoot, limit: sourceLimit(options) });
-    const context = { source: privateSource, root: privateRoot,
-      store: new Store({ dataDir, dbPath: options.dbPath, namespace: privateSource.namespace, now: options.now }),
-      changes: createChangeFeed(privateSource.namespace) };
+    const rawSource = loadKnowledgeGraph({ root: privateRoot, limit: sourceLimit(options) });
+    const privateStore = new Store({ dataDir, dbPath: options.dbPath, namespace: rawSource.namespace, now: options.now });
+    const privateSource = applyIdentityBindings(rawSource, privateStore.getIdentityBindings());
+    privateStore.rememberConcepts(privateSource.index.concepts);
+    const context = { rawSource, source: privateSource, root: privateRoot, store: privateStore, changes: createChangeFeed(privateSource.namespace) };
     userContexts.set(userId, context);
     return context;
   };
   const refreshContext = (context: KnowledgeContext) => {
-    const next = loadKnowledgeGraph({ root: context.root, limit: sourceLimit(options), includePrefix: context.includePrefix });
+    const rawSource = loadKnowledgeGraph({ root: context.root, limit: sourceLimit(options), includePrefix: context.includePrefix });
+    const next = applyIdentityBindings(rawSource, context.store.getIdentityBindings());
     if (next.namespace !== context.store.namespace) throw new StoreError('SOURCE_MISMATCH', '知识根目录已变化，请重启服务后重新连接。', 409);
+    context.store.rememberConcepts(next.index.concepts);
+    context.rawSource = rawSource;
     context.source = next;
     context.changes.publish('source');
     return next;
@@ -366,19 +374,38 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   };
 
   const importBody = express.json({ limit: MAX_IMPORT_BYTES + 4096 });
-  const requireImportSource = (req: Request, _res: Response, next: NextFunction) => {
-    if (!req.header('x-lm-source-id')) { next(new StoreError('SOURCE_REQUIRED', '请确认当前知识空间后导入。')); return; }
+  const requireSourceHeader = (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.header('x-lm-source-id')) { next(new StoreError('SOURCE_REQUIRED', '请确认当前知识空间后操作。')); return; }
     next();
   };
-  app.post('/api/import/preview', requireWrite, requireImportSource, importBody, asyncRoute((req, res) => {
+  app.post('/api/import/preview', requireWrite, requireSourceHeader, importBody, asyncRoute((req, res) => {
     const { source, store } = contextOf(req);
     res.json(store.previewImport(req.body?.data, req.body?.options, source.index.source, source.index.concepts));
   }));
-  app.post('/api/import/commit', requireWrite, requireImportSource, importBody, asyncRoute((req, res) => {
+  app.post('/api/import/commit', requireWrite, requireSourceHeader, importBody, asyncRoute((req, res) => {
     const { source, store, changes } = contextOf(req);
     const receipt = store.commitImport(req.body as ImportCommitRequest, source.index.source, source.index.concepts,
       (backup) => saveImportBackup(store.dbPath, store.namespace, backup));
     if (receipt.status === 'accepted') changes.publish('import');
+    res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
+  }));
+
+  app.get('/api/identities', asyncRoute((req, res) => {
+    const { store, source } = contextOf(req);
+    res.json(store.getIdentityStatus(source.index.concepts));
+  }));
+  app.post('/api/identities/preview', requireWrite, requireSourceHeader, asyncRoute((req, res) => {
+    const context = contextOf(req);
+    const source = refreshContext(context);
+    res.json(context.store.previewIdentityLink(req.body as IdentityLinkRequest, source.index.source, source.index.concepts));
+  }));
+  app.post('/api/identities/commit', requireWrite, requireSourceHeader, asyncRoute((req, res) => {
+    const context = contextOf(req);
+    const source = refreshContext(context);
+    const receipt = context.store.commitIdentityLink(req.body as IdentityLinkCommit, source.index.source, source.index.concepts,
+      backup => saveImportBackup(context.store.dbPath, context.store.namespace, backup, 'identity'));
+    context.source = applyIdentityBindings(context.rawSource, context.store.getIdentityBindings());
+    if (receipt.status === 'accepted') context.changes.publish('identity');
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
 

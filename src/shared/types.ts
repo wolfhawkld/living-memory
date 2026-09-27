@@ -196,13 +196,15 @@ export interface WriteReceipt {
 export interface ChangeNotification {
   sourceId: string;
   revision: number;
-  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application' | 'review-plan' | 'import';
+  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application' | 'review-plan' | 'import' | 'identity';
 }
 
 export interface LayoutPosition { x: number; y: number; z: number }
 export type Layout = Record<string, LayoutPosition>;
 
 export interface ExportData {
+  /** Audit only; JSON restore maps current paths/versions rather than trusting uploaded bindings. */
+  identityBindings?: import('./identity.js').IdentityBinding[];
   schemaVersion: 1;
   exportedAt: string;
   source: KnowledgeGraph['source'];

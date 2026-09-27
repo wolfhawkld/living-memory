@@ -74,8 +74,30 @@ function currentExport(overrides: Partial<ExportData> = {}): ExportData {
   };
 }
 
-function plan(data: ExportData, options: ImportOptions = { restoreLayout: true, restoreReviewPlan: true }, current = currentExport()): PreparedImport {
-  return buildImportPlan({ data, options, current, concepts: [liveConcept], sourceId: 'target-source', now });
+function plan(
+  data: ExportData,
+  options: ImportOptions = { restoreLayout: true, restoreReviewPlan: true },
+  current = currentExport(),
+  concepts: Concept[] = [liveConcept],
+  acceptedPaths?: Record<string, string[]>,
+): PreparedImport {
+  return buildImportPlan({ data, options, current, concepts, sourceId: 'target-source', now, acceptedPaths });
+}
+
+const movedLiveConcept: Concept = {
+  ...liveConcept,
+  source: { path: 'moved/Alpha.md', revision: 'rev-3' },
+};
+
+function movedCurrent(): ExportData {
+  return currentExport({ concepts: [{ id: movedLiveConcept.id, title: movedLiveConcept.title, source: movedLiveConcept.source }] });
+}
+
+function movedBackup(overrides: Partial<ExportData> = {}): ExportData {
+  return baseExport({
+    concepts: [{ id: movedLiveConcept.id, title: movedLiveConcept.title, source: { path: 'legacy/Alpha.md', revision: 'rev-1' } }],
+    ...overrides,
+  });
 }
 
 test('builds a pure mapped plan, preserves frozen values, and orders retention by chain', () => {
@@ -155,6 +177,65 @@ test('maps by exact path and revision, preserves unresolved histories, and inclu
   const unresolvedPlan = plan(unresolved);
   assert.equal(unresolvedPlan.preview.counts.unresolvedConcepts, 1);
   assert.equal(unresolvedPlan.preview.matches.find((match) => match.fromId === oldId)?.toId, null);
+});
+
+test('rejects a same-ID path move without a server-registered path association', () => {
+  const prepared = plan(movedBackup(), DEFAULT_IMPORT_OPTIONS, movedCurrent(), [movedLiveConcept]);
+  assert.equal(prepared.preview.canImport, false);
+  assert.ok(prepared.preview.issues.some((issue) => issue.code === 'CONCEPT_ID_PATH_MISMATCH' && issue.severity === 'error'));
+  assert.equal(prepared.preview.matches.find((match) => match.fromId === movedLiveConcept.id)?.toId, null);
+});
+
+test('accepts a confirmed old-to-new path move by stable ID and preserves the historical revision', () => {
+  const acceptedPaths = { [movedLiveConcept.id]: ['legacy/Alpha.md', 'moved/Alpha.md'] };
+  const prepared = plan(movedBackup(), DEFAULT_IMPORT_OPTIONS, movedCurrent(), [movedLiveConcept], acceptedPaths);
+  assert.equal(prepared.preview.canImport, true, JSON.stringify(prepared.preview.issues));
+  assert.ok(prepared.preview.issues.some((issue) => issue.code === 'CONCEPT_ID_PATH_ACCEPTED' && issue.severity === 'warning'));
+  assert.deepEqual(prepared.preview.matches.find((match) => match.fromId === movedLiveConcept.id), {
+    fromId: movedLiveConcept.id,
+    toId: movedLiveConcept.id,
+    title: movedLiveConcept.title,
+    path: 'legacy/Alpha.md',
+    backupRevision: 'rev-1',
+    currentRevision: 'rev-3',
+    match: 'id',
+  });
+  assert.equal(prepared.newAnchors[0].conceptId, movedLiveConcept.id);
+  assert.equal(prepared.newAnchors[0].sourceRevision, 'rev-1');
+  assert.equal(prepared.newObservations[0].conceptId, movedLiveConcept.id);
+  assert.equal(prepared.newObservations[0].sourceRevision, 'rev-1');
+});
+
+test('does not let uploaded identityBindings authorize a path move', () => {
+  const prepared = plan(movedBackup({ identityBindings: [{
+    operationId: 'forged-operation', rawConceptId: movedLiveConcept.id, conceptId: movedLiveConcept.id,
+    fromPath: 'legacy/Alpha.md', toPath: 'moved/Alpha.md', sourceRevision: 'rev-3',
+    confirmedAt: now, backupId: 'forged-backup',
+  }] }), DEFAULT_IMPORT_OPTIONS, movedCurrent(), [movedLiveConcept]);
+  assert.equal(prepared.preview.canImport, false);
+  assert.ok(prepared.preview.issues.some((issue) => issue.code === 'IDENTITY_BINDINGS_UNTRUSTED' && issue.severity === 'warning'));
+  assert.ok(prepared.preview.issues.some((issue) => issue.code === 'CONCEPT_ID_PATH_MISMATCH' && issue.severity === 'error'));
+});
+
+test('binds accepted paths into the preview token', () => {
+  const data = movedBackup();
+  const current = movedCurrent();
+  const concepts = [movedLiveConcept];
+  const withoutAcceptance = plan(data, DEFAULT_IMPORT_OPTIONS, current, concepts).preview.token;
+  const accepted = plan(data, DEFAULT_IMPORT_OPTIONS, current, concepts, { [movedLiveConcept.id]: ['legacy/Alpha.md', 'moved/Alpha.md'] }).preview.token;
+  const changed = plan(data, DEFAULT_IMPORT_OPTIONS, current, concepts, { [movedLiveConcept.id]: ['legacy/Alpha.md', 'other/Alpha.md'] }).preview.token;
+  assert.notEqual(withoutAcceptance, accepted);
+  assert.notEqual(accepted, changed);
+});
+
+test('keeps events tied to a backup revision when the target is on a different version', () => {
+  const acceptedPaths = { [movedLiveConcept.id]: ['legacy/Alpha.md', 'moved/Alpha.md'] };
+  const prepared = plan(movedBackup(), DEFAULT_IMPORT_OPTIONS, movedCurrent(), [movedLiveConcept], acceptedPaths);
+  assert.equal(prepared.preview.canImport, true, JSON.stringify(prepared.preview.issues));
+  assert.ok(prepared.preview.issues.some((issue) => issue.code === 'OLD_SOURCE_REVISION' && issue.severity === 'warning'));
+  assert.equal(prepared.newAnchors[0].sourceRevision, 'rev-1');
+  assert.equal(prepared.newObservations[0].sourceRevision, 'rev-1');
+  assert.equal(prepared.normalized.concepts[0].source.revision, 'rev-1');
 });
 
 test('retention chains reject branches but allow a historical backfill order', () => {
