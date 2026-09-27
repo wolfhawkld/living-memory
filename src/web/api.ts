@@ -13,6 +13,7 @@ import { createSessionRecovery, type LocalSession } from './session-recovery';
 import { inspectLayout } from '../shared/layout';
 import type { AccountUser } from '../shared/accounts';
 import type { LearningOverview } from '../shared/learning-overview';
+import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 
 export type SessionResponse = LocalSession & { user?: AccountUser };
 
@@ -325,6 +326,16 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 }
 
 export const api = {
+  getReviewPlan: (sourceId: string, timeZone: string, signal?: AbortSignal) => {
+    if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源。', { code: 'SOURCE_REQUIRED' }));
+    return requestJson<ReviewPlanResponse>(`/review-plan?timeZone=${encodeURIComponent(timeZone)}`, {
+      cache: 'no-store', headers: { 'x-lm-source-id': sourceId }, signal,
+    });
+  },
+  putReviewPlan: (payload: ReviewPlanUpdate, writeToken: string, sourceId: string, timeZone: string) =>
+    authenticatedJson<ReviewPlanResponse>(`/review-plan?timeZone=${encodeURIComponent(timeZone)}`, {
+      method: 'PUT', body: JSON.stringify(payload),
+    }, writeToken, sourceId),
   getSession,
   getLearningOverview: (sourceId: string, signal?: AbortSignal) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));

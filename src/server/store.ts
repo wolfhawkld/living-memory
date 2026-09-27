@@ -20,6 +20,14 @@ import type {
   RetentionRequest,
   ReviewRequest,
 } from '../shared/types.js';
+import {
+  DEFAULT_DAILY_REVIEW_BUDGET,
+  MAX_DAILY_REVIEW_BUDGET,
+  reviewDayKey,
+  type ConceptReviewPreference,
+  type ReviewPlan,
+  type ReviewPlanUpdate,
+} from '../shared/review-plan.js';
 import { DAY_MS, MODEL_VERSION } from '../shared/types.js';
 import { decayAt, isValidInstant, projectMemory } from '../core/time-model.js';
 import { summarizeLearning } from '../core/learning-evidence.js';
@@ -252,6 +260,46 @@ function safeSqliteMessage(error: unknown): string {
   return '本地学习记录暂时无法保存，请稍后重试。';
 }
 
+function validateReviewBudget(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > MAX_DAILY_REVIEW_BUDGET) {
+    throw new StoreError('INVALID_REVIEW_BUDGET', `dailyBudget 必须是 1 到 ${MAX_DAILY_REVIEW_BUDGET} 的整数。`);
+  }
+  return value as number;
+}
+
+function normalizeReviewPlanConcept(value: unknown, now: Date): { conceptId: string; preference: ConceptReviewPreference } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new StoreError('INVALID_BODY', 'concept 必须是对象。');
+  }
+  const record = value as Record<string, unknown>;
+  const conceptId = record.conceptId;
+  const sourceRevision = record.sourceRevision;
+  if (typeof conceptId !== 'string' || !conceptId.trim() || conceptId.length > 512
+      || typeof sourceRevision !== 'string' || !sourceRevision.trim() || sourceRevision.length > 512) {
+    throw new StoreError('INVALID_BODY', 'conceptId 和 sourceRevision 必须是有效字符串。');
+  }
+  if (typeof record.focus !== 'boolean') {
+    throw new StoreError('INVALID_BODY', 'focus 必须是布尔值。');
+  }
+  const rawDeferUntil = record.deferUntil;
+  if (rawDeferUntil !== null && typeof rawDeferUntil !== 'string') {
+    throw new StoreError('INVALID_DEFER_UNTIL', 'deferUntil 必须是 null 或有效的未来 ISO 8601 时间。');
+  }
+  let deferUntil: string | null = null;
+  if (typeof rawDeferUntil === 'string') {
+    if (!isValidInstant(rawDeferUntil)) {
+      throw new StoreError('INVALID_DEFER_UNTIL', 'deferUntil 必须是 null 或有效的未来 ISO 8601 时间。');
+    }
+    const deferMs = parseDate(rawDeferUntil, 'INVALID_DEFER_UNTIL');
+    const nowMs = now.getTime();
+    if (deferMs <= nowMs || deferMs > nowMs + 366 * DAY_MS) {
+      throw new StoreError('INVALID_DEFER_UNTIL', 'deferUntil 必须是未来 366 天以内的时间。');
+    }
+    deferUntil = new Date(deferMs).toISOString();
+  }
+  return { conceptId: conceptId.trim(), preference: { focus: record.focus, deferUntil } };
+}
+
 function invalidHistoryCursor(): never {
   throw new StoreError('INVALID_HISTORY_CURSOR', '历史分页游标无效，请重新读取历史。');
 }
@@ -399,6 +447,13 @@ export class Store {
       CREATE TABLE IF NOT EXISTS layouts (
         namespace TEXT PRIMARY KEY,
         layout_json TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS review_plans (
+        namespace TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL,
+        daily_budget INTEGER NOT NULL,
+        concepts_json TEXT NOT NULL,
         recorded_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS anchors_by_concept_time
@@ -1138,6 +1193,167 @@ export class Store {
     }
   }
 
+  /**
+   * Read scheduling preferences without materializing a default row. Keeping
+   * the default virtual makes a GET/export genuinely read-only and preserves
+   * the same namespace isolation as the learning records.
+   */
+  getReviewPlan(): ReviewPlan {
+    const row = this.db.prepare(`SELECT revision, daily_budget, concepts_json
+      FROM review_plans WHERE namespace = ?`).get(this.namespace) as {
+        revision: number;
+        daily_budget: number;
+        concepts_json: string;
+      } | undefined;
+    if (!row) return { revision: 0, dailyBudget: DEFAULT_DAILY_REVIEW_BUDGET, concepts: {} };
+    return this.parseReviewPlanRow(row);
+  }
+
+  /**
+   * Apply one review-plan field with optimistic CAS. A replay that has the
+  * same value as the current plan is accepted even with an old revision;
+  * changed stale writes fail without modifying learning state.
+  */
+  updateReviewPlan(input: ReviewPlanUpdate): ReviewPlan {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new StoreError('INVALID_BODY', '请求体必须是 JSON 对象。');
+    }
+    const revision = input?.revision;
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+      throw new StoreError('INVALID_REVISION', 'revision 必须是非负整数。');
+    }
+    const hasBudget = Object.prototype.hasOwnProperty.call(input, 'dailyBudget');
+    const hasConcept = Object.prototype.hasOwnProperty.call(input, 'concept');
+    if (hasBudget === hasConcept) {
+      throw new StoreError('INVALID_BODY', '请求必须且只能更新 dailyBudget 或 concept。');
+    }
+    const mutation = hasBudget
+      ? { dailyBudget: validateReviewBudget((input as { dailyBudget: unknown }).dailyBudget) }
+      : { concept: normalizeReviewPlanConcept((input as { concept: unknown }).concept, this.now()) };
+
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      const current = this.getReviewPlanInTransaction();
+      const nextConcepts = { ...current.concepts };
+      let nextBudget = current.dailyBudget;
+      if ('dailyBudget' in mutation) {
+        nextBudget = (mutation as { dailyBudget: number }).dailyBudget;
+      } else {
+        Object.defineProperty(nextConcepts, mutation.concept.conceptId, {
+          value: mutation.concept.preference,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
+      const unchanged = nextBudget === current.dailyBudget
+        && canonicalJson(nextConcepts) === canonicalJson(current.concepts);
+      if (unchanged) {
+        this.db.exec('COMMIT');
+        return current;
+      }
+      if (revision !== current.revision) {
+        throw new StoreError('REVIEW_PLAN_CONFLICT', '复习计划版本已变化，请读取当前 revision 后重试。', 409);
+      }
+      const next: ReviewPlan = {
+        revision: current.revision + 1,
+        dailyBudget: nextBudget,
+        concepts: nextConcepts,
+      };
+      this.db.prepare(`INSERT INTO review_plans(namespace, revision, daily_budget, concepts_json, recorded_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(namespace) DO UPDATE SET
+          revision = excluded.revision,
+          daily_budget = excluded.daily_budget,
+          concepts_json = excluded.concepts_json,
+          recorded_at = excluded.recorded_at`).run(
+        this.namespace,
+        next.revision,
+        next.dailyBudget,
+        canonicalJson(next.concepts),
+        iso(this.now()),
+      );
+      this.db.exec('COMMIT');
+      return next;
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (error instanceof StoreError) throw error;
+      throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
+    }
+  }
+
+  /**
+   * Return concepts with at least one accepted non-scenario observation on
+   * the requested local calendar day. Legacy observations have no learning
+   * task and therefore count as concept recall.
+   */
+  getCompletedConceptIds(asOf: string, timeZone: string): string[] {
+    const normalizedAsOf = normalizeDate(asOf, 'INVALID_AS_OF');
+    const asOfMs = parseDate(normalizedAsOf);
+    const dayKey = reviewDayKey(normalizedAsOf, timeZone);
+    const completed = new Set<string>();
+    for (const observation of this.getObservations()) {
+      const observedMs = parseDate(observation.observedAt, 'INVALID_OBSERVED_AT');
+      const recordedMs = parseDate(observation.recordedAt, 'INVALID_RECORDED_AT');
+      if (observedMs > asOfMs || recordedMs > asOfMs || reviewDayKey(observation.observedAt, timeZone) !== dayKey) continue;
+      if (observation.learning?.task === 'scenario') continue;
+      completed.add(observation.conceptId);
+    }
+    return [...completed].sort();
+  }
+
+  private getReviewPlanInTransaction(): ReviewPlan {
+    const row = this.db.prepare(`SELECT revision, daily_budget, concepts_json
+      FROM review_plans WHERE namespace = ?`).get(this.namespace) as {
+        revision: number;
+        daily_budget: number;
+        concepts_json: string;
+      } | undefined;
+    return row ? this.parseReviewPlanRow(row) : {
+      revision: 0,
+      dailyBudget: DEFAULT_DAILY_REVIEW_BUDGET,
+      concepts: {},
+    };
+  }
+
+  private parseReviewPlanRow(row: { revision: number; daily_budget: number; concepts_json: string }): ReviewPlan {
+    if (!Number.isSafeInteger(row.revision) || row.revision < 0
+        || !Number.isSafeInteger(row.daily_budget) || row.daily_budget < 1 || row.daily_budget > MAX_DAILY_REVIEW_BUDGET) {
+      throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.concepts_json); } catch {
+      throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+    }
+    const concepts: Record<string, ConceptReviewPreference> = {};
+    for (const [conceptId, raw] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!conceptId.trim() || !raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+      }
+      const preference = raw as Record<string, unknown>;
+      if (typeof preference.focus !== 'boolean') {
+        throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+      }
+      const deferUntil = preference.deferUntil;
+      if (deferUntil !== null && (typeof deferUntil !== 'string' || !isValidInstant(deferUntil))) {
+        throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+      }
+      Object.defineProperty(concepts, conceptId, {
+        value: {
+          focus: preference.focus,
+          deferUntil: deferUntil === null ? null : new Date(parseDate(deferUntil)).toISOString(),
+        },
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return { revision: row.revision, dailyBudget: row.daily_budget, concepts };
+  }
+
   setLayout(layout: Layout): Layout {
     const recordedAt = iso(this.now());
     const json = canonicalJson(layout);
@@ -1165,6 +1381,7 @@ export class Store {
       observations: this.getObservations(),
       retentions: this.getRetentions(),
       applications: this.getApplications(),
+      reviewPlan: this.getReviewPlan(),
       layout: this.getLayout(),
     };
   }

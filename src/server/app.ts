@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { Layout, ModelConfig, Snapshot } from '../shared/types.js';
+import { reviewDayKey, type ReviewPlanResponse, type ReviewPlanUpdate } from '../shared/review-plan.js';
 import { isValidInstant } from '../core/time-model.js';
 import { buildLearningOverview } from '../core/learning-overview.js';
 import { sendConceptAttachment } from './attachments.js';
@@ -181,6 +182,37 @@ function parseHistoryCursor(value: unknown): string | undefined {
     throw new StoreError('INVALID_HISTORY_CURSOR', '历史分页游标无效，请重新读取历史。');
   }
   return value;
+}
+
+function parseReviewPlanTimeZone(value: unknown): string {
+  if (value === undefined) return 'UTC';
+  if (typeof value !== 'string' || value.length === 0 || value.length > 64 || value.trim() !== value) {
+    throw new StoreError('INVALID_TIME_ZONE', 'timeZone 必须是合法的 IANA 时区名称。');
+  }
+  try {
+    // Constructing the formatter validates the IANA name, while the length
+    // guard above prevents an unbounded query value from reaching Intl.
+    new Intl.DateTimeFormat('en-CA', { timeZone: value }).format(new Date(0));
+  } catch {
+    throw new StoreError('INVALID_TIME_ZONE', 'timeZone 必须是合法的 IANA 时区名称。');
+  }
+  return value;
+}
+
+function reviewPlanResponse(
+  source: KnowledgeSource,
+  store: Store,
+  timeZone: string,
+  asOf: string,
+): ReviewPlanResponse {
+  return {
+    sourceId: source.namespace,
+    asOf,
+    timeZone,
+    dayKey: reviewDayKey(asOf, timeZone),
+    plan: store.getReviewPlan(),
+    completedConceptIds: store.getCompletedConceptIds(asOf, timeZone),
+  };
 }
 
 function conceptById(source: KnowledgeSource, id: string) {
@@ -395,6 +427,48 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       states: store.getStates(concepts, asOf),
       observations: store.getObservations(), applications: store.getApplications(),
     }));
+  }));
+  app.get('/api/review-plan', asyncRoute((req, res) => {
+    const { source, store } = contextOf(req);
+    const timeZone = parseReviewPlanTimeZone(req.query.timeZone);
+    const asOf = now().toISOString();
+    res.json(reviewPlanResponse(source, store, timeZone, asOf));
+  }));
+  app.put('/api/review-plan', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
+    const timeZone = parseReviewPlanTimeZone(req.query.timeZone);
+    const body = req.body as Record<string, unknown>;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new StoreError('INVALID_BODY', '请求体必须是 JSON 对象。');
+    }
+    const hasBudget = Object.prototype.hasOwnProperty.call(body, 'dailyBudget');
+    const hasConcept = Object.prototype.hasOwnProperty.call(body, 'concept');
+    if (hasBudget === hasConcept) {
+      throw new StoreError('INVALID_BODY', '请求必须且只能更新 dailyBudget 或 concept。');
+    }
+    if (hasConcept) {
+      const concept = body.concept;
+      if (!concept || typeof concept !== 'object' || Array.isArray(concept)) {
+        throw new StoreError('INVALID_BODY', 'concept 必须是对象。');
+      }
+      const conceptRecord = concept as Record<string, unknown>;
+      if (typeof conceptRecord.conceptId !== 'string' || typeof conceptRecord.sourceRevision !== 'string') {
+        throw new StoreError('INVALID_BODY', 'conceptId 和 sourceRevision 必须是有效字符串。');
+      }
+      const currentConcept = conceptById(source, conceptRecord.conceptId);
+      if (conceptRecord.sourceRevision !== currentConcept.source.revision) {
+        throw new StoreError('SOURCE_REVISION_MISMATCH', '概念内容已变化，请先刷新知识源后重新确认。', 409);
+      }
+    }
+    const before = store.getReviewPlan();
+    const updated = store.updateReviewPlan(body as ReviewPlanUpdate);
+    // Only the request that supplied the current revision can have caused a
+    // revision advance. A stale identical replay returns the current plan and
+    // must not emit a second invalidation event.
+    if (updated.revision > before.revision
+        && body.revision === before.revision) changes.publish('review-plan');
+    const asOf = now().toISOString();
+    res.json({ ...reviewPlanResponse(source, store, timeZone, asOf), plan: updated });
   }));
   app.get('/api/concepts/:conceptId/attachment', asyncRoute((req, res) => {
     const { source, store, changes } = contextOf(req);

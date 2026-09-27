@@ -9,6 +9,7 @@ import type {
 import { domainIdOf } from '../src/core/domain-view.js';
 import { selectBriefReviewCandidates } from '../src/core/brief-review.js';
 import { projectMemory } from '../src/core/time-model.js';
+import type { ReviewPlan } from '../src/shared/review-plan.js';
 
 const AS_OF = '2026-01-15T00:00:00.000Z';
 const config = { modelVersion: 'time-only-v0' as const, halfLifeDays: 7, revision: 1 };
@@ -177,4 +178,39 @@ test('supports exclusion and bounded limits without filling from other statuses'
   assert.equal(selectBriefReviewCandidates(input, 'Cognition/Math', { limit: Number.NaN }).length, 3);
   assert.equal(selectBriefReviewCandidates(input, 'Cognition/Math', { limit: Number.POSITIVE_INFINITY }).length, 3);
   assert.deepEqual(input, before);
+});
+
+test('defers future preferences, prioritizes focus within the eligible pool, and never lets focus bypass retention', () => {
+  const focusNear = concept('focus-near', 'Cognition/Math/focus-near.md');
+  const focusFar = concept('focus-far', 'Cognition/Math/focus-far.md');
+  const ordinaryFar = concept('ordinary-far', 'Cognition/Math/ordinary-far.md');
+  const deferred = concept('deferred', 'Cognition/Math/deferred.md');
+  const retainedFocus = concept('retained-focus', 'Cognition/Math/retained-focus.md');
+  const input = snapshot([focusNear, focusFar, ordinaryFar, deferred, retainedFocus], {
+    'focus-near': state(focusNear, { elapsedDays: 4 }),
+    'focus-far': state(focusFar, { elapsedDays: 8 }),
+    'ordinary-far': state(ordinaryFar, { elapsedDays: 30 }),
+    deferred: state(deferred, { elapsedDays: 40 }),
+    'retained-focus': state(retainedFocus, { elapsedDays: 50, retention: {
+      eventId: 'retained-focus-event', conceptId: retainedFocus.id, sourceRevision: retainedFocus.source.revision,
+      occurredAt: AS_OF, recordedAt: AS_OF, active: true, previousEventId: null,
+    } }),
+  });
+  const preferences: ReviewPlan['concepts'] = {
+    'focus-near': { focus: true, deferUntil: null },
+    'focus-far': { focus: true, deferUntil: null },
+    deferred: { focus: true, deferUntil: '2026-01-20T00:00:00.000Z' },
+    'retained-focus': { focus: true, deferUntil: null },
+  };
+
+  const result = selectBriefReviewCandidates(input, 'Cognition/Math', { limit: 5, preferences });
+  assert.deepEqual(result.map((item) => item.conceptId), ['focus-far', 'focus-near', 'ordinary-far']);
+  assert.equal(result[0].focus, true);
+  assert.equal(result.find((item) => item.conceptId === 'deferred'), undefined);
+  assert.equal(result.find((item) => item.conceptId === 'retained-focus'), undefined);
+
+  const earlier = selectBriefReviewCandidates({ ...input, asOf: '2026-01-25T00:00:00.000Z' }, 'Cognition/Math', {
+    limit: 5, preferences, asOf: '2026-01-15T00:00:00.000Z',
+  });
+  assert.equal(earlier.find((item) => item.conceptId === 'deferred'), undefined);
 });

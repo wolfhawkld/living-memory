@@ -74,3 +74,25 @@ test('next-item validation uses current state, excludes pending writes, and neve
   assert.equal(run.items[0].sourceRevision, 'v1');
   assert.deepEqual(run.results, {});
 });
+
+test('revalidating a frozen item forwards deferral and focus preferences without bypassing state checks', () => {
+  const run = session();
+  const concept = { id: 'a', title: 'A', aliases: [], domain: 'Math', summary: 'summary', body: 'body', source: { path: 'Math/a.md', revision: 'v1' } };
+  const snapshot: Snapshot = {
+    concepts: [concept], links: [], source: { name: 'fixture', mode: 'demo', conceptCount: 1, limit: 1, diagnostics: [] },
+    asOf: '2026-09-26T00:00:00.000Z', observationsCount: 0,
+    config: { modelVersion: 'time-only-v0', halfLifeDays: 7, revision: 1 },
+    states: { a: { conceptId: 'a', status: 'stale', decay: 0.25, elapsedDays: 14, reason: null,
+      asOf: '2026-09-26T00:00:00.000Z', anchor: { eventId: 'anchor-a', conceptId: 'a', sourceRevision: 'v1',
+        kind: 'review', occurredAt: '2026-09-12T00:00:00.000Z', recordedAt: '2026-09-12T00:00:00.000Z' } } },
+  };
+  assert.equal(resolveBriefReviewItem(run, snapshot, new Set(), {
+    preferences: { a: { focus: true, deferUntil: '2026-09-27T00:00:00.000Z' } },
+    asOf: '2026-09-26T00:00:00.000Z',
+  }), null);
+  const ready = resolveBriefReviewItem(run, snapshot, new Set(), {
+    preferences: { a: { focus: true, deferUntil: null } },
+    asOf: '2026-09-26T00:00:00.000Z',
+  });
+  assert.equal(ready?.concept, concept);
+});

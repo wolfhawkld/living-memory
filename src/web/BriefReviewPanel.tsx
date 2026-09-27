@@ -7,6 +7,26 @@ export interface BriefReviewPanelProps {
   disabledReason: string | null;
   onBudgetChange: (budget: 3 | 5) => void;
   onStart: () => void;
+  daily?: {
+    budget: number;
+    completed: number;
+    pending: number;
+    remaining: number;
+    timeZone: string;
+  };
+  onOpenPlan?: () => void;
+  planDisabled?: boolean;
+  suspended?: {
+    domainLabel: string;
+    index: number;
+    total: number;
+    savedAt: string;
+    hasAnswer: boolean;
+  };
+  onResume?: () => void;
+  onDiscard?: () => void;
+  onCopyAnswer?: () => void;
+  resumeError?: string | null;
 }
 
 export interface BriefReviewProgressProps {
@@ -24,10 +44,17 @@ export interface BriefReviewProgressProps {
   onReview: () => void;
   onNext: () => void;
   onEnd: () => void;
+  onPause?: () => void;
 }
 
 function displayCount(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function displayReviewDate(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '时间未知';
+  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
 function resultMessage(result: BriefReviewProgressProps['result']): string {
@@ -54,11 +81,27 @@ export function BriefReviewPanel({
   disabledReason,
   onBudgetChange,
   onStart,
+  daily,
+  onOpenPlan,
+  planDisabled = false,
+  suspended,
+  onResume,
+  onDiscard,
+  onCopyAnswer,
+  resumeError = null,
 }: BriefReviewPanelProps): ReactElement {
   const budgetId = useId();
   const count = displayCount(candidateCount);
   const hasCandidates = count > 0;
-  const startDisabled = !hasCandidates || disabledReason !== null;
+  const startDisabled = !hasCandidates || disabledReason !== null || Boolean(suspended);
+  const dailyBudget = daily ? displayCount(daily.budget) : 0;
+  const dailyCompleted = daily ? displayCount(daily.completed) : 0;
+  const dailyPending = daily ? displayCount(daily.pending) : 0;
+  const dailyRemaining = daily ? displayCount(daily.remaining) : 0;
+  const dailyExhausted = daily !== undefined && dailyRemaining === 0;
+  const suspendedTotal = suspended ? Math.max(displayCount(suspended.total), 1) : 0;
+  const suspendedIndex = suspended ? displayCount(suspended.index) : 0;
+  const suspendedPosition = suspended ? `${Math.min(suspendedIndex + 1, suspendedTotal)} / ${suspendedTotal}` : null;
 
   return (
     <section className="brief-review-panel" aria-label="少量复习">
@@ -73,6 +116,26 @@ export function BriefReviewPanel({
       <p className="brief-review-description">
         按距重温时间排序，只选再访阶段，排除长期保持。
       </p>
+      {daily ? <div className="brief-review-daily" aria-label="今日复习进度">
+        <div className="brief-review-daily-metrics">
+          <div><span>今日预算</span><strong>{dailyBudget} 个概念</strong></div>
+          <div><span>已回忆</span><strong>{dailyCompleted} 个概念</strong></div>
+          <div><span>剩余</span><strong>{dailyRemaining} 个概念</strong></div>
+        </div>
+        <p>今日预算跨领域共享，按概念数统计，不代表掌握分数；待同步 {dailyPending} 条。时区：{daily.timeZone || '浏览器时区'}</p>
+        {dailyExhausted ? <p className="brief-review-daily-notice" role="status">今日预算已用完；可以打开复习安排调整预算，或处理已暂停的复习。</p> : null}
+      </div> : null}
+      {suspended ? <div className="brief-review-suspended" role="status">
+        <div className="brief-review-suspended-heading"><strong>有一轮复习已暂停</strong><span>{suspendedPosition} · {suspended.domainLabel || '当前领域'}</span></div>
+        <p>保存于 {displayReviewDate(suspended.savedAt)}。请继续或放弃这轮后再开始新一轮。</p>
+        {resumeError ? <p className="brief-review-resume-error" role="alert">继续复习失败：{resumeError}</p> : null}
+        <div className="brief-review-suspended-actions">
+          <button type="button" className="brief-review-resume" disabled={disabledReason !== null || !onResume} onClick={onResume}>继续复习</button>
+          <button type="button" className="brief-review-discard" disabled={!onDiscard} onClick={onDiscard}>放弃这轮</button>
+          {suspended.hasAnswer ? <button type="button" className="brief-review-copy" disabled={!onCopyAnswer} onClick={onCopyAnswer}>复制未提交作答</button> : null}
+        </div>
+        {disabledReason !== null ? <p className="brief-review-disabled" role="status">当前无法继续：{disabledReason}</p> : null}
+      </div> : null}
       {hasCandidates ? (
         <p className="brief-review-candidate-note" role="status">可随时跳过或结束，不需要清空所有待复习项。</p>
       ) : (
@@ -95,9 +158,10 @@ export function BriefReviewPanel({
             <option value={5}>5 个</option>
           </select>
         </label>
-        <button type="button" className="brief-review-start" disabled={startDisabled} onClick={onStart}>
-          开始复习
+        <button type="button" className="brief-review-start" disabled={startDisabled || dailyExhausted} onClick={onStart}>
+          {suspended ? '请先处理暂停的复习' : '开始复习'}
         </button>
+        {onOpenPlan ? <button type="button" className="brief-review-plan" disabled={planDisabled} onClick={onOpenPlan}>复习安排</button> : null}
       </div>
     </section>
   );
@@ -118,6 +182,7 @@ export function BriefReviewProgress({
   onReview,
   onNext,
   onEnd,
+  onPause,
 }: BriefReviewProgressProps): ReactElement {
   const titleId = useId();
   const safeIndex = Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0;
@@ -160,9 +225,10 @@ export function BriefReviewProgress({
         {lockedReason !== null ? <p className="brief-review-locked" role="status">{lockedReason}</p> : null}
         <div className="brief-review-progress-actions">
           {!isLast ? (
-            <button type="button" className="brief-review-next" disabled={busy || lockedReason !== null} onClick={onNext}>
-              下一条
-            </button>
+            <>
+              {onPause ? <button type="button" className="brief-review-pause" disabled={busy || lockedReason !== null} onClick={onPause}>暂停，稍后继续</button> : null}
+              <button type="button" className="brief-review-next" disabled={busy || lockedReason !== null} onClick={onNext}>下一条</button>
+            </>
           ) : null}
           <button type="button" className="brief-review-end" disabled={busy} onClick={onEnd}>
             结束复习

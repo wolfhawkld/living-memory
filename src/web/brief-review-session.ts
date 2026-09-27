@@ -1,5 +1,6 @@
 import type { BriefReviewCandidate } from '../core/brief-review';
 import { selectBriefReviewCandidates } from '../core/brief-review';
+import type { ReviewPlan } from '../shared/review-plan';
 import type { Concept, MemoryState, Snapshot } from '../shared/types';
 
 export type BriefReviewResult = 'saved' | 'queued' | 'skipped' | 'unavailable';
@@ -14,14 +15,21 @@ export interface BriefReviewSession {
   reviews: Record<string, 'saved' | 'queued'>;
 }
 
+export interface BriefReviewResolveOptions {
+  preferences?: ReviewPlan['concepts'];
+  asOf?: string;
+}
+
 /** Revalidate each frozen item against a fresh real snapshot before showing it. */
 export function resolveBriefReviewItem(
-  session: BriefReviewSession, snapshot: Snapshot, excludedIds: ReadonlySet<string>,
+  session: BriefReviewSession, snapshot: Snapshot, excludedIds: ReadonlySet<string>, options: BriefReviewResolveOptions = {},
 ): { concept: Concept; state: MemoryState } | null {
   const item = session.items[session.index];
   const concept = snapshot.concepts.find((value) => value.id === item?.conceptId);
   if (!item || !concept || concept.source.revision !== item.sourceRevision) return null;
-  const candidates = selectBriefReviewCandidates({ ...snapshot, concepts: [concept] }, session.domainId, { excludedIds });
+  const candidates = selectBriefReviewCandidates({ ...snapshot, concepts: [concept] }, session.domainId, {
+    excludedIds, preferences: options.preferences, asOf: options.asOf,
+  });
   return candidates.length ? { concept, state: snapshot.states[concept.id] } : null;
 }
 

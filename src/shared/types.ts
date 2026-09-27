@@ -196,7 +196,7 @@ export interface WriteReceipt {
 export interface ChangeNotification {
   sourceId: string;
   revision: number;
-  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application';
+  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application' | 'review-plan';
 }
 
 export interface LayoutPosition { x: number; y: number; z: number }
@@ -213,5 +213,6 @@ export interface ExportData {
   observations: Observation[];
   retentions?: RetentionEvent[];
   applications?: ApplicationRecord[];
+  reviewPlan?: import('./review-plan.js').ReviewPlan;
   layout: Layout;
 }

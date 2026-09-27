@@ -23,6 +23,7 @@ const CHANGE_REASONS: ReadonlySet<ChangeNotification['reason']> = new Set([
   'config',
   'retention',
   'application',
+  'review-plan',
 ]);
 
 function isChangeReason(value: unknown): value is ChangeNotification['reason'] {

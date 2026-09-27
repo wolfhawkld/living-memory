@@ -1,4 +1,5 @@
 import type { Snapshot } from '../shared/types.js';
+import type { ReviewPlan } from '../shared/review-plan.js';
 import { domainIdOf } from './domain-view.js';
 
 const DEFAULT_LIMIT = 3;
@@ -10,11 +11,14 @@ export interface BriefReviewCandidate {
   status: 'stale' | 'revisit';
   elapsedDays: number;
   estimated: boolean;
+  focus?: boolean;
 }
 
-interface BriefReviewOptions {
+export interface BriefReviewOptions {
   limit?: number;
   excludedIds?: ReadonlySet<string>;
+  preferences?: ReviewPlan['concepts'];
+  asOf?: string;
 }
 
 function normalizeDomainId(value: string): string {
@@ -36,6 +40,12 @@ function compareConceptIds(left: string, right: string): number {
   return left < right ? -1 : 1;
 }
 
+function instant(value: string | undefined): number | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
 /**
  * Select a small, read-only set of time-driven review candidates for a domain.
  * The source limit only controls graph projection; this selection reads the
@@ -51,11 +61,16 @@ export function selectBriefReviewCandidates(
 
   const normalizedDomainId = normalizeDomainId(domainId);
   const excludedIds = options.excludedIds;
+  const asOfTimestamp = instant(options.asOf ?? snapshot.asOf);
   const candidates = new Map<string, BriefReviewCandidate>();
 
   for (const concept of snapshot.concepts) {
     if (domainIdOf(concept) !== normalizedDomainId) continue;
     if (excludedIds?.has(concept.id)) continue;
+
+    const preference = options.preferences?.[concept.id];
+    const deferTimestamp = instant(preference?.deferUntil ?? undefined);
+    if (deferTimestamp !== null && asOfTimestamp !== null && deferTimestamp > asOfTimestamp) continue;
 
     const state = snapshot.states[concept.id];
     if (!state || (state.status !== 'stale' && state.status !== 'revisit')) continue;
@@ -93,13 +108,15 @@ export function selectBriefReviewCandidates(
         status: state.status,
         elapsedDays,
         estimated: anchor.kind === 'estimated',
+        ...(preference?.focus === true ? { focus: true } : {}),
       });
     }
   }
 
   return [...candidates.values()]
     .sort((left, right) => (
-      right.elapsedDays - left.elapsedDays
+      Number(right.focus === true) - Number(left.focus === true)
+      || right.elapsedDays - left.elapsedDays
       || compareConceptIds(left.conceptId, right.conceptId)
     ))
     .slice(0, limit);
