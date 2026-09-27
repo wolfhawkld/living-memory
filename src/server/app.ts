@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { Layout, ModelConfig, Snapshot } from '../shared/types.js';
 import { isValidInstant } from '../core/time-model.js';
+import { buildLearningOverview } from '../core/learning-overview.js';
 import { sendConceptAttachment } from './attachments.js';
 import { loadKnowledgeGraph, KnowledgeSourceError, type KnowledgeSource } from './kg.js';
 import { createChangeFeed } from './changes.js';
@@ -384,6 +385,16 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     const cursor = parseHistoryCursor(req.query.cursor);
     const history = store.getConceptHistory(concept, now().toISOString(), limit, cursor);
     res.set('Cache-Control', 'no-store').json(history);
+  }));
+  app.get('/api/learning-overview', asyncRoute((req, res) => {
+    const { source, store } = contextOf(req);
+    const asOf = now().toISOString();
+    const concepts = source.index.concepts;
+    res.set('Cache-Control', 'no-store').json(buildLearningOverview({
+      sourceId: source.namespace, asOf, concepts,
+      states: store.getStates(concepts, asOf),
+      observations: store.getObservations(), applications: store.getApplications(),
+    }));
   }));
   app.get('/api/concepts/:conceptId/attachment', asyncRoute((req, res) => {
     const { source, store, changes } = contextOf(req);

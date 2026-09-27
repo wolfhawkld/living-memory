@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { LearningOverviewItem } from '../shared/learning-overview';
 import type { AccountUser } from '../shared/accounts';
 import type {
   ApplicationRecordRequest,
@@ -42,6 +43,9 @@ import { ConfidenceInput, LearningEvidenceFields } from './LearningEvidenceField
 import { ScenarioPractice } from './ScenarioPractice';
 import { ApplicationRecordDialog } from './ApplicationRecordDialog';
 import './application-record.css';
+import { LearningOverviewDialog } from './LearningOverviewDialog';
+import { createLearningOverviewLoader, resolveOverviewSelection } from './learning-overview-loader';
+import './learning-overview.css';
 import { RetentionConfirmation } from './RetentionConfirmation';
 import { useConceptHistory } from './useConceptHistory';
 import { parseSourceExposure, sourceExposureKey, SOURCE_EXPOSURE_STORAGE_KEY } from './source-exposure';
@@ -232,6 +236,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const learningWriteRef = useRef(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
   const [applicationDraft, setApplicationDraft] = useState<{ concept: Concept; sourceId: string } | null>(null);
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  const [overviewSelectionError, setOverviewSelectionError] = useState<string | null>(null);
+  const overviewOpenRef = useRef(false);
+  const overviewNavigationRef = useRef(0);
+  const overviewActionRef = useRef(false);
+  const overviewLoader = useMemo(() => createLearningOverviewLoader(sourceId, api.getLearningOverview), [sourceId]);
+  const overviewState = useSyncExternalStore(overviewLoader.subscribe, overviewLoader.getSnapshot, overviewLoader.getSnapshot);
   const [scenarioReader, setScenarioReader] = useState<Concept | null>(null);
   const [retentionConfirmation, setRetentionConfirmation] = useState<RetentionRequest | null>(null);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
@@ -277,6 +288,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }>({ onChange: () => undefined, onConnected: () => undefined, flush: () => undefined });
 
   const realNow = new Date();
+  overviewOpenRef.current = overviewOpen;
   const simulated = simDays > 0;
   const hasSession = Boolean(writeToken);
   activeDomainRef.current = activeDomainId;
@@ -290,7 +302,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     hidden: typeof document !== 'undefined' && document.hidden,
     demoEnabled,
     simulated,
-    attempt: Boolean(attempt) || scenarioOpen || Boolean(briefSession) || Boolean(applicationDraft),
+    attempt: Boolean(attempt) || scenarioOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen,
     reviewDialogOpen: reviewDialogOpen || Boolean(retentionConfirmation),
     configOpen,
     busyAction,
@@ -389,6 +401,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     return (
       !ui.loading &&
       !briefActionRef.current &&
+      !overviewOpenRef.current &&
       !ui.hidden &&
       !ui.demoEnabled &&
       !ui.simulated &&
@@ -543,7 +556,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   useEffect(() => {
     changeHandlersRef.current.flush();
-  }, [attempt, briefSession, scenarioOpen, applicationDraft, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
+  }, [attempt, briefSession, scenarioOpen, applicationDraft, overviewOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
+
+  useEffect(() => {
+    if (overviewOpen && sourceId && !demoEnabled && !simulated && !sourceReloadPending) void overviewLoader.refresh();
+    return () => { overviewLoader.clear(); };
+  }, [overviewLoader, overviewOpen, sourceId, demoEnabled, simulated, sourceReloadPending]);
 
   useEffect(() => {
     void loadInitial();
@@ -652,7 +670,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     : displaySnapshot, [displaySnapshot, domainId, expandedIds, selectedId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
-  const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || Boolean(applicationDraft) || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || Boolean(applicationDraft) || overviewOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
   const briefCandidates = useMemo(() => snapshot && domainId && !writeLocked
     ? selectBriefReviewCandidates(snapshot, domainId, { limit: briefBudget, excludedIds: pendingConceptIds }) : [],
   [snapshot, domainId, writeLocked, briefBudget, pendingConceptIds]);
@@ -665,7 +683,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const briefResult = briefSession && briefItem ? briefSession.results[briefItem.conceptId] : null;
   const briefProgressLock = sourceReloadPending || (briefSession && briefSession.sourceId !== sourceId)
     ? '知识源已变化，请结束本轮后重新加载。' : writeLocked || !hasSession ? '当前无法写入真实记录，请结束本轮后重试。' : null;
-  const learningOverlayOpen = Boolean(attempt) || scenarioOpen || Boolean(briefSession) || Boolean(applicationDraft);
+  const learningOverlayOpen = Boolean(attempt) || scenarioOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen;
 
   // Source refreshes may remove a domain or a relation. Reconcile only when no
   // answer/dialog is active, and never turn a view change into a learning event.
@@ -690,7 +708,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     if (readerRequest && !readerVisible) setReaderRequest(null);
   }, [readerRequest, readerVisible]);
   const selectedSourceViewed = Boolean(selectedConcept && sourceViewedKeys.includes(sourceExposureKey(sourceId, selectedConcept)));
-  const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !briefSession && !scenarioOpen && !applicationDraft && !sourceReloadPending);
+  const historyEnabled = Boolean(selectedConcept && sourceId && !demoEnabled && !attempt && !briefSession && !scenarioOpen && !applicationDraft && !overviewOpen && !sourceReloadPending);
   const conceptHistory = useConceptHistory({
     sourceId, conceptId: selectedConcept?.id ?? '', sourceRevision: selectedConcept?.source.revision ?? '',
   }, historyEnabled, snapshot);
@@ -770,14 +788,14 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const closeReader = useCallback(() => setReaderRequest(null), []);
 
   const selectConcept = useCallback((conceptId: string) => {
-    if (briefSession || applicationDraft || briefActionRef.current) return;
+    if (briefSession || applicationDraft || overviewOpen || briefActionRef.current) return;
     if (attempt && attempt.conceptId !== conceptId) {
       if (!window.confirm('当前回忆尚未保存，确定取消并切换概念吗？')) return;
       setAttempt(null);
     }
     setSelectedId(conceptId);
     setFocusRevision((revision) => revision + 1);
-  }, [attempt, briefSession, applicationDraft]);
+  }, [attempt, briefSession, applicationDraft, overviewOpen]);
 
   const selectSearchResult = useCallback((conceptId: string) => {
     if (domainBusy) return;
@@ -787,6 +805,52 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     if (targetDomain !== domainId) changeDomain(targetDomain, conceptId);
     else selectConcept(conceptId);
   }, [changeDomain, domainBusy, domainId, selectConcept, snapshot]);
+
+  const closeOverview = useCallback(() => {
+    overviewOpenRef.current = false;
+    overviewNavigationRef.current += 1;
+    overviewActionRef.current = false;
+    overviewLoader.clear();
+    setOverviewOpen(false);
+    setOverviewSelectionError(null);
+    setBusyAction((current) => current === 'overview' ? null : current);
+  }, [overviewLoader]);
+
+  const selectOverviewItem = useCallback(async (item: LearningOverviewItem) => {
+    const overview = overviewLoader.getSnapshot();
+    if (!overviewOpenRef.current || overviewActionRef.current || overview.loading || overview.error || !overview.overview || writeLocked) return;
+    const ticket = ++overviewNavigationRef.current;
+    overviewActionRef.current = true;
+    setBusyAction('overview');
+    setOverviewSelectionError(null);
+    const stillActive = () => overviewOpenRef.current && overviewNavigationRef.current === ticket
+      && sourceIdRef.current === sourceId && !writeLockedRef.current;
+    try {
+      const latest = await loadSnapshot(undefined, sourceId, stillActive);
+      if (!latest || !stillActive()) return;
+      const concept = resolveOverviewSelection(sourceId, overview.overview, item, latest);
+      const targetDomain = domainIdOf(concept);
+      if (layoutWriteTimer.current !== null) {
+        window.clearTimeout(layoutWriteTimer.current);
+        layoutWriteTimer.current = null;
+      }
+      activeDomainRef.current = targetDomain;
+      setActiveDomainId(targetDomain);
+      setExpandedIds([]);
+      setSelectedId(concept.id);
+      setFocusRevision((revision) => revision + 1);
+      reviewEventRef.current = null;
+      try { window.localStorage.setItem(`living-memory.domain.v1.${sourceId}`, targetDomain); } catch { /* Navigation remains available. */ }
+      closeOverview();
+    } catch (error) {
+      if (stillActive()) setOverviewSelectionError(errorMessage(error));
+    } finally {
+      if (overviewNavigationRef.current === ticket) {
+        overviewActionRef.current = false;
+        setBusyAction((current) => current === 'overview' ? null : current);
+      }
+    }
+  }, [closeOverview, loadSnapshot, overviewLoader, sourceId, writeLocked]);
 
   const clearSelection = useCallback(() => {
     if (domainBusy) return;
@@ -1305,6 +1369,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
             clearSelection();
           }
         }}>收起跨域节点</button> : null}
+        <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => {
+          if (briefActionRef.current) return;
+          overviewOpenRef.current = true;
+          setOverviewSelectionError(null);
+          setOverviewOpen(true);
+        }}>知识薄弱点总览</button>
       </div>
       <main className={`workspace${learningOverlayOpen ? ' workspace-recall-hidden' : ''}`} aria-hidden={learningOverlayOpen ? true : undefined}
         aria-busy={busyAction === 'brief-review'} inert={learningOverlayOpen || busyAction === 'brief-review' ? true : undefined}>
@@ -1421,6 +1491,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         {...briefReviewCounts(briefSession)} reviewStatus={briefSession.reviews[briefItem.conceptId] ?? 'idle'}
         busy={Boolean(busyAction) || refreshing} lockedReason={briefProgressLock} reviewDisabledReason={briefReviewDisabledReason}
         onReview={() => void submitReview('review')} onNext={() => void nextBriefItem()} onEnd={endBriefReview} /> : null}
+
+      {overviewOpen ? <LearningOverviewDialog key={sourceId}
+        overview={sourceReloadPending ? null : overviewState.overview} loading={overviewState.loading || busyAction === 'overview'}
+        error={sourceReloadPending ? '知识空间已变化，请关闭总览并重新加载页面。' : overviewSelectionError ?? overviewState.error}
+        initialDomainId={domainId} pendingCount={pendingWrites.filter((write) => write.eventId).length}
+        onClose={closeOverview} onSelect={(item) => void selectOverviewItem(item)}
+        onRefresh={() => { if (!sourceReloadPending && !overviewActionRef.current) { setOverviewSelectionError(null); void overviewLoader.refresh(); } }} /> : null}
 
       {applicationDraft ? <ApplicationRecordDialog key={`${applicationDraft.sourceId}:${applicationDraft.concept.id}`}
         concept={applicationDraft.concept} busy={busyAction === 'application'} onSave={saveApplication}

@@ -12,6 +12,7 @@ import type {
 import { createSessionRecovery, type LocalSession } from './session-recovery';
 import { inspectLayout } from '../shared/layout';
 import type { AccountUser } from '../shared/accounts';
+import type { LearningOverview } from '../shared/learning-overview';
 
 export type SessionResponse = LocalSession & { user?: AccountUser };
 
@@ -325,6 +326,12 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 
 export const api = {
   getSession,
+  getLearningOverview: (sourceId: string, signal?: AbortSignal) => {
+    if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
+    return requestJson<LearningOverview>('/learning-overview', {
+      headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal,
+    });
+  },
   getConceptHistory: (conceptId: string, sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
     const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
