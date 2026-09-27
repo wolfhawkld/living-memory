@@ -331,6 +331,14 @@ test('change feed publishes source and accepted write reasons while snapshots st
     assert.equal(config.status, 200);
     assert.deepEqual(await feed.next(), { sourceId: currentSession.sourceId, revision: 3, reason: 'config' });
 
+    const replayedConfig = await client.request('/api/config', {
+      method: 'PUT', headers: tokenHeaders(currentSession.writeToken),
+      body: { halfLifeDays: 14, revision: afterReview.config.revision },
+    });
+    assert.equal(replayedConfig.status, 200);
+    assert.equal(replayedConfig.json<{ status: string }>().status, 'duplicate');
+    await expectNoNotification(feed);
+
     const afterConfig = await snapshot(client);
     const observation = await client.request('/api/observations', {
       method: 'POST',

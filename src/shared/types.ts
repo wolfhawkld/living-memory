@@ -7,6 +7,12 @@ export interface ModelConfig {
   revision: number;
 }
 
+/** The acknowledged transition can be older than the currently active config. */
+export interface ConfigWriteReceipt extends ModelConfig {
+  status: 'accepted' | 'duplicate';
+  currentConfig: ModelConfig;
+}
+
 export interface Concept {
   id: string;
   title: string;

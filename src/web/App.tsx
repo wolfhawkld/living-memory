@@ -94,12 +94,13 @@ function pendingSyncNotice(result: PendingSyncResult): Notice {
   if (result.busy) return { tone: 'info', text: '另一个页面正在同步此知识空间，待同步状态会自动更新。' };
   const skipped = result.repairs?.reduce((sum, repair) => sum + repair.skippedPositions, 0) ?? 0;
   const repairNotice = skipped > 0 ? `已备份并修复旧布局，跳过 ${skipped} 个无效位置，保留这些节点的现有布局。` : '';
+  const configNotice = result.duplicateConfigs ? `${result.duplicateConfigs} 条参数请求此前已生效，本次未再次改动配置。` : '';
   const failure = result.failures[0];
   if (failure) {
     const progress = result.sent > 0 ? `已同步 ${result.sent} 条，另有 ${result.failed} 条未完成。` : '';
-    return { tone: 'error', text: `${progress}${repairNotice}${failure.label}：${failure.message}` };
+    return { tone: 'error', text: `${progress}${repairNotice}${configNotice}${failure.label}：${failure.message}` };
   }
-  return result.sent > 0 ? { tone: 'success', text: `已同步 ${result.sent} 条待处理记录。${repairNotice}` } : null;
+  return result.sent > 0 ? { tone: 'success', text: `已同步 ${result.sent} 条待处理记录。${repairNotice}${configNotice}` } : null;
 }
 
 function newEventId(): string {
@@ -1319,7 +1320,10 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     setBusyAction(null);
     if (result.ok) {
       setConfigOpen(false);
-      showNotice({ tone: 'success', text: `已更新全局 H = ${halfLifeDays} 天。` });
+      const receipt = result.result as { status?: string } | undefined;
+      showNotice({ tone: 'success', text: receipt?.status === 'duplicate'
+        ? '这项参数请求此前已生效，本次保留后续设置，并刷新当前配置。'
+        : `已更新全局 H = ${halfLifeDays} 天。` });
       await reloadRealSnapshot();
     }
   }, [attempt, briefSession, busyAction, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);

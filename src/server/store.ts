@@ -9,6 +9,7 @@ import type {
   Concept,
   ConceptHistory,
   ConceptHistoryEntry,
+  ConfigWriteReceipt,
   ExportData,
   LearningEvidence,
   Layout,
@@ -605,29 +606,45 @@ export class Store {
     return rows.map((row) => ({ modelVersion: MODEL_VERSION, halfLifeDays: row.half_life_days, revision: row.revision }));
   }
 
-  updateConfig(halfLifeDays: number, expectedRevision: number): ModelConfig {
+  updateConfig(halfLifeDays: number, expectedRevision: number): ConfigWriteReceipt {
     if (!finiteNumber(halfLifeDays) || halfLifeDays <= 0 || halfLifeDays > 3650) {
       throw new StoreError('INVALID_HALF_LIFE', 'halfLifeDays 必须大于 0 且不超过 3650。');
     }
-    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
-      throw new StoreError('INVALID_REVISION', 'revision 必须是正整数。');
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || expectedRevision >= Number.MAX_SAFE_INTEGER) {
+      throw new StoreError('INVALID_REVISION', 'revision 必须是可安全递增的正整数。');
     }
-    const current = this.getConfig();
-    if (expectedRevision !== current.revision) {
-      throw new StoreError('CONFIG_CONFLICT', '配置版本已变化，请读取当前 revision 后重试。', 409);
-    }
-    const next = current.revision + 1;
-    const recordedAt = iso(this.now());
     try {
       this.db.exec('BEGIN IMMEDIATE');
+      const current = this.getConfig();
+      if (expectedRevision !== current.revision) {
+        // A config request describes one exact transition: expected -> expected+1.
+        // Matching today's H alone would silently accept a genuinely stale edit.
+        // Use stored model versions rather than the current-model projection.
+        const applied = this.db.prepare(`SELECT next.revision, next.model_version, next.half_life_days
+          FROM config_history AS next JOIN config_history AS base
+            ON base.namespace = next.namespace AND base.revision = next.revision - 1
+          WHERE next.namespace = ? AND base.revision = ?
+            AND base.model_version = ? AND next.model_version = ?`).get(
+          this.namespace, expectedRevision, MODEL_VERSION, MODEL_VERSION,
+        ) as { revision: number; model_version: string; half_life_days: number } | undefined;
+        if (expectedRevision < current.revision && applied?.half_life_days === halfLifeDays) {
+          this.db.exec('COMMIT');
+          return { modelVersion: MODEL_VERSION, halfLifeDays, revision: applied.revision,
+            status: 'duplicate', currentConfig: current };
+        }
+        throw new StoreError('CONFIG_CONFLICT', '配置版本已变化，且没有匹配的原始参数修改。请核对当前设置后重新提交。', 409);
+      }
+      const next = current.revision + 1;
+      const recordedAt = iso(this.now());
       this.db.prepare('INSERT INTO config_history(namespace, revision, model_version, half_life_days, recorded_at) VALUES (?, ?, ?, ?, ?)').run(this.namespace, next, MODEL_VERSION, halfLifeDays, recordedAt);
       this.db.exec('COMMIT');
+      const config: ModelConfig = { modelVersion: MODEL_VERSION, halfLifeDays, revision: next };
+      return { ...config, status: 'accepted', currentConfig: config };
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
       if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
-    return { modelVersion: MODEL_VERSION, halfLifeDays, revision: next };
   }
 
   private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application'; payload: string } | null {

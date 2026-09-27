@@ -592,7 +592,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     if (typeof halfLifeDays !== 'number' || !Number.isFinite(halfLifeDays)) throw new StoreError('INVALID_HALF_LIFE', 'halfLifeDays 必须是有限数字。');
     if (typeof revision !== 'number' || !Number.isInteger(revision)) throw new StoreError('INVALID_REVISION', 'revision 必须是正整数。');
     const config = store.updateConfig(halfLifeDays, revision);
-    changes.publish('config');
+    if (config.status === 'accepted') changes.publish('config');
     res.json(config);
   }));
   app.get('/api/layout', (req, res) => res.json(contextOf(req).store.getLayout()));

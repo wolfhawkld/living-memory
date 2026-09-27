@@ -1,6 +1,7 @@
 import type {
   ApplicationRecordRequest,
   ConceptHistory,
+  ConfigWriteReceipt,
   Layout,
   ModelConfig,
   ObservationRequest,
@@ -52,6 +53,8 @@ export interface PendingSyncResult {
   repairs?: { id: string; skippedPositions: number }[];
   /** Another page is synchronizing this knowledge space. */
   busy?: boolean;
+  /** Previously applied config transitions acknowledged without changing H. */
+  duplicateConfigs?: number;
 }
 
 export class ApiRequestError extends Error {
@@ -439,7 +442,7 @@ export const api = {
   postApplication: (payload: ApplicationRecordRequest, writeToken: string, sourceId: string) =>
     writeJson<WriteReceipt>('/applications', payload, writeToken, sourceId),
   putConfig: (payload: Pick<ModelConfig, 'halfLifeDays' | 'revision'>, writeToken: string, sourceId: string) =>
-    authenticatedJson<ModelConfig>('/config', {
+    authenticatedJson<ConfigWriteReceipt>('/config', {
       method: 'PUT',
       body: JSON.stringify(payload),
     }, writeToken, sourceId),
@@ -456,12 +459,12 @@ export const api = {
   },
   refresh: (writeToken: string, sourceId: string) => writeJson<{ status: string }>('/refresh', {}, writeToken, sourceId),
   exportData: (writeToken: string, sourceId: string) => withSession(writeToken, sourceId, (headers) => requestBlob('/export', { headers })),
-  sendPending: async (write: PendingWrite, writeToken: string, sourceId: string): Promise<void> => {
-    const result = await authenticatedJson<WriteReceipt | ModelConfig | Layout>(write.path, {
+  sendPending: async (write: PendingWrite, writeToken: string, sourceId: string): Promise<WriteReceipt | ConfigWriteReceipt | Layout> => {
+    const result = await authenticatedJson<WriteReceipt | ConfigWriteReceipt | Layout>(write.path, {
       method: write.method,
       body: JSON.stringify(write.payload),
     }, writeToken, sourceId);
-    if (!result) return;
+    return result;
   },
 };
 
@@ -469,6 +472,7 @@ const pendingFlushes = new Map<string, Promise<PendingSyncResult>>();
 
 async function sendPendingBatch(writeToken: string, sourceId: string): Promise<PendingSyncResult> {
   let sent = 0;
+  let duplicateConfigs = 0;
   const failures: PendingSyncFailure[] = [];
   const repairs: NonNullable<PendingSyncResult['repairs']> = [];
   let writes: PendingWrite[];
@@ -497,13 +501,14 @@ async function sendPendingBatch(writeToken: string, sourceId: string): Promise<P
         return preparePendingLayout(write, sourceId);
       });
       if (!prepared) continue;
-      await api.sendPending(prepared.write, writeToken, sourceId);
+      const receipt = await api.sendPending(prepared.write, writeToken, sourceId);
       if (!await removePendingWrite(sourceId, write.id, write)) {
         throw new ApiRequestError('记录已写入服务，但浏览器未能清理待同步标记。请允许此页面保存本地数据后重试。', {
           code: 'PENDING_STORAGE_FAILED', retryable: true,
         });
       }
       sent += 1;
+      if (write.path === '/config' && receipt?.status === 'duplicate') duplicateConfigs += 1;
       if (prepared.skippedPositions > 0) repairs.push({ id: write.id, skippedPositions: prepared.skippedPositions });
     } catch (error) {
       const detail: PendingWriteError = {
@@ -520,7 +525,8 @@ async function sendPendingBatch(writeToken: string, sourceId: string): Promise<P
       // conflicts. Showing the rejection is safer than silently rewriting history.
     }
   }
-  return { sent, failed: failures.length, failures, ...(repairs.length ? { repairs } : {}) };
+  return { sent, failed: failures.length, failures, ...(repairs.length ? { repairs } : {}),
+    ...(duplicateConfigs ? { duplicateConfigs } : {}) };
 }
 
 export function flushPendingWrites(writeToken: string, sourceId: string | null | undefined): Promise<PendingSyncResult> {
