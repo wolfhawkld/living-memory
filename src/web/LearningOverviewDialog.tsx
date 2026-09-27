@@ -10,8 +10,10 @@ import {
   overviewNeedsScenarioCheck,
   selectLearningOverviewItems,
 } from '../core/learning-overview.js';
+import { TimeRecallComparison } from './TimeRecallComparison.js';
 
 const PAGE_SIZE = 50;
+type LearningOverviewView = 'overview' | 'time-recall';
 
 const FILTERS: ReadonlyArray<{ value: LearningOverviewFilter; label: string }> = [
   { value: 'all', label: '全部' },
@@ -166,6 +168,7 @@ export function LearningOverviewDialog({
   const [filter, setFilter] = useState<LearningOverviewFilter>('all');
   const [query, setQuery] = useState('');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [view, setView] = useState<LearningOverviewView>('overview');
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -195,9 +198,16 @@ export function LearningOverviewDialog({
     filter,
     query,
   }), [domainId, filter, overview?.items, query]);
+  const timeRecallItems = useMemo(() => selectLearningOverviewItems(overview?.items ?? [], {
+    domainId: domainId || undefined,
+    filter: 'all',
+    query,
+  }), [domainId, overview?.items, query]);
   const visibleItems = filteredItems.slice(0, visibleCount);
   const navigationDisabled = loading || Boolean(error);
   const dataVersion = overview?.asOf ? formatDate(overview.asOf) : '尚未读取';
+  const timeRecallView = view === 'time-recall';
+  const currentItems = timeRecallView ? timeRecallItems : filteredItems;
 
   return <dialog
     ref={dialogRef}
@@ -209,36 +219,42 @@ export function LearningOverviewDialog({
     <div className="learning-overview-shell">
       <header className="learning-overview-header">
         <div>
-          <span className="learning-overview-kicker">学习证据 · 薄弱点总览</span>
-          <h2 id="learning-overview-title">知识薄弱点总览</h2>
-          <p className="learning-overview-subtitle">按概念汇总回忆困难、场景调用和信心校准线索，帮助决定下一次练习从哪里开始。</p>
+          <span className="learning-overview-kicker">学习证据 · {timeRecallView ? '时间与回忆对照' : '薄弱点总览'}</span>
+          <h2 id="learning-overview-title">{timeRecallView ? '时间与回忆对照' : '知识薄弱点总览'}</h2>
+          <p className="learning-overview-subtitle">{timeRecallView ? '按记录当时的时间起点与回忆自评并列查看，保留每条记录冻结的时间参数。' : '按概念汇总回忆困难、场景调用和信心校准线索，帮助决定下一次练习从哪里开始。'}</p>
         </div>
-        <button type="button" className="learning-overview-close" aria-label="关闭知识薄弱点总览" onClick={onClose}>×</button>
+        <button type="button" className="learning-overview-close" aria-label={`关闭${timeRecallView ? '时间与回忆对照' : '知识薄弱点总览'}`} onClick={onClose}>×</button>
       </header>
 
       <div className="learning-overview-body">
-        <div className="learning-overview-notes">
+        {timeRecallView ? <div className="learning-overview-notes learning-overview-notes-compact">
+          <p>当前资料版本 · 数据截至 {dataVersion} · 待同步记录：{Number.isFinite(pendingCount) && pendingCount > 0 ? `${Math.floor(pendingCount)} 条（本总览未包含）` : '0 条（本总览未包含）'}</p>
+        </div> : <div className="learning-overview-notes">
           <p>仅统计已同步的学习证据与应用 / 总结元数据；不包含正文、业务场景、答案或待同步记录。</p>
           <p>当前资料版本 · 数据截至 {dataVersion} · 待同步记录：{Number.isFinite(pendingCount) && pendingCount > 0 ? `${Math.floor(pendingCount)} 条（本总览未包含）` : '0 条（本总览未包含）'}</p>
           <p>旧版本记录仅保留在计数中，不进入当前版本统计。百分比表示已核对结果，不是记忆率；信心对照来自自报核对，样本少时不推断稳定能力，也不生成综合评分。</p>
-        </div>
+        </div>}
 
         <div className="learning-overview-toolbar" aria-label="总览筛选">
+          <div className="learning-overview-view-switch" role="group" aria-label="总览视图">
+            <button type="button" aria-pressed={!timeRecallView} className={!timeRecallView ? 'is-active' : ''} onClick={() => setView('overview')}>薄弱点总览</button>
+            <button type="button" aria-pressed={timeRecallView} className={timeRecallView ? 'is-active' : ''} onClick={() => setView('time-recall')}>时间与回忆对照</button>
+          </div>
           <label className="learning-overview-search"><span>搜索概念</span><input data-learning-overview-autofocus type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="标题或概念 ID" /></label>
           <label className="learning-overview-domain"><span>知识域</span><select value={domainId} onChange={(event) => setDomainId(event.target.value)}><option value="">全部领域</option>{domains.map((domain) => <option key={domain} value={domain}>{domain}</option>)}</select></label>
           {initialDomainId ? <button type="button" className="learning-overview-current-domain" onClick={() => setDomainId(initialDomainId)} disabled={!domains.includes(initialDomainId)}>当前领域：{initialDomainId}</button> : null}
-          <div className="learning-overview-filter-group" role="group" aria-label="薄弱点筛选">{FILTERS.map((item) => <button type="button" key={item.value} className={filter === item.value ? 'is-active' : ''} aria-pressed={filter === item.value} onClick={() => setFilter(item.value)}>{item.label}</button>)}</div>
+          {!timeRecallView ? <div className="learning-overview-filter-group" role="group" aria-label="薄弱点筛选">{FILTERS.map((item) => <button type="button" key={item.value} className={filter === item.value ? 'is-active' : ''} aria-pressed={filter === item.value} onClick={() => setFilter(item.value)}>{item.label}</button>)}</div> : null}
           <button type="button" className="learning-overview-refresh" disabled={loading} onClick={onRefresh}>{loading ? '刷新中…' : '刷新数据'}</button>
         </div>
 
         {loading && overview ? <p className="learning-overview-status-note" role="status">正在刷新总览；已有数据暂时保留，查看节点操作暂不可用。</p> : null}
         {error ? <div className="learning-overview-error" role="alert"><span>总览加载失败：{error}</span>{!overview ? <button type="button" onClick={onRefresh} disabled={loading}>重试</button> : null}</div> : null}
         {loading && !overview ? <div className="learning-overview-loading" role="status">正在加载知识薄弱点总览…</div> : null}
-        {!error && !loading && !overview ? noDataMessage(overview, filteredItems) : null}
-        {overview && overview.items.length === 0 ? noDataMessage(overview, filteredItems) : null}
-        {overview && overview.items.length > 0 && filteredItems.length === 0 ? noDataMessage(overview, filteredItems) : null}
+        {!error && !loading && !overview ? noDataMessage(overview, currentItems) : null}
+        {overview && overview.items.length === 0 ? noDataMessage(overview, currentItems) : null}
+        {!timeRecallView && overview && overview.items.length > 0 && filteredItems.length === 0 ? noDataMessage(overview, filteredItems) : null}
 
-        {overview && filteredItems.length > 0 ? <>
+        {!timeRecallView && overview && filteredItems.length > 0 ? <>
           <div className="learning-overview-result-meta"><span>显示 {visibleItems.length} / {filteredItems.length} 个概念</span><span>点击概念名称查看节点</span></div>
           <div className="learning-overview-table-wrap">
             <table className="learning-overview-table">
@@ -248,6 +264,7 @@ export function LearningOverviewDialog({
           </div>
           {visibleCount < filteredItems.length ? <button type="button" className="learning-overview-more" onClick={() => setVisibleCount((count) => Math.min(count + PAGE_SIZE, filteredItems.length))}>显示更多（每批 {PAGE_SIZE} 条）</button> : null}
         </> : null}
+        {timeRecallView && overview && overview.items.length > 0 ? <TimeRecallComparison items={timeRecallItems} disabled={navigationDisabled} onSelect={onSelect} /> : null}
       </div>
       <footer className="learning-overview-footer"><span>总览只提供练习线索；选择概念后可在节点详情中进行回忆、场景调用或记录应用。</span><button type="button" className="learning-overview-footer-close" onClick={onClose}>完成</button></footer>
     </div>

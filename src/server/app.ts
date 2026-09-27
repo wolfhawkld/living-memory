@@ -479,6 +479,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       sourceId: source.namespace, asOf, concepts,
       states: store.getStates(concepts, asOf),
       observations: store.getObservations(), applications: store.getApplications(),
+      anchors: store.getAnchors(),
     }));
   }));
   app.get('/api/review-plan', asyncRoute((req, res) => {

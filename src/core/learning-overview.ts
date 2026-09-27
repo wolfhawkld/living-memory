@@ -1,4 +1,5 @@
 import type {
+  AnchorEvent,
   ApplicationRecord,
   CalibrationSummary,
   Concept,
@@ -14,6 +15,7 @@ import type {
 import { domainIdOf } from './domain-view.js';
 import { summarizeLearning } from './learning-evidence.js';
 import { isValidInstant } from './time-model.js';
+import { buildTimeRecallSummary } from './time-recall.js';
 
 /** Inputs used to build the privacy-preserving learning overview. */
 export interface LearningOverviewInput {
@@ -23,6 +25,7 @@ export interface LearningOverviewInput {
   states: Readonly<Record<string, MemoryState>>;
   observations: readonly Observation[];
   applications: readonly ApplicationRecord[];
+  anchors?: readonly AnchorEvent[];
 }
 
 export interface LearningOverviewSelectionOptions {
@@ -237,9 +240,16 @@ export function buildLearningOverview({
   states,
   observations,
   applications,
+  anchors = [],
 }: LearningOverviewInput): LearningOverview {
   const asOfTimestamp = parseTimestamp(asOf) ?? Number.NaN;
   const observationsByConcept = new Map<string, Observation[]>();
+  const anchorsByConcept = new Map<string, AnchorEvent[]>();
+  for (const anchor of anchors) {
+    const bucket = anchorsByConcept.get(anchor.conceptId);
+    if (bucket) bucket.push(anchor);
+    else anchorsByConcept.set(anchor.conceptId, [anchor]);
+  }
   for (const observation of observations) {
     if (prepareTime(observation.observedAt, observation.recordedAt, asOfTimestamp) === null) continue;
     const bucket = observationsByConcept.get(observation.conceptId);
@@ -315,6 +325,7 @@ export function buildLearningOverview({
         previousApplications: previousApplicationCount,
         latestAt: maxTimestamp(observationLatestAt, applicationLatestAt),
       },
+      timeRecall: buildTimeRecallSummary(currentObservations, anchorsByConcept.get(concept.id) ?? [], asOf),
     };
     items.push(item);
   }

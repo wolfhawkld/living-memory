@@ -60,6 +60,7 @@ import './application-record.css';
 import { LearningOverviewDialog } from './LearningOverviewDialog';
 import { createLearningOverviewLoader, resolveOverviewSelection } from './learning-overview-loader';
 import './learning-overview.css';
+import './time-recall.css';
 import { RetentionConfirmation } from './RetentionConfirmation';
 import { useConceptHistory } from './useConceptHistory';
 import { parseSourceExposure, sourceExposureKey, SOURCE_EXPOSURE_STORAGE_KEY } from './source-exposure';

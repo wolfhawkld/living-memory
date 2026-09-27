@@ -23,6 +23,8 @@ export interface LearningOverviewItem {
   calibration: { concept: CalibrationSummary; scenario: CalibrationSummary };
   applications: { application: number; summary: number; latestAt: string | null };
   evidence: { currentObservations: number; previousObservations: number; previousApplications: number; latestAt: string | null };
+  /** Optional for clients talking to an older service; unknown is not an empty result. */
+  timeRecall?: import('./time-recall.js').TimeRecallSummary;
 }
 
 export interface LearningOverview {

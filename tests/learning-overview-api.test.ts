@@ -352,6 +352,11 @@ test('learning overview aggregates current evidence across the full source and k
     assert.equal(alphaItem.scenario.latest?.eventId, 'alpha-current-scenario-observation');
     assert.equal(alphaItem.recall.latest?.cue, 'independent');
     assert.equal(alphaItem.recall.latest?.outcome, 'success');
+    assert.equal(alphaItem.timeRecall?.buckets.length, 1);
+    assert.equal(alphaItem.timeRecall?.buckets[0].anchorKind, 'review');
+    assert.equal(alphaItem.timeRecall?.buckets[0].condition, 'unexposed');
+    assert.equal(alphaItem.timeRecall?.buckets[0].latest.elapsedDays, 3);
+    assert.deepEqual(alphaItem.timeRecall?.excluded, { scenario: 1, missingTime: 0, invalidTime: 0 });
 
     const modelItem = itemByPath(overview.items, 'Model.md', refreshed);
     assert.equal(modelItem.recall.total, 0);
@@ -400,6 +405,15 @@ test('learning overview enforces read source identity and account-private namesp
       method: 'POST', cookie: ownerCookie, headers: ownerHeaders,
       body: application(ownerConcept, 'owner-overview-application', { content: 'OWNER_PRIVATE_RECORD' }),
     })).status, 201);
+    assert.equal((await client.request('/api/reviews', {
+      method: 'POST', cookie: ownerCookie, headers: ownerHeaders,
+      body: { eventId: 'owner-time-anchor', conceptId: ownerConcept.id, sourceRevision: ownerConcept.source.revision,
+        kind: 'review', occurredAt: '2026-02-01T00:00:00Z' },
+    })).status, 201);
+    assert.equal((await client.request('/api/observations', {
+      method: 'POST', cookie: ownerCookie, headers: ownerHeaders,
+      body: observation(ownerConcept, ownerSnapshot, 'owner-time-observation', { anchorEventId: 'owner-time-anchor' }),
+    })).status, 201);
 
     const wrongSource = await client.request('/api/learning-overview', {
       cookie: ownerCookie,
@@ -413,6 +427,7 @@ test('learning overview enforces read source identity and account-private namesp
     })).json<LearningOverview>();
     assert.equal(ownerOverview.items.length, 3);
     assert.equal(ownerOverview.items.find((item) => item.conceptId === ownerConcept.id)?.applications.application, 1);
+    assert.equal(ownerOverview.items.find((item) => item.conceptId === ownerConcept.id)?.timeRecall?.buckets[0].count, 1);
 
     const created = await client.request('/api/admin/users', {
       method: 'POST', cookie: ownerCookie, headers: ownerHeaders,
@@ -451,6 +466,7 @@ test('learning overview enforces read source identity and account-private namesp
     assert.equal(memberOverview.items.length, 1);
     assert.equal(memberOverview.items[0].conceptId, memberConcept.id);
     assert.equal(memberOverview.items[0].applications.application, 1);
+    assert.deepEqual(memberOverview.items[0].timeRecall?.buckets, []);
     assert.notEqual(memberOverview.items[0].conceptId, ownerConcept.id);
 
     const ownerResponse = JSON.stringify(ownerOverview);
@@ -467,4 +483,59 @@ test('learning overview enforces read source identity and account-private namesp
     if (client) await client.stop();
     fixture.cleanup();
   }
+});
+
+test('time comparison keeps historical H and review dates across new reviews, config changes and source revisions', async () => {
+  const client = await running();
+  try {
+    const credentials = await session(client);
+    const headers = tokenHeaders(credentials);
+    const initial = await snapshot(client);
+    assert.equal(initial.config.halfLifeDays, 7);
+    const targets = [conceptAt(initial, 'Math/Alpha.md'), conceptAt(initial, 'Math/Beta.md')];
+    for (const [index, concept] of targets.entries()) {
+      const anchor = { eventId: `time-anchor-${index}`, conceptId: concept.id, sourceRevision: concept.source.revision,
+        kind: index ? 'estimated' : 'review', occurredAt: '2026-02-01T00:00:00Z' };
+      assert.equal((await client.request('/api/reviews', { method: 'POST', headers, body: anchor })).status, 201);
+      assert.equal((await client.request('/api/observations', { method: 'POST', headers,
+        body: observation(concept, initial, `time-observation-${index}`, {
+          observedAt: '2026-02-15T00:00:00Z', anchorEventId: anchor.eventId, rating: 'clear',
+          learning: { task: 'concept', confidence: null, confidenceAt: null, cue: 'independent', outcome: 'success', basis: 'self-check' },
+        }),
+      })).status, 201);
+      assert.equal((await client.request('/api/reviews', { method: 'POST', headers,
+        body: { ...anchor, eventId: `latest-anchor-${index}`, kind: 'review', occurredAt: '2026-02-28T00:00:00Z' },
+      })).status, 201);
+    }
+    assert.equal((await client.request('/api/config', { method: 'PUT', headers,
+      body: { revision: initial.config.revision, halfLifeDays: 28 },
+    })).status, 200);
+    const current = await snapshot(client);
+    assert.equal(current.states[targets[0].id].status, 'recent');
+    const before = (await client.request('/api/export')).json<ExportData>();
+    const read = await client.request('/api/learning-overview', { headers });
+    assert.equal(read.status, 200);
+    const overview = read.json<LearningOverview>();
+    for (const [index, concept] of targets.entries()) {
+      const item = overview.items.find(row => row.conceptId === concept.id)!;
+      assert.equal(item.memory.status, 'recent');
+      const bucket = item.timeRecall!.buckets[0];
+      assert.equal(bucket.band, 'stale');
+      assert.equal(bucket.anchorKind, index ? 'estimated' : 'review');
+      assert.equal(bucket.latest.halfLifeDays, 7);
+      assert.equal(bucket.latest.configRevision, initial.config.revision);
+      assert.equal(bucket.latest.elapsedDays, 14);
+      assert.equal(bucket.latest.decay, 0.25);
+      assert.equal(bucket.latest.anchorOccurredAt, '2026-02-01T00:00:00.000Z');
+      assert.equal(bucket.latestClear?.eventId, `time-observation-${index}`);
+    }
+    await client.request('/api/learning-overview', { headers });
+    assert.deepEqual((await client.request('/api/export')).json<ExportData>(), before);
+    writeFileSync(join(client.root, 'Math', 'Alpha.md'), conceptFile('Alpha', 'Changed version', 'NEW_PRIVATE_BODY'));
+    assert.equal((await client.request('/api/refresh', { method: 'POST', headers, body: {} })).status, 200);
+    const changed = (await client.request('/api/learning-overview', { headers })).json<LearningOverview>();
+    const alpha = changed.items.find(row => row.conceptId === targets[0].id)!;
+    assert.equal(alpha.evidence.previousObservations, 1);
+    assert.deepEqual(alpha.timeRecall!.buckets, [], 'old version observations are not matched to current content');
+  } finally { await client.stop(); }
 });
