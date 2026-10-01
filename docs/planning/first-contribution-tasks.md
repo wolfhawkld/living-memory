@@ -1,6 +1,6 @@
 # 首批可认领的协作任务（OSS-07）
 
-整理日期：2026-10-01，针对当前 `develop`。以下是待实施的协作任务，不是已完成功能清单。请先阅读[新人运行指南](../development/first-run.md)、[开发导览](../development/codebase-guide.md)和[贡献约定](../../CONTRIBUTING.md)，在对应 Issue 留下认领范围，避免重复工作；外部贡献的 PR 目标为 `develop`。
+更新日期：2026-10-01，针对当前 `develop`。以下保留首批协作任务的范围，已完成与待实施状态见任务索引。请先阅读[新人运行指南](../development/first-run.md)、[开发导览](../development/codebase-guide.md)和[贡献约定](../../CONTRIBUTING.md)，在对应 Issue 留下认领范围，避免重复工作；外部贡献的 PR 目标为 `develop`。
 
 本批优先选择文档、合成示例、独立 UI 与边界测试，不要求个人知识库。已有历史 Issue 包含已实现但仍待专项验收的功能；合并过代码不等于人工验收完成，本批不自动关闭那些 Issue。
 
@@ -8,7 +8,7 @@
 
 | ID | 任务 | 标签 | GitHub / 状态 |
 | --- | --- | --- | --- |
-| CONTRIB-01 | README 示意素材的 npm 生成入口 | `good first issue`、`documentation` | [#39](https://github.com/wolfhawkld/living-memory/issues/39)，待认领 |
+| CONTRIB-01 | README 示意素材的 npm 生成入口 | `good first issue`、`documentation` | [#39](https://github.com/wolfhawkld/living-memory/issues/39)，已在 `develop` 完成 |
 | CONTRIB-02 | 可直接打开的合成图片与 Mermaid 笔记 | `good first issue`、`documentation` | [#40](https://github.com/wolfhawkld/living-memory/issues/40)，待认领 |
 | CONTRIB-03 | 空图谱区域的说明与行动入口 | `good first issue`、`enhancement`、`accessibility` | [#41](https://github.com/wolfhawkld/living-memory/issues/41)，待认领 |
 | CONTRIB-04 | HTTP 错误与 preflight 边界回归 | `help wanted` | [#42](https://github.com/wolfhawkld/living-memory/issues/42)，待认领 |
@@ -20,7 +20,9 @@
 
 ## CONTRIB-01：README 示意素材的 npm 生成入口
 
-**现状：** [生成器](../../scripts/generate-readme-demo.ts)已存在；[素材说明](../assets/README.md)使用直接 Node 命令，[package.json](../../package.json)没有容易发现的 npm script。
+**已完成（2026-10-01）：** [package.json](../../package.json)已增加 `generate:readme-demo`，并更新[素材说明](../assets/README.md)及[开发导览](../development/codebase-guide.md)。以下保留原任务范围与验收条件。
+
+**原问题：** [生成器](../../scripts/generate-readme-demo.ts)已存在，但缺少容易发现的 npm script，素材说明使用直接 Node 命令。
 
 **范围：** 增加 `generate:readme-demo` 脚本，沿用现有生成器；更新素材说明并在开发导览添加入口。只改包脚本及相关文档，不改生成算法、依赖、时间数值或记忆模型。
 
@@ -31,6 +33,8 @@
 - 不新增依赖，不无关改动 lockfile；素材仍明确是固定布局与虚构日期的示意，不兼容学习导入格式。
 
 **验证：** 执行新命令两次，比较输出和 `git diff`，检查文档链接及 `git diff --check`。脚本实现不变时无需为一个别名新增镜像测试或完整应用回归；PR 写明实际输出比较结果。
+
+**实际检查：** Node 22.23.1、npm 10.9.8 下连续执行两次 `npm run generate:readme-demo` 成功；SVG（9,476 字节）和 JSON（5,945 字节）两轮结果与原跟踪素材逐字节一致。生成器和 lockfile 未变，包元数据除新增脚本外相同；六个合成概念、11 条关系、固定时间与 `notForLearningImport` 标记保留。文档链接及差异格式通过；没有读取个人知识或学习数据、运行本地浏览器或重复完整应用回归。改动沿用 `develop`，既有发行 tag 不变。
 
 <a id="contrib-02"></a>
 

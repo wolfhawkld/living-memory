@@ -15,6 +15,7 @@
     "lm": "tsx src/cli/index.ts",
     "install:kg-hook": "tsx src/integrations/install-kg-hook.ts",
     "build": "tsc --noEmit && vite build",
+    "generate:readme-demo": "node --import tsx scripts/generate-readme-demo.ts",
     "check:theme-build": "node --import tsx scripts/check-theme-build.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",

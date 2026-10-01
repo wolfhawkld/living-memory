@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | 页面如何启动 | [main.tsx](../../src/web/main.tsx)、[AuthGate.tsx](../../src/web/AuthGate.tsx)、[App.tsx](../../src/web/App.tsx) | 建号/登录后挂载工作区；App 编排领域、选择、图谱、阅读、练习和数据操作 |
 | 服务如何启动 | [index.ts](../../src/server/index.ts)、[app.ts](../../src/server/app.ts) | 监听本机回环地址；建立账号上下文、来源和 Store，校验请求并分派 API |
+| README 示意素材如何更新 | [素材说明](../assets/README.md)、`npm run generate:readme-demo` | 生成固定布局的公开合成 SVG/JSON；仅使用 `fixtures/demo-kg`，不访问私人库或导入个人学习数据 |
 | Markdown 如何变成图谱 | [kg.ts](../../src/server/kg.ts)、[domain-view.ts](../../src/core/domain-view.ts) | 只读扫描概念、解析双链和来源版本；维护完整索引和按领域展示的视图 |
 | 时间颜色如何计算 | [types.ts](../../src/shared/types.ts)、[time-model.ts](../../src/core/time-model.ts)、[store.ts](../../src/server/store.ts) | 定义事件/状态契约；从重温起点、资料版本、时间和全局 H 投影状态 |
 | 学习记录保存在哪里 | [store.ts](../../src/server/store.ts)、[accounts.ts](../../src/server/accounts.ts) | 学习数据按知识空间写入 SQLite；账号与登录会话使用独立的 SQLite 库 |

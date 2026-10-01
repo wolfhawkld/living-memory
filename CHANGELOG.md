@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-后续开发变化在此记录。
+新增开发命令 `npm run generate:readme-demo`，复用既有生成器重新生成 README 合成 SVG/JSON；素材说明与开发导览提供入口。生成算法、素材内容、依赖解析和记忆规则未改变。
 
 ## 0.0.1-preview.1 — 2026-10-01
 

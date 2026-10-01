@@ -5,7 +5,7 @@
 从仓库根目录重新生成两个素材：
 
 ```sh
-node --import tsx scripts/generate-readme-demo.ts
+npm run generate:readme-demo
 ```
 
 生成脚本显式读取 `fixtures/demo-kg`，通过 `loadKnowledgeGraph` 解析 `Math` 目录中这六个公开演示概念：向量、矩阵、范数、内积、余弦相似度、正交。图中的关系来自解析器实际解析出的关系；JSON 保留 11 条关系的方向、类型和相对来源路径，图中有 8 个节点对，反向关系可能重叠。箭头表示笔记中的关系方向，不表示因果。布局坐标固定，便于 README 中稳定引用。

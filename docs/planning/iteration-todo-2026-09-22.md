@@ -8,9 +8,11 @@
 
 2026-10-01 已完成 **OSS-01～06**：CI 认证修复、默认分支同步、新人运行、首页与文档整理、有限范围公开内容检查，以及贡献/维护约定。成果通过 [PR #37](https://github.com/wolfhawkld/living-memory/pull/37) 和 [PR #38](https://github.com/wolfhawkld/living-memory/pull/38) 分批集成到 `main`；具体证据与边界见[开源准备记录](open-source-readiness-2026-09-27.md)。
 
-**OSS-07：开发导览与首批协作任务**已完成。[模块导览](../development/codebase-guide.md)与[可认领任务](first-contribution-tasks.md)已保存；GitHub #39～43 已发布并核对正文、标签与链接，任务本身仍待认领实施。
+**OSS-07：开发导览与首批协作任务**已完成。[模块导览](../development/codebase-guide.md)与[协作任务](first-contribution-tasks.md)已保存；GitHub #39～43 已发布并核对正文、标签与链接。#39 已在 `develop` 实施，其余仍待认领；具体范围与检查结果见任务表。
 
-**OSS-08 维护基础**已完成：[更新记录](../../CHANGELOG.md)、[版本兼容约定](../releases/versioning-and-compatibility.md)与[升级恢复](../releases/upgrade-and-recovery.md)已保存，包元数据准备为 `0.0.1-preview.1`。合成两账号恢复、38 项兼容专项与构建通过，边界见[验证记录](../releases/upgrade-validation-2026-10-01.md)。后续按[预览发布清单](../releases/local-web-preview.md)集中同步 `main`、核对最终 CI/归档并执行 tag/prerelease；当前仍未发行，后续兼容维护持续进行。本地浏览器视觉验收仍由用户进行。
+**OSS-08 维护基础与首个预览发布**已完成：[更新记录](../../CHANGELOG.md)、[版本兼容约定](../releases/versioning-and-compatibility.md)与[升级恢复](../releases/upgrade-and-recovery.md)已保存。`v0.0.1-preview.1` 已发布为 prerelease，最终 CI、归档与精确提交见[发布记录](../releases/preview-publication-2026-10-01.md)；合成两账号恢复与 38 项兼容专项的边界见[验证记录](../releases/upgrade-validation-2026-10-01.md)。兼容维护持续进行，本地浏览器视觉验收仍由用户进行。
+
+**接续首批协作任务：** CONTRIB-01 / #39 已增加 `npm run generate:readme-demo`，两次输出与既有素材逐字节一致。下一项为 CONTRIB-02 / [#40](https://github.com/wolfhawkld/living-memory/issues/40)：在既有示例笔记加入原创静态 SVG 和 Mermaid，方便直接测试媒体阅读；专项视觉仍由用户验收。
 
 ## 原有 TODO 在哪里
 
@@ -113,8 +115,8 @@
 - 时间提示与回忆表现对照：提供按已保存记录查看现象的入口，不自动调整 H。真实基线与延迟试用、近期接触及负担反馈仍需本人完成，不将软件功能通过当作 LM-018 已完成。
 - 知识修正建议：人工复核入口与跨领域待办总览已接入，KG 外部更新的真实端到端试用与结构化关系修正仍待完成。
 - ChatGPT 原生语音访问同一图谱资源：入口偏好已确认，真实资源访问与语音闭环仍待验证。
-- Obsidian 宿主、社交、同步、移动端和开源发布准备：保留原路线，不因演示完成自动扩大本轮范围。
-- 开源许可：2026-09-27 按用户要求采用 [MIT 许可证](../../LICENSE)，已同步包元数据和 README；仓库已公开，默认分支同步与正式预览发布按[开源准备 TODO](open-source-readiness-2026-09-27.md)后续推进。
+- Obsidian 宿主、社交、同步和移动端：保留原路线，不因演示完成自动扩大本轮范围。
+- 开源许可与首个预览：采用 [MIT 许可证](../../LICENSE)，仓库已公开，首个源码 prerelease 已完成；后续协作与维护见[开源准备记录](open-source-readiness-2026-09-27.md)和[协作任务](first-contribution-tasks.md)。
 - 多标签页待同步并发：已接入同浏览器、同源新版页面的协调；保留原队列格式，更新后需刷新所有页面，浏览器验收仍由用户进行。
 - 参数配置幂等重试：已兼容旧队列，核对相邻版本的原始参数修改；重复确认不覆盖后续设置，真实版本冲突继续保留。
 - 请求超时与同步恢复：普通知识/学习请求 15 秒、导入导出 60 秒；待同步批次遇到超时结束本轮，原记录保留，其他页面可以接着重试。
