@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { chooseDomain, domainIdOf } from '../../src/core/domain-view';
 import type { Snapshot } from '../../src/shared/types';
 

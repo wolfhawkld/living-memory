@@ -1,4 +1,5 @@
-import { expect, test, type Page, type APIRequestContext } from '@playwright/test';
+import { type Page, type APIRequestContext } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { readFile } from 'node:fs/promises';
 import { createDemoRecord, projectDemoSnapshot, type DemoRecord } from '../../src/core/demo-snapshot';
 import { domainIdOf, domainLabel } from '../../src/core/domain-view';
@@ -427,6 +428,7 @@ test('recall hides sources, stores a frozen observation, and never resets time',
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.locator('.graph-stage')).toBeHidden();
   await expect(page.getByText(concept.summary, { exact: true })).toBeHidden();
+  await page.getByRole('button', { name: '开始作答', exact: true }).click();
   await page.getByRole('textbox', { name: '回忆答案' }).fill('后验概率与似然和先验的乘积成比例，并需要归一化。');
   await page.getByRole('button', { name: '提交回答，查看资料' }).click();
   await page.getByRole('button', { name: '能解释', exact: true }).click();
@@ -443,10 +445,12 @@ test('recall hides sources, stores a frozen observation, and never resets time',
   expect((await snapshot(request)).states[concept.id].status).toBe('unknown');
 
   await page.getByRole('button', { name: /先想一句/ }).click();
+  await page.getByRole('button', { name: '开始作答', exact: true }).click();
   await page.getByRole('textbox', { name: '回忆答案' }).fill('第二次是在看过资料之后的重建。');
   await page.getByRole('button', { name: '提交回答，查看资料' }).click();
   await page.getByRole('button', { name: '有些模糊', exact: true }).click();
-  await page.locator('.exposure-options select').selectOption('unexposed');
+  await expect(page.locator('.exposure-options select')).toBeDisabled();
+  await expect(page.locator('.exposure-options select')).toHaveValue('exposed');
   await page.getByRole('button', { name: '保存这次观察' }).click();
   await expect(page.getByRole('dialog')).toBeHidden();
   const observations = (await exported(request)).observations.filter((item) => item.conceptId === concept.id);

@@ -25,6 +25,7 @@ export default defineConfig({
     timeout: 30_000,
     env: {
       LM_PORT: '4318',
+      LM_AUTH_MODE: 'accounts',
       LM_DATA_DIR: resolve('.cache', `e2e-${randomUUID()}`),
       LM_KG_ROOT: resolve('fixtures/demo-kg'),
       LM_KG_LIMIT: '20',
