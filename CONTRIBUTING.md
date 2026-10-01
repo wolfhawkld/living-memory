@@ -30,4 +30,4 @@ Living Memory 当前的 P0 时间驱动原型已可运行并进入小范围试�
 
 ## 发布状态
 
-当前协作以私有仓库进行。未来开源时再共同确定项目许可证、示例数据许可与发布流程；本仓库尚未添加开源许可证。
+仓库已公开，源码采用 [MIT 许可证](LICENSE)；第三方依赖和外部知识内容遵循各自许可。当前仍为本地 Web 原型，正式预览尚未发布。阶段集成与发布条件见[本地 Web 预览发布准备](docs/releases/local-web-preview.md)，后续协作完善见[开源 TODO](docs/planning/open-source-readiness-2026-09-27.md)。
