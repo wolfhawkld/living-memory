@@ -65,6 +65,8 @@ git diff
 
 PR 应按“问题 → 变化 → 验证 → 未覆盖内容与限制”说明结果，并关联 Issue 或任务。只描述本次范围内的行为和验证；发现相邻问题可另开 Issue。视觉改动可在有助于评审时附合成数据截图，文档或后端改动不需要为了模板而附图。验证没有覆盖的设备、浏览器、数据迁移或用户学习效果，应明确写出。
 
+影响用户行为、接口或持久化格式时，同步[更新记录](CHANGELOG.md)的 `Unreleased`，按[版本与兼容约定](docs/releases/versioning-and-compatibility.md)说明旧版本、迁移和回退；纯文字小改不必制造版本条目。用户升级步骤见[完整备份与恢复](docs/releases/upgrade-and-recovery.md)。
+
 请同时遵守根目录的[安全报告说明](SECURITY.md)、[行为准则](CODE_OF_CONDUCT.md)和[维护者说明](MAINTAINERS.md)。这些文件描述漏洞报告、协作行为和维护权限；它们由维护者单独维护。
 
 ## 许可证

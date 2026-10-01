@@ -51,6 +51,8 @@ npm start
 
 需要整体备份时，停止服务后复制整个数据目录，并单独备份外部知识源；不要只复制运行中的单个 SQLite 文件。页面“导出学习数据”生成的 JSON 可按[导入恢复说明](learning-data-import.md)恢复支持的学习内容，但不含账号、密码、知识正文或浏览器草稿，不是完整应用备份。
 
+完整升级、目录外 CLI 状态、原路径恢复及回退步骤见[升级与恢复](../releases/upgrade-and-recovery.md)；[版本兼容约定](../releases/versioning-and-compatibility.md)说明当前格式与迁移范围。
+
 ## 5. 接入自己的 Markdown 知识库
 
 管理员在启动前设置 `LM_KG_ROOT`。不要求安装 progressive-kg，但笔记须符合下述概念格式。建议把知识库放在独立目录，例如：
@@ -138,6 +140,8 @@ npm run --silent lm -- query "向量"
 ```
 
 CLI 自动读取管理员的设备凭据。若服务使用自定义 `LM_DATA_DIR`，CLI 终端也要设置相同值；若换了端口，需通过 `--url http://127.0.0.1:<端口>` 指定服务地址。CLI 查询会刷新知识索引，但不确认重温。CLI 设备身份目前对应管理员，不能用来读取成员的私人空间。其他操作见[CLI 与 KG 触发](cli-and-kg-triggers.md)。
+
+CLI 重温回执默认另存于仓库 `data/local/cli`，不会随 `LM_DATA_DIR` 改变；`LM_CLI_STATE_DIR` / `--state-dir` 可另设。设备文件默认跟随数据目录，`LM_CLI_SESSION_FILE` 可另设。备份自定义数据目录时同时核对这些路径。
 
 ## 常见启动问题
 

@@ -2,11 +2,11 @@
 
 更新：2026-10-01。本文供维护者核对首个预览版的范围和发布条件，也帮助贡献者了解默认分支中的程序能做什么。可运行应用、合成示例、MIT 许可和通过检查的开发成果已通过 [PR #37](https://github.com/wolfhawkld/living-memory/pull/37) 同步到 `main`；正式预览发布需完成下述准备。候选名称为 **Living Memory 本地 Web 预览版**，候选 tag 为 `v0.0.1-preview.1`，尚未发布。
 
-后续 [PR #38](https://github.com/wolfhawkld/living-memory/pull/38) 已将 OSS-03～06 的运行、公开内容检查和协作准备集中同步到 `main`，合并提交 `400f622`；该阶段的分支与 PR CI 均通过。默认分支已有新版首页、推荐版本文件、贡献模板和安全报告说明，下一项是开发导览与首批协作任务。
+后续 [PR #38](https://github.com/wolfhawkld/living-memory/pull/38) 已将 OSS-03～06 的运行、公开内容检查和协作准备集中同步到 `main`，合并提交 `400f622`；该阶段的分支与 PR CI 均通过。OSS-07 导览与首批任务已在 `develop` 完成，OSS-08 已建立[更新记录](../../CHANGELOG.md)、[版本兼容约定](versioning-and-compatibility.md)及[升级恢复步骤](upgrade-and-recovery.md)，包元数据准备为 `0.0.1-preview.1`。这些后续成果仍需集中进入最终发行的 `main` 提交。
 
 ## 默认分支同步范围
 
-本轮以长期 `develop` 为来源，集中评审后合入 `main`。开始检查时，`main` 为初始化提交 `1db01b4`，`develop` 为 `8d3f151`，相差 55 个提交、286 个文件；`main` 是 `develop` 的祖先，没有分叉或删除文件。下列功能属于这一阶段的累计成果，具体交互与未验收部分以对应开发说明为准。
+本轮以长期 `develop` 为来源，集中评审后合入 `main`。OSS-02 开始检查时的历史快照为 `main=1db01b4`、`develop=8d3f151`，相差 55 个提交、286 个文件；这不是当前分支差异，后续已由 PR #37/#38 集成。下列功能属于累计成果，具体交互与未验收部分以对应开发说明为准。
 
 | 范围 | 本阶段包含的内容 |
 | --- | --- |
@@ -22,7 +22,9 @@
 
 ## 已有验证和待验收范围
 
-阶段提交 `9d14cf0` 的 [分支 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36824188815) 与 [PR CI](https://github.com/wolfhawkld/living-memory/actions/runs/36824199178) 均通过，覆盖 496 项 Node/HTTP 测试、构建、主题构建检查及 10 项浏览器回归。PR #37 已合入 `main`，合并提交为 `d9e847e`；其应用、测试、包元数据及 CI 配置与通过检查的阶段提交一致。本次后续仅补充集成结果文档；正式发布前仍需核对最终发行提交的检查状态。
+历史阶段提交 `9d14cf0` 的 [分支 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36824188815) 与 [PR CI](https://github.com/wolfhawkld/living-memory/actions/runs/36824199178) 均通过，覆盖 496 项 Node/HTTP 测试、构建、主题构建检查及 10 项浏览器回归。PR #37 合入 `main` 的提交为 `d9e847e`，当时仅再补充该次集成结果文档；其应用、测试、包元数据及 CI 配置与当时通过检查的阶段提交一致。后来新增的文档、准备版本和验证见本页后续记录，正式发布仍需核对最终发行提交。
+
+2026-10-01 已核对 OSS-07 文档提交 `e6c5ac7` 的 [develop CI](https://github.com/wolfhawkld/living-memory/actions/runs/36846175655) 全部通过。OSS-08 另通过 38 项兼容专项、构建与合成原路径恢复演练，具体范围见[验证记录](upgrade-validation-2026-10-01.md)；这些证据不替代最终发行提交的 CI。
 
 CI 浏览器使用 Linux 软件渲染，验证基本 WebGL 和交互路径。本地浏览器视觉验收由用户进行；实际桌面 GPU 帧率、功耗、大知识库规模和其他系统的安装体验尚没有完整验证结论。真实延迟回忆与记忆收益也仍待观察，时间颜色是管理提示，不是记忆百分比。
 
@@ -30,17 +32,17 @@ CI 浏览器使用 Linux 软件渲染，验证基本 WebGL 和交互路径。本
 
 ## 版本和分发方式
 
-`v0.0.1-preview.1` 是候选预览 tag；现有 `package.json` 为 `0.0.1`，预览发布时再统一包元数据和最终 tag，并在 `main` 的已验证提交上固定版本。设计文档中的完整 v0.1 路线与软件预览版本是不同概念，前者仍未整体完成。
+`v0.0.1-preview.1` 是候选预览 tag；`develop` 的 `package.json`、lockfile 顶层及根包版本现已统一为准备版本 `0.0.1-preview.1`，依赖解析不变。tag 仍待最终发行的 `main` 提交通过检查后创建。设计文档中的完整 v0.1 路线与软件预览版本是不同概念，前者仍未整体完成。
 
-首个预览建议提供源码与安装说明。用户在本机执行 `npm ci`、`npm run build` 和 `npm start`，首次打开 `http://127.0.0.1:4317` 创建管理员，再使用合成示例或接入自己的 Markdown 知识源。当前建议使用与 CI 相同的 Node `22.23.1`；OSS-03 已核验隔离目录运行流程并保存[新人运行指南](../development/first-run.md)，版本文件与后续文档在正式发布前集中合入 `main`。当前不附带 `node_modules` 或 `dist`；未来分发构建包时按[第三方许可检查](third-party-licenses.md)保留实际包含的代码与字体许可。
+首个预览建议提供源码与安装说明。用户在本机执行 `npm ci`、`npm run build` 和 `npm start`，首次打开 `http://127.0.0.1:4317` 创建管理员，再使用合成示例或接入自己的 Markdown 知识源。当前建议使用与 CI 相同的 Node `22.23.1`；OSS-03 已核验隔离目录运行流程并保存[新人运行指南](../development/first-run.md)。现有指南使用 `develop`；发行说明需指向最终固定 tag/提交，OSS-07～08 文档与版本准备仍待阶段集成。当前不附带 `node_modules` 或 `dist`；未来分发构建包时按[第三方许可检查](third-party-licenses.md)保留实际包含的代码与字体许可。
 
 GitHub release 由 tag 固定源码位置，并自动提供源码归档；发布时应明确标记为 prerelease。当前 `private: true` 继续防止误发 npm 包，首轮不提供独立安装器或托管在线服务。tag、release 页面与源码版本的关系见 [GitHub release 说明](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)和[发布管理](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
 
 ## 升级与数据保留
 
-本轮集成与文档改动不新增数据库迁移或改变记忆规则。已有使用者升级前应先同步浏览器待写入记录，暂停服务并备份整个私人数据目录和外部知识库，再更新源码、安装依赖与构建。浏览器中的待同步记录和复习草稿需要另行处理，不能依赖服务端备份自动恢复。
+本轮版本元数据和文档不新增数据库迁移或改变记忆规则。已有使用者先按[升级与恢复步骤](upgrade-and-recovery.md)同步待写入记录，暂停服务并完整备份数据、外部知识及目录外 CLI 状态，再更新源码、安装依赖与构建。浏览器状态另行处理；恢复使用配套源码/数据和原知识路径，不承诺改变根目录后自动衔接。
 
-学习 JSON 当前使用 `schemaVersion: 1`，可按 [导入恢复说明](../development/learning-data-import.md) 预览、去重并确认恢复；它不包含 Markdown 正文、附件、账号密码或浏览器草稿。导出恢复不能代替整机迁移或完整备份。后续版本需要记录数据与 API 兼容变化；预览阶段尚不承诺稳定的公开集成 API。
+学习 JSON 当前使用 `schemaVersion: 1`，可按[导入恢复说明](../development/learning-data-import.md)预览、去重并确认恢复；它不包含 Markdown 正文、附件、账号密码或浏览器草稿。导出恢复不能代替整机迁移或完整备份。SQLite 没有统一结构版本和通用迁移机制，预览也不承诺稳定公开 API；具体旧字段、版本与客户端边界见[兼容约定](versioning-and-compatibility.md)。
 
 ## 正式预览发布前的清单
 
@@ -49,10 +51,13 @@ GitHub release 由 tag 固定源码位置，并自动提供源码归档；发布
 - [x] OSS-05：记录历史内容、附件、许可与 CI 日志的有限检查范围，泛化个人库存信息并补充截图说明；旧版本仍保留于 Git 历史。
 - [x] 按当前已实现功能写明安装步骤、数据备份、已知限制和贡献入口；README 与 CONTRIBUTING 保持一致。
 - [x] OSS-06：贡献指南、Issue/PR 模板、安全报告、行为与维护约定进入默认分支；私密漏洞报告已启用，旧草稿 PR 已收口。
-- [ ] 确定最终版本，统一 `package.json` 与 lockfile 元数据，核对最终 `main` 提交的 CI 及未验收记录。
+- [x] OSS-07：在 `develop` 保存模块导览，发布并核对可认领 Issues #39～43；任务本身仍待实施。
+- [x] OSS-08 维护基础：准备更新记录、版本/数据/API 约定、完整备份恢复与有限验证记录。
+- [x] 选择 `0.0.1-preview.1` 准备版本并统一包/lockfile 元数据，不改变依赖或数据格式。
+- [ ] 将 OSS-07～08 集中同步到最终发行的 `main`；核对精确提交的 CI、归档清单与未验收记录，整理对应版本的 changelog/release notes。
 - [ ] 在已核对的提交上创建 tag，填写 release notes 并标记 prerelease，核对归档内容后发布。
 
-默认分支同步不会自动满足这些发布条件。完成前三项后，维护者再核对最终清单并执行预览发布。
+准备版本和默认分支同步不会自动满足正式发布条件。维护基础已建立；后续按最后两项完成最终集成和预览发布，不把当前包版本视为已经发行。
 
 ## 候选预览发布说明
 

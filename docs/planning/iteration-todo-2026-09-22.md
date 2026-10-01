@@ -8,7 +8,9 @@
 
 2026-10-01 已完成 **OSS-01～06**：CI 认证修复、默认分支同步、新人运行、首页与文档整理、有限范围公开内容检查，以及贡献/维护约定。成果通过 [PR #37](https://github.com/wolfhawkld/living-memory/pull/37) 和 [PR #38](https://github.com/wolfhawkld/living-memory/pull/38) 分批集成到 `main`；具体证据与边界见[开源准备记录](open-source-readiness-2026-09-27.md)。
 
-**OSS-07：开发导览与首批协作任务**已完成。[模块导览](../development/codebase-guide.md)与[可认领任务](first-contribution-tasks.md)已保存；GitHub #39～43 已发布并核对正文、标签与链接，任务本身仍待认领实施。下一项为 **OSS-08：发布和兼容性维护**；[候选预览清单](../releases/local-web-preview.md)仍需最终核对，尚未创建 tag 或 release。本地浏览器视觉验收仍由用户进行。
+**OSS-07：开发导览与首批协作任务**已完成。[模块导览](../development/codebase-guide.md)与[可认领任务](first-contribution-tasks.md)已保存；GitHub #39～43 已发布并核对正文、标签与链接，任务本身仍待认领实施。
+
+**OSS-08 维护基础**已完成：[更新记录](../../CHANGELOG.md)、[版本兼容约定](../releases/versioning-and-compatibility.md)与[升级恢复](../releases/upgrade-and-recovery.md)已保存，包元数据准备为 `0.0.1-preview.1`。合成两账号恢复、38 项兼容专项与构建通过，边界见[验证记录](../releases/upgrade-validation-2026-10-01.md)。后续按[预览发布清单](../releases/local-web-preview.md)集中同步 `main`、核对最终 CI/归档并执行 tag/prerelease；当前仍未发行，后续兼容维护持续进行。本地浏览器视觉验收仍由用户进行。
 
 ## 原有 TODO 在哪里
 

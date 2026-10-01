@@ -66,7 +66,7 @@ Windows 原生、macOS、真实桌面 GPU 与大知识库性能仍待验证；�
 
 2026-10-01 已在 WSL2/Linux x86_64、Node 22.23.1 下验证隔离目录安装、构建、首次建号、知识源接入和重启保留。[提交 `5274166` 的 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36833118633) 通过 Node/HTTP 测试、构建、主题检查和浏览器回归。该结果验证软件路径，不构成目标设备性能或学习收益结论。
 
-开源运行文档、有限范围的公开内容检查和贡献约定已完成；[模块导览](docs/development/codebase-guide.md)和[首批协作任务](docs/planning/first-contribution-tasks.md)已整理，五个可认领 Issues 已发布。下一步核对版本兼容约定与预览发布。记忆模型扩展依据实际延迟观察推进。完整 v0.1 的任务和验收规格保留，不将已有 P0 子集视为全部完成。
+开源运行文档、有限范围的公开内容检查、贡献约定、[模块导览](docs/development/codebase-guide.md)和[首批协作任务](docs/planning/first-contribution-tasks.md)已整理。现已建立[更新记录](CHANGELOG.md)、[版本兼容约定](docs/releases/versioning-and-compatibility.md)和[升级恢复步骤](docs/releases/upgrade-and-recovery.md)，准备版本为 `0.0.1-preview.1`，正式 tag/release 尚未创建。下一步是最终阶段集成与预览发布检查。记忆模型扩展依据实际延迟观察推进；完整 v0.1 路线尚未整体验收。
 
 - [开源准备与完成记录](docs/planning/open-source-readiness-2026-09-27.md)
 - [近期迭代与未验收项](docs/planning/iteration-todo-2026-09-22.md)

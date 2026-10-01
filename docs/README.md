@@ -44,6 +44,9 @@
 
 - [开源协作准备与 TODO（2026-09-27）](planning/open-source-readiness-2026-09-27.md)：开源任务、已完成的运行/CI/文档/内容检查与后续协作准备。
 - [本地 Web 预览发布准备](releases/local-web-preview.md)：本轮集成范围、候选预览版本、验证边界、数据备份与正式发布前清单。
+- [更新记录](../CHANGELOG.md)与[版本/兼容约定](releases/versioning-and-compatibility.md)：准备版本、学习格式、模型、数据库和客户端的独立边界。
+- [完整备份、升级与恢复](releases/upgrade-and-recovery.md)：收拢待写入、停止完整复制、原路径恢复及跨根迁移限制。
+- [版本准备与合成恢复验证](releases/upgrade-validation-2026-10-01.md)：38 项兼容专项、构建、两账号恢复演练与平台证据范围。
 - [公开内容检查记录](releases/public-content-review-2026-10-01.md)：可达历史、图片、合成材料与 CI 日志的检查范围、修正与限制。
 - [第三方许可检查](releases/third-party-licenses.md)：依赖与 KaTeX 字体许可，源码及未来构建包的分发边界。
 - [开源协作实施记录](development/collaboration-maintenance.md)：贡献模板、仓库配置及旧 PR/分支收口的实际结果。
