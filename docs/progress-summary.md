@@ -30,7 +30,7 @@
 
 Living Memory 希望通过可视化知识图谱，持续外化、整合和巩固已经学过的知识与个人 insights，并在阅读、查询、回忆、使用、总结中维护可解释的学习状态。最终关注延迟后能否想起、解释、选择和使用知识，以及能否修正已有理解。
 
-用户当前大量阅读 AI、数学概念，也学习其他兴趣领域；按空闲时间不定期观看在线视频以理解原理和应用。日常使用方式已经明确为**融入阅读、查询和工作，附带少量复习**。
+目标使用者可将 AI、数学概念和其他兴趣领域作为首批材料；按空闲时间通过阅读或在线视频理解原理和应用。日常使用方式已经明确为**融入阅读、查询和工作，附带少量复习**。
 
 已明确的两类痛点：
 
@@ -115,9 +115,9 @@ multi-agent orchestrator 的例子已经充分说明第二类痛点：用户希�
 
 ## 6. progressive-kg 接入研究
 
-已找到现有本地知识库并做只读结构与样例检查；当前快照识别到约 **216 个 type: concept 页面**，包含 Math、Model、Biology、Culture、Language、Skill 等领域。页面已有层次化内容、关系和 Obsidian Markdown 结构，适合作为首批材料。[接入研究](research/progressive-kg-context.md)
+已找到现有知识源并做只读结构与样例检查；研究确认其页面具有层次化内容、关系和 Obsidian Markdown 结构，适合作为首批材料。当前公开文档不列原始快照规模、分类统计和具体笔记；原始数据文件未随源码分发，旧文档描述仍在历史。[接入研究](research/progressive-kg-context.md)
 
-约 216 页不等于最终图谱节点数、边数或用户掌握数量。尚未完成全量关系质量与学习状态审计，也未将内容导入新系统。
+原始知识源规模不等于最终图谱节点数、边数或目标使用者掌握数量。尚未完成全量关系质量与学习状态审计，也未将内容导入新系统。
 
 已识别重要字段边界：progressive-kg 的 maturity、confidence、verified、review_due 涉及内容成熟度、证据、核验或事实复核，不能直接复用为个人记忆强度、答题信心或复习到期。学习记录需要独立含义和关联方式。
 
@@ -150,7 +150,7 @@ multi-agent orchestrator 的例子已经充分说明第二类痛点：用户希�
 | [记忆研究总结](research/consolidated-findings.md) | 理论、证据边界、可训练方向；连接详细研究笔记 |
 | [个人记忆强化流程](design/personal-memory-workflow.md) | 阅读/查询/应用/总结/复习、状态记录、试用与验证设计 |
 | [事件触发与语音设计](design/event-triggers-and-voice.md) | 现有 KG 通道核查、统一事件、按需时间投影、语音候选路径与验证目标 |
-| [知识库接入研究](research/progressive-kg-context.md) | 本地快照、样例与字段语义约束 |
+| [知识库接入研究](research/progressive-kg-context.md) | 结构、样例与字段语义约束；公开版不列检查数据，旧文档描述仍在历史 |
 | [视觉规范](design/visualization-spec.md) | 空间、颜色、标签、镜头、布局、阅读与键盘入口 |
 | [可视化技术选型](research/visualization-options.md) | 候选研究、已确认路线、官方 Demo、性能控制与验证条件 |
 | [载体研究](research/platform-options.md) | Obsidian 可行性、架构边界、开源与同步待研究点 |
@@ -158,9 +158,9 @@ multi-agent orchestrator 的例子已经充分说明第二类痛点：用户希�
 | [离线风格预览](../prototypes/visual-direction.html) | 原生 HTML/CSS/SVG，18 个示例节点和 20 条边，风格切换、搜索、选择、关系高亮、演示路径、详情与动画开关 |
 | [P0 运行与联调](development/p0-running.md) | 时间模型、只读 progressive-kg、SQLite 学习记录、Web 3D/2D、模拟时间、回忆观察、导出及当前运行方式 |
 | [CLI 与 KG 日常触发](development/cli-and-kg-triggers.md) | 共用本地服务的查询/正文/状态/明确重温、幂等重试档案、Agent 刷新钩子、Web SSE 变化通知 |
-| [P0 验证记录](development/p0-validation.md) | 42 项模型/模拟数据/KG/服务/镜头/标签测试、9 条真实 Chromium 交互、真实 KG 数学目录只读导入与尚待验证事项 |
+| [P0 验证记录](development/p0-validation.md) | 42 项模型/模拟数据/KG/服务/镜头/标签测试、9 条真实 Chromium 交互、代表性知识源只读导入与尚待验证事项 |
 
-离线预览仍使用固定二维布局和视觉纵深；P0 运行原型已接入独立 Web、本地服务、只读知识源和学习记录。软件测试、9 条真实 Chromium 交互与最终截图检查已通过；实际 GPU 性能仍未验收。[查看实际界面截图](development/images/p0-demo.png)。
+离线预览仍使用固定二维布局和视觉纵深；P0 运行原型已接入独立 Web、本地服务、只读知识源和学习记录。软件测试、9 条真实 Chromium 交互与最终截图检查已通过；实际 GPU 性能仍未验收。[查看历史 P0 合成界面截图](development/images/p0-demo.png)。该截图为 2026-09-17 的历史 P0 合成界面，不是真实学习记录或个人记忆数据。
 
 完整 v0.1 尚未完成的工程包括：多维记忆模型与任务闭环、完整 CLI/语音接入、场景调用、导出迁移的完整契约、性能与个人学习试用，以及 Obsidian 宿主适配。P0-1～P0-3 软件实现已完成，P0-4 观察流程已实现但短期试用尚未完成，P0-5 等待实际使用反馈；GPU 性能和学习效果不能由当前实现直接推出。官方 Demo 的良好观感不代替这些验证。
 

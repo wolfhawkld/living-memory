@@ -39,8 +39,10 @@
 
 ## 路线、主题与验证进度
 
-- [开源协作准备与 TODO（2026-09-27）](planning/open-source-readiness-2026-09-27.md)：开源任务、已完成的运行/CI/文档准备与后续公开内容检查。
+- [开源协作准备与 TODO（2026-09-27）](planning/open-source-readiness-2026-09-27.md)：开源任务、已完成的运行/CI/文档/内容检查与后续协作准备。
 - [本地 Web 预览发布准备](releases/local-web-preview.md)：本轮集成范围、候选预览版本、验证边界、数据备份与正式发布前清单。
+- [公开内容检查记录](releases/public-content-review-2026-10-01.md)：可达历史、图片、合成材料与 CI 日志的检查范围、修正与限制。
+- [第三方许可检查](releases/third-party-licenses.md)：依赖与 KaTeX 字体许可，源码及未来构建包的分发边界。
 - [演示后的迭代 TODO（2026-09-22）](planning/iteration-todo-2026-09-22.md)：当前完成范围、原有待办入口，以及学习历史、少量复习和场景调用的后续顺序。
 - [浅色主题 TODO](planning/light-theme-todo.md)：主题选择/本机偏好、工作区与阅读层、[3D/2D 图谱](development/theme-graph.md)、[Mermaid 与图片容器](development/theme-media.md)均已接入；THEME-06 自动检查完成，待用户按[试用清单](development/theme-validation.md#用户试用清单)进行浏览器验收。
 - [阶段进展总结](progress-summary.md)：保留早期共研与阶段检查，当前功能以首页和专项开发说明为准。
@@ -67,5 +69,5 @@
 - [理论共研 03](research/memory-trainability.md)：记忆相关能力的可训练性，以及内容保持、策略学习和广泛迁移的区别。
 - [图谱渲染与布局选型](research/visualization-options.md)：已确认的技术方向、官方 Demo、候选比较与验证条件。
 - [技术载体研究](research/platform-options.md)：Obsidian 与独立应用的选择条件，以及开源和扩展边界。
-- [progressive-kg 使用场景](research/progressive-kg-context.md)：首批材料的本地结构、字段边界与任务候选。
+- [progressive-kg 使用场景](research/progressive-kg-context.md)：泛化后的知识源结构、字段边界与任务候选，不分发原始考察库存。
 - [研究与验证计划](research/validation-plan.md)：如何把文献结论转化为可以检验的体验。

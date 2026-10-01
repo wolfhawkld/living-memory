@@ -16,7 +16,7 @@
 
 默认示例不要求贡献者拥有 progressive-kg。知识内容与个人学习记录独立；浏览、查询和生成不会自动确认重温，回忆与使用证据暂不自动调整遗忘参数。长期保持只有本人手工解除才恢复衰减。
 
-本轮仅核对了集成范围、跟踪文件与运行所需入口。未发现跟踪的个人数据库、凭证目录或构建产物；已有四张文档 PNG。完整历史内容、图片和公开材料审查继续按 [OSS-05](../planning/open-source-readiness-2026-09-27.md) 执行，不能把这次范围检查当作完整公开审查。
+阶段集成时仅核对了范围、跟踪文件与运行所需入口。后续 OSS-05 已检查可达历史文本、全部 13 个 PNG 版本、示例、依赖许可及两份 CI 日志，并泛化公开文档的个人库存信息；范围与限制见[公开内容检查记录](public-content-review-2026-10-01.md)。未发现跟踪的个人数据库、凭证目录或构建产物，不将这次有限检查当作完整审计。
 
 ## 已有验证和待验收范围
 
@@ -30,7 +30,7 @@ CI 浏览器使用 Linux 软件渲染，验证基本 WebGL 和交互路径。本
 
 `v0.0.1-preview.1` 是候选预览 tag；现有 `package.json` 为 `0.0.1`，预览发布时再统一包元数据和最终 tag，并在 `main` 的已验证提交上固定版本。设计文档中的完整 v0.1 路线与软件预览版本是不同概念，前者仍未整体完成。
 
-首个预览建议提供源码与安装说明。用户在本机执行 `npm ci`、`npm run build` 和 `npm start`，首次打开 `http://127.0.0.1:4317` 创建管理员，再使用合成示例或接入自己的 Markdown 知识源。当前建议使用与 CI 相同的 Node `22.23.1`；OSS-03 已核验隔离目录运行流程并保存[新人运行指南](../development/first-run.md)，版本文件与后续文档在正式发布前集中合入 `main`。
+首个预览建议提供源码与安装说明。用户在本机执行 `npm ci`、`npm run build` 和 `npm start`，首次打开 `http://127.0.0.1:4317` 创建管理员，再使用合成示例或接入自己的 Markdown 知识源。当前建议使用与 CI 相同的 Node `22.23.1`；OSS-03 已核验隔离目录运行流程并保存[新人运行指南](../development/first-run.md)，版本文件与后续文档在正式发布前集中合入 `main`。当前不附带 `node_modules` 或 `dist`；未来分发构建包时按[第三方许可检查](third-party-licenses.md)保留实际包含的代码与字体许可。
 
 GitHub release 由 tag 固定源码位置，并自动提供源码归档；发布时应明确标记为 prerelease。当前 `private: true` 继续防止误发 npm 包，首轮不提供独立安装器或托管在线服务。tag、release 页面与源码版本的关系见 [GitHub release 说明](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)和[发布管理](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
 
@@ -44,7 +44,7 @@ GitHub release 由 tag 固定源码位置，并自动提供源码归档；发布
 
 - [x] OSS-03：固定 Node 版本文件，核验干净目录安装、首次建号、示例知识源和自有知识库接入。
 - [x] OSS-04：重组 README、分类文档导航与当前使用说明，新增明确标记的合成示意图；历史图片的公开内容检查继续按 OSS-05。
-- [ ] OSS-05：记录历史内容、附件、许可与 CI 日志的公开审查范围，处理实际发现。
+- [x] OSS-05：记录历史内容、附件、许可与 CI 日志的有限检查范围，泛化个人库存信息并补充截图说明；旧版本仍保留于 Git 历史。
 - [x] 按当前已实现功能写明安装步骤、数据备份、已知限制和贡献入口；README 与 CONTRIBUTING 保持一致。
 - [ ] 确定最终版本，统一 `package.json` 与 lockfile 元数据，核对最终 `main` 提交的 CI 及未验收记录。
 - [ ] 在已核对的提交上创建 tag，填写 release notes 并标记 prerelease，核对归档内容后发布。
