@@ -60,11 +60,13 @@ npm start
 
 完整备份需停止服务后保留整个数据目录与外部知识库；JSON 不含知识正文、附件、账号密码或浏览器草稿。浏览器待同步记录与复习草稿另存在本机，不能只靠服务端备份恢复。
 
-Windows 原生仍待验证；macOS 暂缓，当前未验证；真实桌面 GPU 与大知识库性能仍待验证。图片/Mermaid 等专项人工验收情况见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。ChatGPT 语音资源接入、Obsidian 插件、社交、在线/跨设备同步与移动端属于后续范围。
+Windows 原生首次运行的命令、HTTP 与 CLI 已有[实测记录](docs/development/platform-validation/windows-2026-10-01.md)；macOS 暂缓，当前未验证；真实桌面 GPU 与大知识库性能仍待验证。图片/Mermaid 等专项人工验收情况见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。ChatGPT 语音资源接入、Obsidian 插件、社交、在线/跨设备同步与移动端属于后续范围。
 
 ## 验证与路线
 
 2026-10-01 已在 WSL2/Linux x86_64、Node 22.23.1 下验证隔离目录安装、构建、首次建号、知识源接入和重启保留。[发行提交 `1c7a639` 的 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36852873767) 通过 496 项 Node/HTTP 测试、构建、主题检查和 10 项浏览器回归。该结果验证软件路径，不构成目标设备性能或学习收益结论。
+
+同日使用 Windows 原生 Node 22.23.1、npm 10.9.8 验证 `develop` 提交 `c8cd557`：干净源码安装、构建、服务建号、16 个概念/32 条关系、CLI 查询与明确重温、停止重启保留及幂等重试均通过。源码由固定提交归档提取；未测试 Windows Git clone、浏览器视觉或 GPU，也未重新验证已发布 tag，详见上述 Windows 记录。
 
 开源运行文档、有限范围的公开内容检查、贡献约定、[模块导览](docs/development/codebase-guide.md)和[首批协作任务](docs/planning/first-contribution-tasks.md)已整理。[更新记录](CHANGELOG.md)、[版本兼容约定](docs/releases/versioning-and-compatibility.md)和[升级恢复步骤](docs/releases/upgrade-and-recovery.md)提供预览维护基础；本次发行的精确提交、自动检查与源码归档核对结果见 [GitHub 发布说明](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1)。记忆模型扩展依据实际延迟观察推进；完整 v0.1 路线尚未整体验收。
 

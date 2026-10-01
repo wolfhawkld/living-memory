@@ -15,6 +15,7 @@
 ## 运行与知识浏览
 
 - [P0 运行与联调](development/p0-running.md)：启动方式、progressive-kg 接入、时间模拟、观察记录和当前检查边界。
+- [原生 Windows 首次运行验证（2026-10-01）](development/platform-validation/windows-2026-10-01.md)：固定 `develop` 提交的安装、构建、合成账号、HTTP/CLI 重温与重启保留；浏览器/GPU 未测，macOS 暂缓。
 - [私人账号与知识域](development/private-accounts.md)：登录、创建成员、私人知识源隔离、旧记录保留、CLI 设备身份及未来共享边界。
 - [知识域视图](development/domain-views.md)：完整索引、目录领域切换、跨域展开、CLI/Web 范围和布局保存。
 - [Markdown 与大窗阅读](development/markdown-reader.md)：渲染知识正文、表格与公式，打开大窗口阅读和调整字号。

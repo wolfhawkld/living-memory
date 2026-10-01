@@ -12,7 +12,7 @@
 | CONTRIB-02 | 可直接打开的合成图片与 Mermaid 笔记 | `good first issue`、`documentation` | [#40](https://github.com/wolfhawkld/living-memory/issues/40)，已在 `develop` 完成，专项视觉待用户验收 |
 | CONTRIB-03 | 空图谱区域的说明与行动入口 | `good first issue`、`enhancement`、`accessibility` | [#41](https://github.com/wolfhawkld/living-memory/issues/41)，已在 `develop` 完成，视觉待用户验收 |
 | CONTRIB-04 | HTTP 错误与 preflight 边界回归 | `help wanted` | [#42](https://github.com/wolfhawkld/living-memory/issues/42)，已在 `develop` 完成 |
-| CONTRIB-05 | 原生 Windows 的首次运行记录 | `help wanted`、`documentation` | [#43](https://github.com/wolfhawkld/living-memory/issues/43)，待认领；macOS 暂缓 |
+| CONTRIB-05 | 原生 Windows 的首次运行记录 | `help wanted`、`documentation` | [#43](https://github.com/wolfhawkld/living-memory/issues/43)，已完成[实测记录](../development/platform-validation/windows-2026-10-01.md)；macOS 暂缓 |
 
 标签表示适合参与的范围，不承诺固定工时。一个任务只做下面写出的交付；发现其他缺陷先记录，不把任务扩大为架构或依赖改造。发布后，以 GitHub Issue 的认领与完成状态为准。
 
@@ -109,9 +109,11 @@
 
 ## CONTRIB-05：原生 Windows 的首次运行记录
 
+**已完成（2026-10-01）：** 使用原生 Windows Node 22.23.1、npm 10.9.8 和独立临时目录验证 `develop` 提交 `c8cd557`，保存[运行记录与复现入口](../development/platform-validation/windows-2026-10-01.md)。源码使用固定提交的干净归档；原生 Git clone 与浏览器视觉未测试。以下保留任务范围与验收条件。
+
 **范围调整（2026-10-01）：** 用户暂无 macOS 设备，已明确暂不需要 macOS 支持；本任务只安排原生 Windows 验证，macOS 保留为暂缓、未验证。
 
-**现状：** [新人运行指南](../development/first-run.md)已验证 WSL2/Linux x86_64、Node 22.23.1 与 npm 10.9.8；Windows 原生尚无等价记录，WSL2/Linux 的结果不能代替原生 Windows 验证。
+**原问题：** [新人运行指南](../development/first-run.md)此前只验证 WSL2/Linux x86_64、Node 22.23.1 与 npm 10.9.8；WSL2/Linux 的结果不能代替原生 Windows 验证。
 
 **范围：** 在原生 Windows 的干净 checkout 和独立临时数据目录运行现有默认示例，提交带日期的记录，例如 `docs/development/platform-validation/windows-<日期>.md`，并从新人指南链接。记录 OS/架构、Node/npm、提交版本、shell、准确命令、结果与限制。
 
@@ -123,6 +125,8 @@
 - 失败也可作为有价值的记录：保留可公开复现的命令和精简错误，另开具体缺陷，不借此更新依赖或扩大支持承诺。
 
 **验证：** 由认领者在原生 Windows 实测；维护者检查记录可复现性、本地链接与 `git diff --check`。不要为了此任务更换日常个人数据目录或使用真实 vault。
+
+**实际检查：** Windows NT 10.0.26200.0 x64、PowerShell 5.1.26100.9444，Node 的 `process.platform` 为 `win32`。原生安装、构建和 `npm start` 通过；首页及构建资源返回 200，合成管理员建号 201，匿名查询 401。初始 16 个概念、32 条关系全部未知，无学习记录；CLI 查询命中“向量”，明确重温“矩阵”保存一个起点。停止自身测试进程树后，在同一端口重启并重新登录，知识空间、事件 ID 与发生时间保留；重复提交返回 `duplicate`，仍只有一个起点且无回忆观察。最后确认测试端口已停止。源码归档由 WSL Git 准备，但安装、构建、服务、CLI、SQLite 均在独立 Windows 目录原生运行；未测试原生 Git clone、Ctrl+C 优雅停止、浏览器/E2E、GPU、大库或已发布 tag，也不扩大为所有 Windows 环境兼容。没有提交账号、凭据、数据库或完整日志；macOS 继续暂缓。
 
 ## 本批之外
 

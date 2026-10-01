@@ -8,13 +8,17 @@
 
 2026-10-01 已完成 **OSS-01～06**：CI 认证修复、默认分支同步、新人运行、首页与文档整理、有限范围公开内容检查，以及贡献/维护约定。成果通过 [PR #37](https://github.com/wolfhawkld/living-memory/pull/37) 和 [PR #38](https://github.com/wolfhawkld/living-memory/pull/38) 分批集成到 `main`；具体证据与边界见[开源准备记录](open-source-readiness-2026-09-27.md)。
 
-**OSS-07：开发导览与首批协作任务**已完成。[模块导览](../development/codebase-guide.md)与[协作任务](first-contribution-tasks.md)已保存；GitHub #39～43 已发布并核对正文、标签与链接。#39～42 已在 `develop` 实施，#43 仍待认领；具体范围与检查结果见任务表。
+**OSS-07：开发导览与首批协作任务**已完成。[模块导览](../development/codebase-guide.md)与[协作任务](first-contribution-tasks.md)已保存；GitHub #39～43 已发布并核对正文、标签与链接，五项现均已在 `develop` 实施，具体范围与检查结果见任务表。代码与运行记录完成不替代保留的专项人工验收。
 
 **OSS-08 维护基础与首个预览发布**已完成：[更新记录](../../CHANGELOG.md)、[版本兼容约定](../releases/versioning-and-compatibility.md)与[升级恢复](../releases/upgrade-and-recovery.md)已保存。`v0.0.1-preview.1` 已发布为 prerelease，最终 CI、归档与精确提交见[发布记录](../releases/preview-publication-2026-10-01.md)；合成两账号恢复与 38 项兼容专项的边界见[验证记录](../releases/upgrade-validation-2026-10-01.md)。兼容维护持续进行，本地浏览器视觉验收仍由用户进行。
 
 **接续首批协作任务：** CONTRIB-01 / #39 已增加 `npm run generate:readme-demo`，两次输出与既有素材逐字节一致。CONTRIB-02 / [#40](https://github.com/wolfhawkld/living-memory/issues/40)已在“计算图”加入原创静态 SVG 和 Mermaid，仍为 16 个概念、32 条关系；31 项定向、496 项 Node/HTTP、构建及隔离示例验证通过，图形视觉仍由用户验收。CONTRIB-03 / [#41](https://github.com/wolfhawkld/living-memory/issues/41)已补充空知识库图谱说明与刷新入口，保留示例/时间预览写锁并说明如何恢复刷新；499 项 Node/HTTP、构建及主题产物检查通过，视觉与按钮操作待用户验收。
 
-CONTRIB-04 / [#42](https://github.com/wolfhawkld/living-memory/issues/42)已补充真实 HTTP 边界检查：无效 JSON、普通接口精确 1 MiB 上限、允许/拒绝的 preflight 与未知 API。4 项定向、503 项 Node/HTTP 测试及构建通过，失败请求前后导出和时间状态不变；生产路由、认证、依赖与记忆规则未修改。共用 413 文案误写“20 MiB”的问题留作后续修正。下一项 CONTRIB-05 / [#43](https://github.com/wolfhawkld/living-memory/issues/43)只安排原生 Windows 首次运行验证；现有 WSL2/Linux 记录不能替代，继续保留待实测。用户于 2026-10-01 明确暂无 macOS 设备、暂不需要 macOS 支持，因此 macOS 适配与验证暂缓，不列为近期验收要求。
+CONTRIB-04 / [#42](https://github.com/wolfhawkld/living-memory/issues/42)已补充真实 HTTP 边界检查：无效 JSON、普通接口精确 1 MiB 上限、允许/拒绝的 preflight 与未知 API。4 项定向、503 项 Node/HTTP 测试及构建通过，失败请求前后导出和时间状态不变；生产路由、认证、依赖与记忆规则未修改。共用 413 文案误写“20 MiB”的问题留作后续修正。
+
+CONTRIB-05 / [#43](https://github.com/wolfhawkld/living-memory/issues/43)已完成[原生 Windows 首次运行记录](../development/platform-validation/windows-2026-10-01.md)：Windows NT 10.0.26200.0 x64、PowerShell 5.1.26100.9444、Node 22.23.1、npm 10.9.8，对 `develop` 提交 `c8cd557` 的干净归档验证安装、构建、服务建号、16 个概念/32 条关系、CLI 明确重温、停止重启保留与幂等重试。WSL 只准备源码归档，应用运行使用原生 Windows Node；原生 Git clone、浏览器视觉与 GPU 未测试，也未重新验证已发布 tag。用户于 2026-10-01 明确暂无 macOS 设备、暂不需要 macOS 支持，因此 macOS 适配与验证继续暂缓，不列为近期验收要求。
+
+首批五项的实施与运行记录已完成。下一项可靠性跟进可修正普通 API 超限响应的“20 MiB”文案，使提示与普通接口 1 MiB、导入接口 20 MiB 的实际边界一致；图片/Mermaid、主题及其他跳过的人工验收继续保留，真实延迟试用仍需本人进行。
 
 ## 原有 TODO 在哪里
 
