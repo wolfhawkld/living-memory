@@ -29,6 +29,7 @@ import {
   type PendingSyncResult,
 } from './api';
 import { GraphFallbackList, GraphView } from './GraphView';
+import { GraphSourceContent } from './GraphSourceContent';
 import { ThemeSelector } from './ThemeSelector';
 import { BriefReviewPanel, BriefReviewProgress } from './BriefReviewPanel';
 import { ConceptReviewControls, ReviewPlanDialog } from './ReviewPlanControls';
@@ -1801,16 +1802,21 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
               </div>
             </div>
             <div className="rotation-status" aria-label="自动旋转状态">
-              {autoRotateEnabled && !listMode && !twoDimensional && (rotationStatus.kind === 'waiting' || rotationStatus.kind === 'holding') ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={() => rotationClock.resume()}>立即旋转</button> : null}
-              <span>{listMode ? '文字列表 · 旋转暂停' : rotationStatus.text}</span>
+              {snapshot.concepts.length > 0 && autoRotateEnabled && !listMode && !twoDimensional && (rotationStatus.kind === 'waiting' || rotationStatus.kind === 'holding') ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={() => rotationClock.resume()}>立即旋转</button> : null}
+              <span>{listMode ? '文字列表 · 旋转暂停' : snapshot.concepts.length === 0 ? '暂无节点 · 旋转暂停' : rotationStatus.text}</span>
             </div>
           </div>
           {demoEnabled && demoRecord ? <DemoPanel record={demoRecord} snapshot={viewSnapshot} saved={demoSaved} labels={STATUS_LABELS} onSelect={selectConcept} /> : null}
           <div className="graph-frame">
-            {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-            {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={learningOverlayOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
-            <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown', ...(!demoEnabled ? ['retained' as const] : [])] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': `var(--memory-${status})` } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
-            <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div>
+            <GraphSourceContent sourceConceptCount={snapshot.concepts.length} listMode={listMode}
+              refreshing={refreshing} refreshDisabled={domainBusy || writeLocked || !hasSession}
+              refreshHint={demoEnabled ? '请先点击「查看真实记录」，再刷新知识源。' : simulated ? '请先点击「恢复实时」，再刷新知识源。' : undefined}
+              onRefresh={() => void refreshSource()}>
+              {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
+              {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={learningOverlayOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+              <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown', ...(!demoEnabled ? ['retained' as const] : [])] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': `var(--memory-${status})` } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
+              <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div>
+            </GraphSourceContent>
           </div>
           <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间预览</span><strong>{simulated ? `+${simDays} 天` : demoEnabled ? '初始模拟值' : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt) || sourceReloadPending} /><div className="range-labels"><span>{demoEnabled ? '模拟起点' : '现在'}</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimulatedDays(0)}>{demoEnabled ? '回到初始值' : '恢复实时'}</button> : null}</div>
         </section>

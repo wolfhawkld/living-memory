@@ -76,6 +76,7 @@ test('private account spaces isolate full graph, attachments, history, layouts, 
     assert.doesNotMatch(memberResponse.text, /OWNER PRIVATE BODY/);
     assert.notEqual(memberSnapshot.concepts[0].id, originalConcept.id, 'same domain and title have distinct private identities');
     assert.equal(memberSnapshot.states[memberSnapshot.concepts[0].id].status, 'unknown');
+    assert.equal(memberSnapshot.observationsCount, 0, 'refresh must not create observations');
     for (const path of [`/api/concepts/${originalConcept.id}/history`, `/api/concepts/${originalConcept.id}/attachment?sourceId=${ownerSession.sourceId}&sourceRevision=${originalConcept.source.revision}&path=image.svg`]) {
       assert.equal((await send(path, { cookie: memberCookie })).status, 404);
     }
@@ -83,7 +84,10 @@ test('private account spaces isolate full graph, attachments, history, layouts, 
     assert.equal((await send('/api/reviews', { method: 'POST', cookie: memberCookie, headers: memberHeaders, body: { eventId: 'steal', conceptId: originalConcept.id, sourceRevision: originalConcept.source.revision, kind: 'review' } })).status, 404);
     assert.equal((await send('/api/layout', { method: 'PUT', cookie: memberCookie, headers: memberHeaders, body: { [originalConcept.id]: { x: 1, y: 2, z: 3 } } })).status, 404);
     assert.equal((await send('/api/admin/users', { cookie: memberCookie })).status, 403);
-    assert.equal((await send('/api/export', { cookie: memberCookie })).body.anchors.length, 0);
+    const memberExportAfterRefresh = (await send('/api/export', { cookie: memberCookie })).body as ExportData;
+    assert.equal(memberExportAfterRefresh.anchors.length, 0, 'refresh must not create review anchors');
+    assert.equal(memberExportAfterRefresh.observations.length, 0, 'refresh must not create observations');
+    assert.doesNotMatch(JSON.stringify(memberExportAfterRefresh), /OWNER PRIVATE BODY/);
     const memberConcept = memberSnapshot.concepts[0];
     const memberLayout = { [memberConcept.id]: { x: 1, y: 2, z: 3 } };
     assert.equal((await send('/api/layout', { method: 'PUT', cookie: memberCookie, headers: memberHeaders, body: memberLayout })).status, 200);

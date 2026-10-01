@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | CONTRIB-01 | README 示意素材的 npm 生成入口 | `good first issue`、`documentation` | [#39](https://github.com/wolfhawkld/living-memory/issues/39)，已在 `develop` 完成 |
 | CONTRIB-02 | 可直接打开的合成图片与 Mermaid 笔记 | `good first issue`、`documentation` | [#40](https://github.com/wolfhawkld/living-memory/issues/40)，已在 `develop` 完成，专项视觉待用户验收 |
-| CONTRIB-03 | 空图谱区域的说明与行动入口 | `good first issue`、`enhancement`、`accessibility` | [#41](https://github.com/wolfhawkld/living-memory/issues/41)，待认领 |
+| CONTRIB-03 | 空图谱区域的说明与行动入口 | `good first issue`、`enhancement`、`accessibility` | [#41](https://github.com/wolfhawkld/living-memory/issues/41)，已在 `develop` 完成，视觉待用户验收 |
 | CONTRIB-04 | HTTP 错误与 preflight 边界回归 | `help wanted` | [#42](https://github.com/wolfhawkld/living-memory/issues/42)，待认领 |
 | CONTRIB-05 | 一个原生 Windows 或 macOS 的首次运行记录 | `help wanted`、`documentation` | [#43](https://github.com/wolfhawkld/living-memory/issues/43)，待认领 |
 
@@ -63,7 +63,9 @@
 
 ## CONTRIB-03：空图谱区域的说明与行动入口
 
-**现状：** 节点列表已有空状态，全库为空时图谱区域仍可能留下没有解释的空画布。新成员的初始空知识库是可复现入口；领域选项由现有概念生成，当前没有可选择的“空领域”。加载失败应继续走原有错误提示，不与空知识库混为一谈。
+**已完成（2026-10-01）：** [GraphSourceContent](../../src/web/GraphSourceContent.tsx)在全库为空且使用图谱模式时显示说明与“刷新知识源”按钮，直接复用 `refreshSource`。新成员默认进入示例状态时，提示先点击“查看真实记录”；时间预览时提示先“恢复实时”。文字、按钮及键盘焦点使用现有主题变量，空库旋转状态显示“暂无节点 · 旋转暂停”。以下保留原任务范围。
+
+**原问题：** 节点列表已有空状态，全库为空时图谱区域仍可能留下没有解释的空画布。新成员的初始空知识库是可复现入口；领域选项由现有概念生成，当前没有可选择的“空领域”。加载失败应继续走原有错误提示，不与空知识库混为一谈。
 
 **文件入口：** [App.tsx](../../src/web/App.tsx)的图谱/列表区域、[GraphView.tsx](../../src/web/GraphView.tsx)、[工作区样式](../../src/web/styles.css)、[账号隔离测试](../../tests/private-accounts-api.test.ts)、[现有浏览器用例](../../tests/e2e/prototype.spec.ts)。
 
@@ -77,6 +79,8 @@
 - 显示、刷新或搜索不会新增重温/观察，也不泄露其他账号的概念。
 
 **验证：** 增加能验证实际空/非空分支的有针对性检查，按贡献指南运行 `npm test`、`npm run build`；复用现有认证/合成 fixture，不为测试关闭全局账号校验。浏览器视觉由用户验收。
+
+**实际检查：** 3 项组件 SSR 用例覆盖空库不挂载图谱、不在渲染时刷新，非空库、空筛选视图和列表分支沿用原内容，以及刷新中/锁定状态。既有合成成员 HTTP 用例覆盖空库到刷新后出现成员概念，补充无重温起点、无观察记录及导出隔离断言。499 项完整 Node/HTTP 测试、构建和主题产物的 8 种初始化场景通过。App 的初始加载/连接错误分支、GraphView 的 WebGL 回退未修改；未读取个人数据或启动本地浏览器，实际按钮操作、深浅主题可读性与视觉布局仍由用户验收。
 
 <a id="contrib-04"></a>
 
