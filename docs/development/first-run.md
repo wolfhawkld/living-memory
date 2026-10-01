@@ -1,13 +1,13 @@
 # 第一次运行 Living Memory
 
-这份指南从干净源码开始，使用仓库自带的合成知识体验本地 Web，再接入自己的 Markdown。以下命令使用持续开发分支 `develop`；`main` 保留最近一次阶段集成，正式预览尚未发布。服务只监听本机 `127.0.0.1`。
+这份指南从干净源码开始，使用仓库自带的合成知识体验本地 Web，再接入自己的 Markdown。以下固定 tag `v0.0.1-preview.1` 命令在预览发布后可用，发行结果见[版本说明](../releases/v0.0.1-preview.1.md)；发布前或参与开发使用长期 `develop`，见[贡献指南](../../CONTRIBUTING.md)。服务只监听本机 `127.0.0.1`。
 
 ## 1. 准备环境
 
 安装 Git 和 Node.js **22.23.1**。仓库的 [`.nvmrc`](../../.nvmrc) 与 [CI](../../.github/workflows/check.yml) 使用同一版本；本次验证使用该版本附带的 npm **10.9.8**。`package.json` 声明的最低版本为 22.13.0，其他 Node 版本尚未逐一验证。
 
 ```bash
-git clone --branch develop https://github.com/wolfhawkld/living-memory.git
+git clone --branch v0.0.1-preview.1 --single-branch https://github.com/wolfhawkld/living-memory.git
 cd living-memory
 ```
 
@@ -29,7 +29,7 @@ npm start
 
 ## 3. 创建自己的账号并体验示例
 
-首次打开页面显示“创建第一个账户”，**没有默认用户名或密码**。自行设置用户名（3～32 位英文字母、数字、点、下划线或连字符）和密码（12～256 个字符）。第一个账户是管理员；以后启动应登录这个账户。管理员可在“账号管理”创建成员。
+首次打开页面显示“创建第一个账户”，**没有默认用户名或密码**。自行设置用户名（3～32 位 ASCII 英文字母、数字、点、下划线或连字符，须以字母或数字开头，保存为小写）和密码（12～256 个字符）。第一个账户是管理员；以后启动应登录这个账户。管理员可在“账号管理”创建成员。
 
 默认知识源为 [`fixtures/demo-kg`](../../fixtures/demo-kg/README.md)，包含 Math、Model 两个目录的 16 个合成概念及关系。它不包含个人知识库或真实学习历史。
 

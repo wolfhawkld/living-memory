@@ -4,7 +4,11 @@
 
 ## Unreleased
 
-当前准备版本为 `0.0.1-preview.1`，候选 tag 为 `v0.0.1-preview.1`，尚未创建 tag 或发布 release。此前 `0.0.1` 是开发包元数据，不是已发行版本。以下汇总首个本地 Web 预览的累计实现；专项人工验收仍按[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)保留。
+后续开发变化在此记录。
+
+## 0.0.1-preview.1（发行准备）
+
+首个本地 Web 预览版本的待发行说明，仍待最终 main CI、归档核对和发布；完成后再记录发布日期。分发源码，采用 MIT 许可。此前 `0.0.1` 是开发包元数据，不补造发行记录。以下汇总累计实现；专项人工验收仍按[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)保留。发布后的固定版本用法见[版本说明](docs/releases/v0.0.1-preview.1.md)，发行提交和 CI 以 [GitHub 预览发布](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1)中的记录为准。
 
 ### 当前能力
 
@@ -28,4 +32,4 @@
 - 学习交换格式为 `schemaVersion: 1`，模型为 `time-only-v0`；没有稳定公开 API 或通用数据库迁移承诺。
 - 建立[完整备份、升级与恢复步骤](docs/releases/upgrade-and-recovery.md)，保存[合成恢复演练记录](docs/releases/upgrade-validation-2026-10-01.md)。
 
-当前仍是桌面优先的本机 Web 原型。线上协作、共享知识融合、语音和 Obsidian 插件属于后续范围；时间颜色与软件检查不代表已测得个人记忆正确率或学习收益。正式发布条件见[预览清单](docs/releases/local-web-preview.md)。
+当前仍是桌面优先的本机 Web 原型。线上协作、共享知识融合、语音和 Obsidian 插件属于后续范围；时间颜色与软件检查不代表已测得个人记忆正确率或学习收益。发布核对流程见[预览清单](docs/releases/local-web-preview.md)。

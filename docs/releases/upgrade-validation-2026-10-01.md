@@ -2,6 +2,8 @@
 
 本记录属于 OSS-08。源码检查基线为 `e6c5ac7`；本轮将项目元数据准备为 `0.0.1-preview.1`，应用、数据库、JSON 格式、依赖解析和记忆规则没有变化。操作步骤见[升级与恢复](upgrade-and-recovery.md)，契约见[兼容约定](versioning-and-compatibility.md)。
 
+以下“未创建 tag/release”及准备状态记录产生于发行前；实际发行结果以[版本说明](v0.0.1-preview.1.md)关联的 GitHub 发布为准。
+
 ## 环境与范围
 
 - WSL2/Linux x86_64，Node 22.23.1、npm 10.9.8。

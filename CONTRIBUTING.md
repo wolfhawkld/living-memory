@@ -14,12 +14,16 @@ Living Memory 是一个使用 React、本地 Web 服务和 SQLite 的桌面优�
 
 推荐使用 Node.js **22.23.1**（见[`.nvmrc`](.nvmrc)和 CI），隔离运行已验证 npm **10.9.8**。`package.json` 的最低 Node 版本声明是 22.13.0，其他版本未逐一验证。首次运行、账号创建、数据目录和自有 Markdown 接入请按[新人运行指南](docs/development/first-run.md)操作。
 
-在仓库根目录安装依赖并启动开发服务：
+从开发分支获取源码，在仓库根目录安装依赖并启动服务：
 
 ```bash
+git clone --branch develop https://github.com/wolfhawkld/living-memory.git
+cd living-memory
 npm ci
 npm run dev
 ```
+
+预览运行指南使用固定发行 tag；贡献请从最新 `develop` 开始，保留本地已有源码修改。
 
 `npm run dev` 同时启动本地 API（默认 `4317`）和 Vite 页面（`http://127.0.0.1:5173`）。运行构建后的应用时使用：
 

@@ -1,5 +1,7 @@
 # 本地 Web 预览发布准备
 
+本页保留发行前的范围与核对流程；固定版本的使用说明见 [v0.0.1-preview.1](v0.0.1-preview.1.md)，最终提交和发布结果以 [GitHub release](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1)为准。
+
 更新：2026-10-01。本文供维护者核对首个预览版的范围和发布条件，也帮助贡献者了解默认分支中的程序能做什么。可运行应用、合成示例、MIT 许可和通过检查的开发成果已通过 [PR #37](https://github.com/wolfhawkld/living-memory/pull/37) 同步到 `main`；正式预览发布需完成下述准备。候选名称为 **Living Memory 本地 Web 预览版**，候选 tag 为 `v0.0.1-preview.1`，尚未发布。
 
 后续 [PR #38](https://github.com/wolfhawkld/living-memory/pull/38) 已将 OSS-03～06 的运行、公开内容检查和协作准备集中同步到 `main`，合并提交 `400f622`；该阶段的分支与 PR CI 均通过。OSS-07 导览与首批任务已在 `develop` 完成，OSS-08 已建立[更新记录](../../CHANGELOG.md)、[版本兼容约定](versioning-and-compatibility.md)及[升级恢复步骤](upgrade-and-recovery.md)，包元数据准备为 `0.0.1-preview.1`。这些后续成果仍需集中进入最终发行的 `main` 提交。
@@ -34,7 +36,7 @@ CI 浏览器使用 Linux 软件渲染，验证基本 WebGL 和交互路径。本
 
 `v0.0.1-preview.1` 是候选预览 tag；`develop` 的 `package.json`、lockfile 顶层及根包版本现已统一为准备版本 `0.0.1-preview.1`，依赖解析不变。tag 仍待最终发行的 `main` 提交通过检查后创建。设计文档中的完整 v0.1 路线与软件预览版本是不同概念，前者仍未整体完成。
 
-首个预览建议提供源码与安装说明。用户在本机执行 `npm ci`、`npm run build` 和 `npm start`，首次打开 `http://127.0.0.1:4317` 创建管理员，再使用合成示例或接入自己的 Markdown 知识源。当前建议使用与 CI 相同的 Node `22.23.1`；OSS-03 已核验隔离目录运行流程并保存[新人运行指南](../development/first-run.md)。现有指南使用 `develop`；发行说明需指向最终固定 tag/提交，OSS-07～08 文档与版本准备仍待阶段集成。当前不附带 `node_modules` 或 `dist`；未来分发构建包时按[第三方许可检查](third-party-licenses.md)保留实际包含的代码与字体许可。
+首个预览提供源码与安装说明。用户在本机执行 `npm ci`、`npm run build` 和 `npm start`，首次打开 `http://127.0.0.1:4317` 创建管理员，再使用合成示例或接入自己的 Markdown 知识源。当前建议使用与 CI 相同的 Node `22.23.1`；OSS-03 已核验隔离目录运行流程并保存[新人运行指南](../development/first-run.md)。指南已改为发布后使用固定 tag，发布前及贡献者使用 `develop`；OSS-07～08 文档与版本准备仍待阶段集成。当前不附带 `node_modules` 或 `dist`；未来分发构建包时按[第三方许可检查](third-party-licenses.md)保留实际包含的代码与字体许可。
 
 GitHub release 由 tag 固定源码位置，并自动提供源码归档；发布时应明确标记为 prerelease。当前 `private: true` 继续防止误发 npm 包，首轮不提供独立安装器或托管在线服务。tag、release 页面与源码版本的关系见 [GitHub release 说明](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)和[发布管理](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
 
