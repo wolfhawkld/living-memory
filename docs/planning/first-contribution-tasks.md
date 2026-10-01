@@ -11,7 +11,7 @@
 | CONTRIB-01 | README 示意素材的 npm 生成入口 | `good first issue`、`documentation` | [#39](https://github.com/wolfhawkld/living-memory/issues/39)，已在 `develop` 完成 |
 | CONTRIB-02 | 可直接打开的合成图片与 Mermaid 笔记 | `good first issue`、`documentation` | [#40](https://github.com/wolfhawkld/living-memory/issues/40)，已在 `develop` 完成，专项视觉待用户验收 |
 | CONTRIB-03 | 空图谱区域的说明与行动入口 | `good first issue`、`enhancement`、`accessibility` | [#41](https://github.com/wolfhawkld/living-memory/issues/41)，已在 `develop` 完成，视觉待用户验收 |
-| CONTRIB-04 | HTTP 错误与 preflight 边界回归 | `help wanted` | [#42](https://github.com/wolfhawkld/living-memory/issues/42)，待认领 |
+| CONTRIB-04 | HTTP 错误与 preflight 边界回归 | `help wanted` | [#42](https://github.com/wolfhawkld/living-memory/issues/42)，已在 `develop` 完成 |
 | CONTRIB-05 | 一个原生 Windows 或 macOS 的首次运行记录 | `help wanted`、`documentation` | [#43](https://github.com/wolfhawkld/living-memory/issues/43)，待认领 |
 
 标签表示适合参与的范围，不承诺固定工时。一个任务只做下面写出的交付；发现其他缺陷先记录，不把任务扩大为架构或依赖改造。发布后，以 GitHub Issue 的认领与完成状态为准。
@@ -86,7 +86,9 @@
 
 ## CONTRIB-04：HTTP 错误与 preflight 边界回归
 
-**现状：** [app.ts](../../src/server/app.ts)已有 JSON/body 限制、OPTIONS 和未知 API 的处理；[server.test.ts](../../tests/server.test.ts)已覆盖 host/origin/token 等请求约束。需要补充当前缺少的真实 HTTP 错误路径，而不是重复已有校验或修改认证政策。
+**已完成（2026-10-01）：** 新增 [http-boundaries-api.test.ts](../../tests/http-boundaries-api.test.ts)，用真实 HTTP、合成管理员会话和隔离临时知识/数据目录核对四项边界，并在[开发导览](../development/codebase-guide.md)加入测试入口。以下保留原任务范围。
+
+**原问题：** [app.ts](../../src/server/app.ts)已有 JSON/body 限制、OPTIONS 和未知 API 的处理；[server.test.ts](../../tests/server.test.ts)已覆盖 host/origin/token 等请求约束。需要补充当前缺少的真实 HTTP 错误路径，而不是重复已有校验或修改认证政策。
 
 **范围：** 复用现有 HTTP 测试模式，以临时目录和合成知识覆盖普通非导入 API 的无效 JSON、超过 1 MiB 的请求体、允许/拒绝的 OPTIONS，以及未知 `/api` 路径。导入有独立的 20 MiB 限制且已有对应测试，本任务不重复。只新增/调整相应测试；不改生产路由、错误码、CORS/认证策略或依赖。
 
@@ -100,6 +102,8 @@
 **当前契约提示：** 普通超限请求应为 `413 / BODY_TOO_LARGE`，无效 JSON 为 `400 / INVALID_JSON`；允许的 OPTIONS 为 204，外部 origin 为 `403 / ORIGIN_FORBIDDEN`，未知 API 用 GET 验证 `404 / NOT_FOUND`。检查允许的 methods/headers、origin 回写与 `Vary`。目前共用 413 文案写 20 MiB，与普通 API 的 1 MiB 不一致；先断言状态/错误码，不把此文案固化成正确的限额说明，文案修正另行确认范围。
 
 **验证：** 定向运行新增测试文件，再按贡献指南完成 `npm test`、`npm run build`。若测出契约与实现矛盾，在 Issue 描述具体证据，再讨论修复范围；不顺手改变安全边界。
+
+**实际检查：** 4 项定向用例、503 项完整 Node/HTTP 测试及构建通过。无效 JSON 返回 `400 / INVALID_JSON`；合法重温请求加尾随空白，恰好 1,048,576 字节返回 `201` 并保存新起点，另一记录多 1 字节返回 `413 / BODY_TOO_LARGE`，原有数据不变。匿名 `OPTIONS` 的本机 `http://127.0.0.1:5173` 返回 `204`、空正文、origin 回写、`Vary: Origin` 及预期 methods/headers；同协议/端口的外部 host 返回 `403 / ORIGIN_FORBIDDEN` 且无允许 origin。已认证的未知 API 返回 `404 / NOT_FOUND`。各失败请求和预检前后完整导出、Snapshot 一致；既有重温起点与配置保留，临时服务与目录清理。未关闭账号验证、读取个人数据、运行本地浏览器或改动生产代码/依赖；共用 413 的“20 MiB”文案问题继续保留，未固化该文案。
 
 <a id="contrib-05"></a>
 
