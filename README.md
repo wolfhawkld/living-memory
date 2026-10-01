@@ -77,6 +77,8 @@ Windows 原生、macOS、真实桌面 GPU 与大知识库性能仍待验证；�
 
 欢迎改进运行文档、合成示例、测试和独立功能。先阅读[协作说明](CONTRIBUTING.md)，在 [Issues](https://github.com/wolfhawkld/living-memory/issues) 描述问题或确认任务范围。维护者日常沿用 `develop`；外部贡献者可 fork、使用短期分支，并向 `develop` 提交 PR。经过验证的一组改动再集中合入 `main`。
 
+安全漏洞使用[私密报告入口](SECURITY.md)，社区交流遵守[行为准则](CODE_OF_CONDUCT.md)；维护责任与分支约定见[维护者说明](MAINTAINERS.md)。
+
 逻辑改动按范围运行 `npm test`、`npm run build` 和相关检查，使用合成知识源与临时数据库。记忆规则的改变需要说明研究依据、证据边界和数据兼容；个人数据库、知识库、凭据与会话记录不提交。
 
 本项目采用 [MIT 许可证](LICENSE)，版权归属 Damon Long。第三方依赖和外部知识资源遵循各自许可证，见[第三方许可检查](docs/releases/third-party-licenses.md)。

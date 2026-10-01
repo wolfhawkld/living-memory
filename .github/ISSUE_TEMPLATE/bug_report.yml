@@ -1,0 +1,102 @@
+name: "🐛 报告问题"
+description: "报告可在公开仓库中讨论的可复现问题"
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢帮助改进 Living Memory。请先搜索已有 Issue，并尽量提供最小、可重复的复现信息。
+
+        请只使用合成数据或已脱敏的材料。请勿粘贴账号、密码、cookie、token、个人知识库内容或个人学习记录。疑似安全漏洞请勿公开提交 Issue，请通过 [GitHub Security Advisories 私下报告](https://github.com/wolfhawkld/living-memory/security/advisories/new)。
+
+  - type: checkboxes
+    id: submission-checks
+    attributes:
+      label: 提交前确认
+      description: 请确认下面各项后再提交。
+      options:
+        - label: 我已搜索现有 Issues，确认没有相同或高度相似的问题。
+          required: true
+        - label: 我只会提供合成数据或已脱敏材料，不会包含账号、cookie、token、个人知识库内容或个人学习记录。
+          required: true
+        - label: 我已了解疑似安全漏洞应使用私下安全报告入口，不在公开 Issue 披露细节。
+          required: true
+
+  - type: input
+    id: summary
+    attributes:
+      label: 问题概述
+      description: 用一句话说明发生了什么。
+      placeholder: 例如：在阅读器中打开包含 Mermaid 的笔记时页面空白
+    validations:
+      required: true
+
+  - type: textarea
+    id: code-version
+    attributes:
+      label: 代码版本
+      description: 填写分支、提交或发行版本；不知道的部分可写 unknown，不需要全部填写。
+      placeholder: |
+        分支：develop
+        提交：git rev-parse --short HEAD 的结果
+        发行版本（如有）：……
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 填写与问题相关的系统、Node/npm、浏览器版本；无关或不知道的部分可以留空。
+      placeholder: |
+        系统：……
+        Node/npm：……
+        浏览器：……
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: 最小复现步骤
+      description: 请按顺序列出能够稳定复现问题的最少步骤，并说明使用的合成或脱敏输入。
+      placeholder: |
+        1. 使用合成数据启动服务
+        2. 打开……
+        3. 执行……
+        4. 看到……
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 期望与实际行为
+      description: 描述应该发生什么，以及实际结果、错误提示和影响范围。
+      placeholder: |
+        期望：页面显示笔记正文和图表。
+        实际：页面空白，出现……
+    validations:
+      required: true
+
+  - type: textarea
+    id: relevant-logs
+    attributes:
+      label: 相关日志（可选）
+      description: 请只粘贴已删除或替换敏感信息的相关日志；不要包含账号、cookie、token、个人知识库内容或个人学习记录。
+      render: text
+      placeholder: 粘贴脱敏后的最小日志片段，或填写“无”。
+    validations:
+      required: false
+
+  - type: textarea
+    id: validation-done
+    attributes:
+      label: 已做验证或补充信息（可选）
+      description: 可说明已经尝试的操作、公开链接或截图；不要求先运行测试或更换浏览器才能报告问题。
+      placeholder: |
+        - 已在合成 demo 数据上复现
+        - 已运行 npm test / npm run build
+        - 尚未在其他浏览器验证，因为……
+    validations:
+      required: false

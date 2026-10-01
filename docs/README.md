@@ -8,6 +8,7 @@
 - [合成示意图与生成说明](assets/README.md)：用于解释知识结构与时间提示，不是实际界面截图或学习备份。
 - [P0 验证记录](development/p0-validation.md)：早期交互检查与后续验证记录；近期 CI 和隔离运行结果见开源准备记录。
 - [协作说明](../CONTRIBUTING.md)与 [GitHub Issues](https://github.com/wolfhawkld/living-memory/issues)：反馈问题、确认任务范围和提交贡献。
+- [安全报告](../SECURITY.md)、[行为准则](../CODE_OF_CONDUCT.md)与[维护者说明](../MAINTAINERS.md)：私密漏洞入口、交流边界和维护责任。
 
 ## 运行与知识浏览
 
@@ -43,6 +44,7 @@
 - [本地 Web 预览发布准备](releases/local-web-preview.md)：本轮集成范围、候选预览版本、验证边界、数据备份与正式发布前清单。
 - [公开内容检查记录](releases/public-content-review-2026-10-01.md)：可达历史、图片、合成材料与 CI 日志的检查范围、修正与限制。
 - [第三方许可检查](releases/third-party-licenses.md)：依赖与 KaTeX 字体许可，源码及未来构建包的分发边界。
+- [开源协作实施记录](development/collaboration-maintenance.md)：贡献模板、仓库配置及旧 PR/分支收口的实际结果。
 - [演示后的迭代 TODO（2026-09-22）](planning/iteration-todo-2026-09-22.md)：当前完成范围、原有待办入口，以及学习历史、少量复习和场景调用的后续顺序。
 - [浅色主题 TODO](planning/light-theme-todo.md)：主题选择/本机偏好、工作区与阅读层、[3D/2D 图谱](development/theme-graph.md)、[Mermaid 与图片容器](development/theme-media.md)均已接入；THEME-06 自动检查完成，待用户按[试用清单](development/theme-validation.md#用户试用清单)进行浏览器验收。
 - [阶段进展总结](progress-summary.md)：保留早期共研与阶段检查，当前功能以首页和专项开发说明为准。
