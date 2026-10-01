@@ -41,8 +41,8 @@ CI 证据：[运行 36323874535](https://github.com/wolfhawkld/living-memory/act
 
 | ID | 优先级 | 任务 | 最小完成条件 |
 | --- | --- | --- | --- |
-| OSS-01 | 首批，进行中（2026-10-01） | 修复 CI 的账号初始化与测试身份 | 使用隔离的合成数据和测试账号；覆盖当前默认账号流程；重新核对 CI 全部结果；失败时上传已有 trace/截图等诊断产物，检查其中不含私有数据；不通过删除测试或全局关闭认证来掩盖问题 |
-| OSS-02 | 首批 | 同步默认分支与准备预览发布 | 检查 `main...develop` 实际差异，集中评审一批改动；确认 README、许可证和可运行应用进入 `main`；记录已通过的检查与未验收范围，再决定预览版本号、tag 和 release |
+| OSS-01 | 已完成（2026-10-01） | 修复 CI 的账号初始化与测试身份 | 使用隔离的合成数据和测试账号；覆盖当前默认账号流程；重新核对 CI 全部结果；失败时上传已有 trace/截图等诊断产物，检查其中不含私有数据；不通过删除测试或全局关闭认证来掩盖问题 |
+| OSS-02 | 首批，下一项 | 同步默认分支与准备预览发布 | 检查 `main...develop` 实际差异，集中评审一批改动；确认 README、许可证和可运行应用进入 `main`；记录已通过的检查与未验收范围，再决定预览版本号、tag 和 release |
 | OSS-03 | 首批 | 固定新人运行路径 | 增加 Node 版本文件；从干净目录用 `npm ci`、构建和启动复现；写清首次建号、示例知识源、个人数据位置与自有知识库接入方式；不依赖维护者的本机配置 |
 | OSS-04 | 首批 | 整理 README 与过时说明 | 首页回答项目用途、适用人群、快速开始、功能边界、截图/演示、文档入口、路线和贡献方式；修正私有/无许可证及已实现功能的旧说法；用合成内容制作对外示例 |
 | OSS-05 | 首批发布前 | 审查公开内容 | 检查历史内容、附件、个人背景、示例许可和 CI 日志；记录范围与发现；发现需处理的问题时制定具体处理方案，不把有限检查写成完整审计 |
@@ -74,7 +74,7 @@ CI 证据：[运行 36323874535](https://github.com/wolfhawkld/living-memory/act
 - 长期保持由本人设置，只有本人手工解除才重新进入衰减。
 - 记忆模型变化需要说明研究依据、证据边界和历史数据兼容方式；软件测试通过不代表学习收益已获验证。
 
-## 明天的接续入口
+## 9 月 27 日记录的接续入口
 
 1. 同步 `develop`，核对最新 Actions 与默认分支差异。
 2. 从 **OSS-01** 开始，阅读 `.github/workflows/check.yml`、`playwright.config.ts`、`tests/e2e/prototype.spec.ts`、`tests/e2e/graph-labels.spec.ts` 和账号初始化 API，补齐测试身份与数据准备。
@@ -95,7 +95,13 @@ CI 证据：[运行 36323874535](https://github.com/wolfhawkld/living-memory/act
 - 回忆用例补上“开始作答”，并验证已查看资料后的第二次回忆强制标为已曝光。
 - CI 失败时上传 `test-results/`，保留 7 天；不上传数据目录、SQLite、CLI 凭证或本机配置。截图和 trace 来自上述合成环境，含测试用的短期会话信息，不能复用于真实个人空间。
 
-本地检查：496 项 Node/HTTP 测试、构建与主题构建检查通过；`npm run test:e2e -- --list` 成功加载 10 个用例，未启动浏览器。推送后继续核对 CI 实际结果，尚不能将用例枚举视为浏览器测试通过。测试实现依据：[Playwright fixture](https://playwright.dev/docs/test-fixtures)、[API 与浏览器复用认证状态](https://playwright.dev/docs/api-testing#reusing-authentication-state)、[GitHub 上传诊断产物](https://github.com/actions/upload-artifact)。本地浏览器视觉验证继续由用户进行；CI 自动回归结果单独记录。
+本地检查：496 项 Node/HTTP 测试、构建与主题构建检查通过；`npm run test:e2e -- --list` 成功加载 10 个用例，未启动本地浏览器。
+
+远端检查：修复提交 `703aaf7` 的 [CI 运行 36816463722](https://github.com/wolfhawkld/living-memory/actions/runs/36816463722) 全部通过，含 496 项 Node/HTTP 测试、构建、主题检查及 10 项浏览器回归。失败诊断上传已配置；本次成功运行按条件跳过该步骤，未通过人为制造失败验证上传路径。OSS-01 完成，不将自动回归结果扩大为 GPU 性能或学习收益验收。
+
+测试实现依据：[Playwright fixture](https://playwright.dev/docs/test-fixtures)、[API 与浏览器复用认证状态](https://playwright.dev/docs/api-testing#reusing-authentication-state)、[GitHub 上传诊断产物](https://github.com/actions/upload-artifact)。本地浏览器视觉验证继续由用户进行。
+
+下一项为 **OSS-02：默认分支同步与预览发布准备**。检查 `703aaf7` 时，远端 `develop` 比 `main` 领先 54 个提交，未落后；这不包含后续记录本次验收结果的文档提交。继续时重新核对分支差异，整理集中评审范围、发布内容和未验收限制；正式预览发布仍需完成运行说明、过时文档修正与公开内容检查。本轮没有合并 `main`、修改仓库设置或创建 release。
 
 ## 参考依据
 
