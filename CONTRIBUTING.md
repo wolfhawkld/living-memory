@@ -2,6 +2,8 @@
 
 Living Memory 是一个使用 React、本地 Web 服务和 SQLite 的桌面优先本地应用。知识源是只读 Markdown，仓库自带的 `fixtures/demo-kg` 是可公开复现的合成示例。当前实现与运行边界以 [README](README.md)、[新人运行指南](docs/development/first-run.md) 和[文档导航](docs/README.md)为准；早期设计讨论不替代这些当前事实。
 
+定位代码从[模块与数据流导览](docs/development/codebase-guide.md)开始。第一次贡献可从[首批可认领任务](docs/planning/first-contribution-tasks.md)选择；每项列出文件入口、范围和验收条件，认领状态以关联 Issue 为准。
+
 ## 开始前先确认范围
 
 开始较大的功能、行为变化或数据变更前，先在 [Issues](https://github.com/wolfhawkld/living-memory/issues) 描述问题、预期行为和范围，或在已有 Issue 中沟通后再认领。说明涉及的页面/API、依赖、数据兼容和验证方式；不把完整 v0.1 的愿景默认扩大成当前任务。
@@ -12,12 +14,16 @@ Living Memory 是一个使用 React、本地 Web 服务和 SQLite 的桌面优�
 
 推荐使用 Node.js **22.23.1**（见[`.nvmrc`](.nvmrc)和 CI），隔离运行已验证 npm **10.9.8**。`package.json` 的最低 Node 版本声明是 22.13.0，其他版本未逐一验证。首次运行、账号创建、数据目录和自有 Markdown 接入请按[新人运行指南](docs/development/first-run.md)操作。
 
-在仓库根目录安装依赖并启动开发服务：
+从开发分支获取源码，在仓库根目录安装依赖并启动服务：
 
 ```bash
+git clone --branch develop https://github.com/wolfhawkld/living-memory.git
+cd living-memory
 npm ci
 npm run dev
 ```
+
+预览运行指南使用固定发行 tag；贡献请从最新 `develop` 开始，保留本地已有源码修改。
 
 `npm run dev` 同时启动本地 API（默认 `4317`）和 Vite 页面（`http://127.0.0.1:5173`）。运行构建后的应用时使用：
 
@@ -62,6 +68,8 @@ git diff
 ## 提交和评审
 
 PR 应按“问题 → 变化 → 验证 → 未覆盖内容与限制”说明结果，并关联 Issue 或任务。只描述本次范围内的行为和验证；发现相邻问题可另开 Issue。视觉改动可在有助于评审时附合成数据截图，文档或后端改动不需要为了模板而附图。验证没有覆盖的设备、浏览器、数据迁移或用户学习效果，应明确写出。
+
+影响用户行为、接口或持久化格式时，同步[更新记录](CHANGELOG.md)的 `Unreleased`，按[版本与兼容约定](docs/releases/versioning-and-compatibility.md)说明旧版本、迁移和回退；纯文字小改不必制造版本条目。用户升级步骤见[完整备份与恢复](docs/releases/upgrade-and-recovery.md)。
 
 请同时遵守根目录的[安全报告说明](SECURITY.md)、[行为准则](CODE_OF_CONDUCT.md)和[维护者说明](MAINTAINERS.md)。这些文件描述漏洞报告、协作行为和维护权限；它们由维护者单独维护。
 

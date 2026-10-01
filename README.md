@@ -4,7 +4,7 @@
 
 适合持续阅读、研究和工作中积累概念的人：既想保留原理与细节，也想在遇到实际问题时主动想到适用知识。日常以阅读、查询和工作为主，附带少量复习。
 
-目前是**桌面优先的本地 Web 原型**，源码采用 [MIT 许可证](LICENSE)。默认只访问本机；正式预览尚未发布，完整 v0.1 路线继续迭代。
+目前是**桌面优先的本地 Web 原型**，源码采用 [MIT 许可证](LICENSE)。正在准备预览版本 **0.0.1-preview.1**，默认只访问本机；完整 v0.1 路线继续迭代。[版本说明](docs/releases/v0.0.1-preview.1.md)记录使用范围；完成最终检查后，发行结果会记录在 [GitHub 预览发布](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1)。
 
 ![合成概念关系图与时间状态示意：近期重温、建议再看、较久未重温和未知](docs/assets/readme-demo.svg)
 
@@ -12,10 +12,10 @@
 
 ## 快速开始
 
-推荐 **Node.js 22.23.1**，与 [`.nvmrc`](.nvmrc) 和 CI 一致；已验证 npm 10.9.8。以下使用持续开发分支 `develop`，`main` 保留最近一次阶段集成。
+推荐 **Node.js 22.23.1**，与 [`.nvmrc`](.nvmrc) 和 CI 一致；已验证 npm 10.9.8。以下固定 tag 命令在预览发布后可用；发布前或参与开发使用 `develop`，见[贡献指南](CONTRIBUTING.md)。
 
 ```bash
-git clone --branch develop https://github.com/wolfhawkld/living-memory.git
+git clone --branch v0.0.1-preview.1 --single-branch https://github.com/wolfhawkld/living-memory.git
 cd living-memory
 npm ci
 npm run build
@@ -66,7 +66,7 @@ Windows 原生、macOS、真实桌面 GPU 与大知识库性能仍待验证；�
 
 2026-10-01 已在 WSL2/Linux x86_64、Node 22.23.1 下验证隔离目录安装、构建、首次建号、知识源接入和重启保留。[提交 `5274166` 的 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36833118633) 通过 Node/HTTP 测试、构建、主题检查和浏览器回归。该结果验证软件路径，不构成目标设备性能或学习收益结论。
 
-开源运行文档、有限范围的公开内容检查和贡献约定已完成，接下来补齐模块导览与首批协作任务，再核对最终版本与预览发布。记忆模型扩展依据实际延迟观察推进。完整 v0.1 的任务和验收规格保留，不将已有 P0 子集视为全部完成。
+开源运行文档、有限范围的公开内容检查、贡献约定、[模块导览](docs/development/codebase-guide.md)和[首批协作任务](docs/planning/first-contribution-tasks.md)已整理。[更新记录](CHANGELOG.md)、[版本兼容约定](docs/releases/versioning-and-compatibility.md)和[升级恢复步骤](docs/releases/upgrade-and-recovery.md)提供预览维护基础；本次发行的精确提交、自动检查与源码归档核对结果见 [GitHub 发布说明](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1)。记忆模型扩展依据实际延迟观察推进；完整 v0.1 路线尚未整体验收。
 
 - [开源准备与完成记录](docs/planning/open-source-readiness-2026-09-27.md)
 - [近期迭代与未验收项](docs/planning/iteration-todo-2026-09-22.md)
@@ -76,6 +76,8 @@ Windows 原生、macOS、真实桌面 GPU 与大知识库性能仍待验证；�
 ## 参与协作
 
 欢迎改进运行文档、合成示例、测试和独立功能。先阅读[协作说明](CONTRIBUTING.md)，在 [Issues](https://github.com/wolfhawkld/living-memory/issues) 描述问题或确认任务范围。维护者日常沿用 `develop`；外部贡献者可 fork、使用短期分支，并向 `develop` 提交 PR。经过验证的一组改动再集中合入 `main`。
+
+定位实现请看[模块与数据流导览](docs/development/codebase-guide.md)，第一次参与可从[首批可认领任务](docs/planning/first-contribution-tasks.md)选择。
 
 安全漏洞使用[私密报告入口](SECURITY.md)，社区交流遵守[行为准则](CODE_OF_CONDUCT.md)；维护责任与分支约定见[维护者说明](MAINTAINERS.md)。
 

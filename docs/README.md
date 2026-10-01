@@ -8,6 +8,8 @@
 - [合成示意图与生成说明](assets/README.md)：用于解释知识结构与时间提示，不是实际界面截图或学习备份。
 - [P0 验证记录](development/p0-validation.md)：早期交互检查与后续验证记录；近期 CI 和隔离运行结果见开源准备记录。
 - [协作说明](../CONTRIBUTING.md)与 [GitHub Issues](https://github.com/wolfhawkld/living-memory/issues)：反馈问题、确认任务范围和提交贡献。
+- [模块与数据流导览](development/codebase-guide.md)：定位代码、数据存储、跨端请求和对应测试。
+- [首批可认领任务](planning/first-contribution-tasks.md)：限定范围的文档、合成媒体、空状态、HTTP 回归和平台运行验证。
 - [安全报告](../SECURITY.md)、[行为准则](../CODE_OF_CONDUCT.md)与[维护者说明](../MAINTAINERS.md)：私密漏洞入口、交流边界和维护责任。
 
 ## 运行与知识浏览
@@ -42,6 +44,10 @@
 
 - [开源协作准备与 TODO（2026-09-27）](planning/open-source-readiness-2026-09-27.md)：开源任务、已完成的运行/CI/文档/内容检查与后续协作准备。
 - [本地 Web 预览发布准备](releases/local-web-preview.md)：本轮集成范围、候选预览版本、验证边界、数据备份与正式发布前清单。
+- [0.0.1-preview.1 版本说明](releases/v0.0.1-preview.1.md)：固定 tag 的安装、当前功能、兼容与验证边界。
+- [更新记录](../CHANGELOG.md)与[版本/兼容约定](releases/versioning-and-compatibility.md)：准备版本、学习格式、模型、数据库和客户端的独立边界。
+- [完整备份、升级与恢复](releases/upgrade-and-recovery.md)：收拢待写入、停止完整复制、原路径恢复及跨根迁移限制。
+- [版本准备与合成恢复验证](releases/upgrade-validation-2026-10-01.md)：38 项兼容专项、构建、两账号恢复演练与平台证据范围。
 - [公开内容检查记录](releases/public-content-review-2026-10-01.md)：可达历史、图片、合成材料与 CI 日志的检查范围、修正与限制。
 - [第三方许可检查](releases/third-party-licenses.md)：依赖与 KaTeX 字体许可，源码及未来构建包的分发边界。
 - [开源协作实施记录](development/collaboration-maintenance.md)：贡献模板、仓库配置及旧 PR/分支收口的实际结果。

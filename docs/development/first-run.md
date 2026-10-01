@@ -1,13 +1,13 @@
 # 第一次运行 Living Memory
 
-这份指南从干净源码开始，使用仓库自带的合成知识体验本地 Web，再接入自己的 Markdown。以下命令使用持续开发分支 `develop`；`main` 保留最近一次阶段集成，正式预览尚未发布。服务只监听本机 `127.0.0.1`。
+这份指南从干净源码开始，使用仓库自带的合成知识体验本地 Web，再接入自己的 Markdown。以下固定 tag `v0.0.1-preview.1` 命令在预览发布后可用，发行结果见[版本说明](../releases/v0.0.1-preview.1.md)；发布前或参与开发使用长期 `develop`，见[贡献指南](../../CONTRIBUTING.md)。服务只监听本机 `127.0.0.1`。
 
 ## 1. 准备环境
 
 安装 Git 和 Node.js **22.23.1**。仓库的 [`.nvmrc`](../../.nvmrc) 与 [CI](../../.github/workflows/check.yml) 使用同一版本；本次验证使用该版本附带的 npm **10.9.8**。`package.json` 声明的最低版本为 22.13.0，其他 Node 版本尚未逐一验证。
 
 ```bash
-git clone --branch develop https://github.com/wolfhawkld/living-memory.git
+git clone --branch v0.0.1-preview.1 --single-branch https://github.com/wolfhawkld/living-memory.git
 cd living-memory
 ```
 
@@ -29,7 +29,7 @@ npm start
 
 ## 3. 创建自己的账号并体验示例
 
-首次打开页面显示“创建第一个账户”，**没有默认用户名或密码**。自行设置用户名（3～32 位英文字母、数字、点、下划线或连字符）和密码（12～256 个字符）。第一个账户是管理员；以后启动应登录这个账户。管理员可在“账号管理”创建成员。
+首次打开页面显示“创建第一个账户”，**没有默认用户名或密码**。自行设置用户名（3～32 位 ASCII 英文字母、数字、点、下划线或连字符，须以字母或数字开头，保存为小写）和密码（12～256 个字符）。第一个账户是管理员；以后启动应登录这个账户。管理员可在“账号管理”创建成员。
 
 默认知识源为 [`fixtures/demo-kg`](../../fixtures/demo-kg/README.md)，包含 Math、Model 两个目录的 16 个合成概念及关系。它不包含个人知识库或真实学习历史。
 
@@ -50,6 +50,8 @@ npm start
 `data/local/` 已被 Git 忽略，其中的账号库、设备凭据和私人知识不要提交。浏览器中的待同步操作、复习草稿和界面偏好另存于浏览器；它们不等同于服务端记录。换浏览器不会自动带走这些本机内容。
 
 需要整体备份时，停止服务后复制整个数据目录，并单独备份外部知识源；不要只复制运行中的单个 SQLite 文件。页面“导出学习数据”生成的 JSON 可按[导入恢复说明](learning-data-import.md)恢复支持的学习内容，但不含账号、密码、知识正文或浏览器草稿，不是完整应用备份。
+
+完整升级、目录外 CLI 状态、原路径恢复及回退步骤见[升级与恢复](../releases/upgrade-and-recovery.md)；[版本兼容约定](../releases/versioning-and-compatibility.md)说明当前格式与迁移范围。
 
 ## 5. 接入自己的 Markdown 知识库
 
@@ -138,6 +140,8 @@ npm run --silent lm -- query "向量"
 ```
 
 CLI 自动读取管理员的设备凭据。若服务使用自定义 `LM_DATA_DIR`，CLI 终端也要设置相同值；若换了端口，需通过 `--url http://127.0.0.1:<端口>` 指定服务地址。CLI 查询会刷新知识索引，但不确认重温。CLI 设备身份目前对应管理员，不能用来读取成员的私人空间。其他操作见[CLI 与 KG 触发](cli-and-kg-triggers.md)。
+
+CLI 重温回执默认另存于仓库 `data/local/cli`，不会随 `LM_DATA_DIR` 改变；`LM_CLI_STATE_DIR` / `--state-dir` 可另设。设备文件默认跟随数据目录，`LM_CLI_SESSION_FILE` 可另设。备份自定义数据目录时同时核对这些路径。
 
 ## 常见启动问题
 
