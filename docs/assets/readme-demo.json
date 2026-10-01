@@ -1,0 +1,254 @@
+{
+  "kind": "living-memory-readme-illustration",
+  "version": 1,
+  "synthetic": true,
+  "notForLearningImport": true,
+  "asOf": "2026-10-01T00:00:00.000Z",
+  "halfLifeDays": 7,
+  "layout": {
+    "width": 1100,
+    "height": 520,
+    "positioning": "fixed"
+  },
+  "source": {
+    "fixture": "fixtures/demo-kg",
+    "scope": "Math",
+    "paths": [
+      "Math/向量.md",
+      "Math/矩阵.md",
+      "Math/范数.md",
+      "Math/内积.md",
+      "Math/余弦相似度.md",
+      "Math/正交.md"
+    ]
+  },
+  "concepts": [
+    {
+      "title": "向量",
+      "path": "Math/向量.md",
+      "elapsedDays": 0,
+      "status": "recent",
+      "decay": 1,
+      "color": "#5ce3d0",
+      "position": {
+        "x": 160,
+        "y": 205
+      }
+    },
+    {
+      "title": "矩阵",
+      "path": "Math/矩阵.md",
+      "elapsedDays": 3,
+      "status": "recent",
+      "decay": 0.7429971445684742,
+      "color": "#5ce3d0",
+      "position": {
+        "x": 160,
+        "y": 356
+      }
+    },
+    {
+      "title": "范数",
+      "path": "Math/范数.md",
+      "elapsedDays": 7,
+      "status": "revisit",
+      "decay": 0.5,
+      "color": "#f4bd70",
+      "position": {
+        "x": 342,
+        "y": 175
+      }
+    },
+    {
+      "title": "内积",
+      "path": "Math/内积.md",
+      "elapsedDays": 14,
+      "status": "stale",
+      "decay": 0.25,
+      "color": "#ff817d",
+      "position": {
+        "x": 354,
+        "y": 264
+      }
+    },
+    {
+      "title": "余弦相似度",
+      "path": "Math/余弦相似度.md",
+      "elapsedDays": null,
+      "status": "unknown",
+      "decay": null,
+      "color": "#4175af",
+      "position": {
+        "x": 558,
+        "y": 172
+      }
+    },
+    {
+      "title": "正交",
+      "path": "Math/正交.md",
+      "elapsedDays": 21,
+      "status": "stale",
+      "decay": 0.125,
+      "color": "#ff817d",
+      "position": {
+        "x": 548,
+        "y": 356
+      }
+    }
+  ],
+  "relations": [
+    {
+      "source": "Math/余弦相似度.md",
+      "target": "Math/内积.md",
+      "sourceTitle": "余弦相似度",
+      "targetTitle": "内积",
+      "type": "related",
+      "description": "对照这个概念理解定义和条件。"
+    },
+    {
+      "source": "Math/余弦相似度.md",
+      "target": "Math/范数.md",
+      "sourceTitle": "余弦相似度",
+      "targetTitle": "范数",
+      "type": "related",
+      "description": "沿关系继续探索。"
+    },
+    {
+      "source": "Math/内积.md",
+      "target": "Math/余弦相似度.md",
+      "sourceTitle": "内积",
+      "targetTitle": "余弦相似度",
+      "type": "related",
+      "description": "沿关系继续探索。"
+    },
+    {
+      "source": "Math/内积.md",
+      "target": "Math/正交.md",
+      "sourceTitle": "内积",
+      "targetTitle": "正交",
+      "type": "related",
+      "description": "对照这个概念理解定义和条件。"
+    },
+    {
+      "source": "Math/向量.md",
+      "target": "Math/内积.md",
+      "sourceTitle": "向量",
+      "targetTitle": "内积",
+      "type": "related",
+      "description": "对照这个概念理解定义和条件。"
+    },
+    {
+      "source": "Math/向量.md",
+      "target": "Math/范数.md",
+      "sourceTitle": "向量",
+      "targetTitle": "范数",
+      "type": "related",
+      "description": "沿关系继续探索。"
+    },
+    {
+      "source": "Math/正交.md",
+      "target": "Math/内积.md",
+      "sourceTitle": "正交",
+      "targetTitle": "内积",
+      "type": "related",
+      "description": "对照这个概念理解定义和条件。"
+    },
+    {
+      "source": "Math/正交.md",
+      "target": "Math/矩阵.md",
+      "sourceTitle": "正交",
+      "targetTitle": "矩阵",
+      "type": "related",
+      "description": "沿关系继续探索。"
+    },
+    {
+      "source": "Math/矩阵.md",
+      "target": "Math/向量.md",
+      "sourceTitle": "矩阵",
+      "targetTitle": "向量",
+      "type": "related",
+      "description": "对照这个概念理解定义和条件。"
+    },
+    {
+      "source": "Math/范数.md",
+      "target": "Math/内积.md",
+      "sourceTitle": "范数",
+      "targetTitle": "内积",
+      "type": "related",
+      "description": "沿关系继续探索。"
+    },
+    {
+      "source": "Math/范数.md",
+      "target": "Math/向量.md",
+      "sourceTitle": "范数",
+      "targetTitle": "向量",
+      "type": "related",
+      "description": "对照这个概念理解定义和条件。"
+    }
+  ],
+  "legend": [
+    {
+      "status": "recent",
+      "label": "近期重温",
+      "color": "#5ce3d0",
+      "examples": [
+        {
+          "title": "向量",
+          "elapsedDays": 0,
+          "decay": 1
+        },
+        {
+          "title": "矩阵",
+          "elapsedDays": 3,
+          "decay": 0.7429971445684742
+        }
+      ]
+    },
+    {
+      "status": "revisit",
+      "label": "建议再看",
+      "color": "#f4bd70",
+      "examples": [
+        {
+          "title": "范数",
+          "elapsedDays": 7,
+          "decay": 0.5
+        }
+      ]
+    },
+    {
+      "status": "stale",
+      "label": "较久未重温",
+      "color": "#ff817d",
+      "examples": [
+        {
+          "title": "内积",
+          "elapsedDays": 14,
+          "decay": 0.25
+        },
+        {
+          "title": "正交",
+          "elapsedDays": 21,
+          "decay": 0.125
+        }
+      ]
+    },
+    {
+      "status": "unknown",
+      "label": "未知 · 无重温起点",
+      "color": "#4175af",
+      "examples": [
+        {
+          "title": "余弦相似度",
+          "elapsedDays": null,
+          "decay": null
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Synthetic README illustration data derived from the public demo fixture.",
+    "This is not a learning import format and contains no persisted learning history.",
+    "Decay is a time-only indicator from projectMemory, not a memory or recall percentage."
+  ]
+}
