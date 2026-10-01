@@ -32,7 +32,7 @@ npm start
 
 ## 从这里开始
 
-- [开源协作准备与 TODO（2026-09-27）](docs/planning/open-source-readiness-2026-09-27.md)：仓库与 CI 检查结果、文档/协作调整和分批任务；OSS-01 已通过 CI，OSS-02 正在准备集中同步默认分支。
+- [开源协作准备与 TODO（2026-09-27）](docs/planning/open-source-readiness-2026-09-27.md)：OSS-01 的 CI 修复与 OSS-02 的主分支同步已完成，下一项为固定新人运行路径；正式预览仍需完成运行、文档和公开内容准备。
 - [本地 Web 预览发布准备](docs/releases/local-web-preview.md)：本轮集成范围、候选预览版本、验证边界、数据备份与正式发布前清单。
 - [少量复习入口](docs/development/brief-review.md)：从当前领域按时间状态推荐 3/5 个概念，复用回忆、核对与信心记录；可跳过、结束，单独确认重温才更新时间起点。
 - [复习安排与中断续做](docs/development/review-arrangements.md)：节点重点/暂缓、跨领域每日预算、当前浏览器自动保存作答与暂停续做；恢复时重新核对资料和时间起点。

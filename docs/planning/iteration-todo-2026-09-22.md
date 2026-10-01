@@ -6,7 +6,7 @@
 
 ## 下次接续：开源协作准备
 
-2026-09-27 已保存[开源协作准备总结与 TODO](open-source-readiness-2026-09-27.md)。2026-10-01 已完成 **OSS-01：修复 CI 测试的账号初始化与登录流程**；496 项 Node/HTTP 测试、构建、主题检查及 10 项浏览器回归在 [CI 运行 36816463722](https://github.com/wolfhawkld/living-memory/actions/runs/36816463722) 全部通过。现推进 **OSS-02：默认分支同步与预览发布准备**，已保存[发布范围与清单](../releases/local-web-preview.md)。之后继续运行说明与贡献文档；正式预览仍需完成新人运行和公开内容检查。本地浏览器视觉验收继续由用户进行。
+2026-09-27 已保存[开源协作准备总结与 TODO](open-source-readiness-2026-09-27.md)。2026-10-01 已完成 **OSS-01：CI 认证修复**和 **OSS-02：默认分支同步与预览发布准备**；累计成果通过 [PR #37](https://github.com/wolfhawkld/living-memory/pull/37) 合入 `main`，最终分支与 PR 检查均通过，含 496 项 Node/HTTP 测试、构建、主题检查和 10 项浏览器回归。[发布范围与清单](../releases/local-web-preview.md)已保存；候选 tag 尚未创建，正式预览仍需 OSS-03～05。下一项为 **OSS-03：固定新人运行路径**。本地浏览器视觉验收继续由用户进行。
 
 ## 原有 TODO 在哪里
 
