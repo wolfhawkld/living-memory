@@ -6,7 +6,7 @@
 
 | 对象 | 当前值 / 实现 | 用途 |
 | --- | --- | --- |
-| 软件版本 | `package.json` 与 lockfile 为 `0.0.1-preview.1` | 首个预览的准备版本；发行 tag 使用 `v` 加同一版本，发布后精确目标与结果见 [GitHub release](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1) |
+| 软件版本 | `package.json` 与 lockfile 为 `0.0.1-preview.1` | 首个预览已发布；固定 tag 为 `v0.0.1-preview.1`，精确目标与结果见 [GitHub release](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1) |
 | 学习 JSON 格式 | `schemaVersion: 1` | 导出/导入结构，与软件版本独立 |
 | 记忆模型 | `time-only-v0` | 标识时间投影语义；配置 revision 标识本人修改 H 的历史，不是软件或格式版本 |
 | SQLite 结构 | 没有统一 schema version | 启动时创建缺失表，已知旧观察表补 `learning_json` 列；没有通用升级/降级框架 |

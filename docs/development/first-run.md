@@ -1,6 +1,6 @@
 # 第一次运行 Living Memory
 
-这份指南从干净源码开始，使用仓库自带的合成知识体验本地 Web，再接入自己的 Markdown。以下固定 tag `v0.0.1-preview.1` 命令在预览发布后可用，发行结果见[版本说明](../releases/v0.0.1-preview.1.md)；发布前或参与开发使用长期 `develop`，见[贡献指南](../../CONTRIBUTING.md)。服务只监听本机 `127.0.0.1`。
+这份指南从干净源码开始，使用仓库自带的合成知识体验本地 Web，再接入自己的 Markdown。以下使用已发布的固定 tag `v0.0.1-preview.1`，发行结果见[版本说明](../releases/v0.0.1-preview.1.md)；参与开发使用长期 `develop`，见[贡献指南](../../CONTRIBUTING.md)。服务只监听本机 `127.0.0.1`。
 
 ## 1. 准备环境
 
