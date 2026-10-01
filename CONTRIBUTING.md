@@ -10,7 +10,7 @@ Living Memory 是一个使用 React、本地 Web 服务和 SQLite 的桌面优�
 
 ## 本地开发
 
-推荐使用 Node.js **22.23.1**（见[`.nvmrc`](.nvmrc)和 CI），本次验证使用 npm **10.9.8**。`package.json` 的最低 Node 版本声明是 22.13.0，其他版本未逐一验证。首次运行、账号创建、数据目录和自有 Markdown 接入请按[新人运行指南](docs/development/first-run.md)操作。
+推荐使用 Node.js **22.23.1**（见[`.nvmrc`](.nvmrc)和 CI），隔离运行已验证 npm **10.9.8**。`package.json` 的最低 Node 版本声明是 22.13.0，其他版本未逐一验证。首次运行、账号创建、数据目录和自有 Markdown 接入请按[新人运行指南](docs/development/first-run.md)操作。
 
 在仓库根目录安装依赖并启动开发服务：
 
@@ -37,7 +37,7 @@ npm start
 | 文档或贡献约定 | 检查 Markdown 与本地链接、`git diff --check`；不因文档改动无意义地运行完整测试套件 |
 | React、服务端、API、数据或记忆逻辑 | `npm test`、`npm run build` |
 | 主题或编译后主题产物 | `npm test`、`npm run build`、`npm run check:theme-build` |
-| 浏览器端回归 | 由 CI 按需运行 `npm run test:e2e`；只有相关改动才需要额外的手工操作记录 |
+| 浏览器端回归 | 现有 CI 执行 `npm run test:e2e`；相关视觉改动可另提供有针对性的手工操作记录 |
 
 `npm run build` 已包含 TypeScript 检查和 Vite 构建。CI 会安装 Chromium 并执行 E2E；本地贡献不要求每次启动浏览器，也不要求所有改动都附截图。确实需要视觉验收时，可在合成数据上提供截图或操作记录，并说明未覆盖的路径。
 

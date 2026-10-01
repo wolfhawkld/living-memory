@@ -58,8 +58,10 @@ GitHub Issue 表单及配置需进入默认分支 `main` 后才对外显示，�
 
 本地验证：9 份变更 Markdown 的 117 个相对链接目标均存在，差异格式检查通过；三个 YAML 可解析，问题表单 8 个字段、功能建议 7 个字段的 ID 唯一，必填和联系入口配置符合表单结构。保留空白 Issue，不依赖尚未创建的标签。未重复运行应用测试或启动本地浏览器。
 
-已重新查询开放 PR，旧草稿全部关闭。阶段集成与对应 CI 状态在完成后补充；此前提交 `609c5ad` 的 [CI 运行 36839138806](https://github.com/wolfhawkld/living-memory/actions/runs/36839138806) 全部通过，不把此前检查冒充新提交的结果。
+已重新查询开放 PR，旧草稿全部关闭。阶段提交 `8fd1ff7` 的[分支 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36841963040)与 [PR CI](https://github.com/wolfhawkld/living-memory/actions/runs/36841989598) 均全部通过，包含安装、Node/HTTP 测试、构建、主题检查和浏览器回归。
+
+[PR #38](https://github.com/wolfhawkld/living-memory/pull/38) 已于 2026-10-01T09:27:29Z 合入 `main`，合并提交 `400f622455271f66d08438fef9035f78229903ea`。`develop` 已快进接收合并记录；合并树与已验证的 `8fd1ff7` 相同。已通过 API 核对 `main` 中的三个 Issue YAML、CONTRIBUTING、SECURITY、CODE_OF_CONDUCT 和 MAINTAINERS 文件。后续只补充完成记录及贡献指南的措辞澄清，不将阶段 CI 冒充后续提交的检查结果。
 
 贡献指南明确查询、阅读、生成和刷新不重置重温；回忆与曝光分开，表现不自动拟合 H，长期保持只本人手工解除，账号状态保持隔离。记忆模型变化仍需研究依据和数据兼容说明。
 
-下一项为 **OSS-07：开发导览与首批协作任务**。本轮不创建正式预览 tag 或 release，仍按[发布清单](../releases/local-web-preview.md)接续。
+OSS-06 完成。下一项为 **OSS-07：开发导览与首批协作任务**。本轮不创建正式预览 tag 或 release，仍按[发布清单](../releases/local-web-preview.md)接续。
