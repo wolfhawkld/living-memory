@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "协作说明"
+    url: "https://github.com/wolfhawkld/living-memory/blob/main/CONTRIBUTING.md"
+    about: "开始贡献前请阅读协作范围、数据约定和验证要求。"
+  - name: "私下报告安全漏洞"
+    url: "https://github.com/wolfhawkld/living-memory/security/advisories/new"
+    about: "疑似安全漏洞请勿公开 Issue；请通过 GitHub Security Advisories 私下报告。"

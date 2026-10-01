@@ -1,12 +1,12 @@
 # CLI 与 progressive-kg 日常触发
 
-账号模式说明（2026-09-22）：首次使用先在 Web 创建管理员，CLI/已安装钩子随后自动读取本机私有设备凭据，继续操作原有知识库。自定义 `LM_DATA_DIR` 或凭据路径时需同步调用环境，详见[私人账号与知识域](private-accounts.md#cli-与-progressive-kg-钩子)。
+账号模式说明（2026-09-22）：首次使用先在 Web 创建第一个管理员账户。建号后服务生成 owner 专用的本机设备凭据，CLI 和已安装钩子自动读取它并继续操作当前管理员的知识空间；成员账户没有这条 CLI 切换入口。自定义 `LM_DATA_DIR`、`LM_CLI_SESSION_FILE` 或服务地址时需同步调用环境，详见[私人账号与知识域](private-accounts.md#cli-与-progressive-kg-钩子)。
 
-日期：2026-09-17。对应 LM-009 的先行子集：通过同一本地服务查询知识、明确确认重温，在成功的 KG 操作后刷新图谱。逐概念历史时间线留到下一轮。
+> 历史验证记录（2026-09-17）：本页最初对应 LM-009 的先行子集，通过同一本地服务查询知识、明确确认重温，并在成功的 KG 操作后刷新图谱；当时逐概念历史时间线尚未实现。当前 Web 历史入口见[逐概念学习历史](concept-history.md)，本页的 CLI 命令范围保持为查询、状态、刷新、`after` 收尾刷新、明确重温和重试。
 
 ## 启动与查询
 
-先按 [运行说明](p0-running.md)启动本地服务。CLI 与服务应在能使用同一知识根目录的环境中运行，例如均在 WSL 中。CLI 不直接打开 SQLite。
+先按[新人运行指南](first-run.md)启动本地服务，并在 Web 完成首次管理员建号。CLI 与服务应在能使用同一知识根目录的环境中运行，例如均在 WSL 中；自定义 `LM_DATA_DIR` 时，两边保持相同设置。建号后服务会写入 `LM_DATA_DIR/cli-session.json`（权限 600、有效期 30 天），也可用 `LM_CLI_SESSION_FILE` 指定 CLI 凭据文件；服务重启或管理员密码重置会轮换该文件。CLI 不直接打开 SQLite，也不读取成员的私人空间。
 
 ```bash
 npm run --silent lm -- help
@@ -15,9 +15,9 @@ npm run --silent lm -- query "概念关键词"
 npm run --silent lm -- show "概念选择器"
 ```
 
-`query` 先刷新来源，再按标题、别名和摘要搜索；返回匹配概念、来源版本和当前时间状态。它是确定性的本地查询，不负责生成自然语言答案。`show` 可使用概念 ID、相对文件路径、完整标题或别名；有歧义时返回候选，不随意选第一个。CLI 的 query、show、status 和 review 都读取 `/api/snapshot?scope=all`，可以访问完整索引；`LM_KG_INCLUDE` 和 `LM_KG_LIMIT` 主要影响兼容的缺省 snapshot 与 Web 的初始领域/每域显示上限，不把 CLI 搜索截断为单一领域。
+`query` 先刷新来源，再按标题、别名和摘要搜索；返回匹配概念、来源版本和当前时间状态。它是确定性的本地查询，不负责生成自然语言答案。`show` 可使用概念 ID、相对文件路径、完整标题或别名，并返回概念正文、当前状态和直接关联；有歧义时返回候选，不随意选第一个。CLI 的 query、show、status 和 review 都读取 `/api/snapshot?scope=all`，可以访问完整索引；`LM_KG_INCLUDE` 和 `LM_KG_LIMIT` 主要影响兼容的缺省 snapshot 与 Web 的初始领域/每域显示上限，不把 CLI 搜索截断为单一领域。
 
-可用 `--url` 或 `LM_SERVER_URL` 指定另一本机端口。通过 `--source-root` 或 `LM_KG_ROOT` 指定预期知识根目录时，CLI 会核对服务的来源身份；不一致时拒绝操作。跨机器或公网连接不在此版本范围内。Web 的领域切换、跨域展开和布局行为见[知识域视图](domain-views.md)。
+可用 `--url` 或 `LM_SERVER_URL` 指定另一本机端口。通过 `--source-root` 或 `LM_KG_ROOT` 指定预期知识根目录时，CLI 会按规范化真实路径计算 `sourceId` 并核对服务的来源身份；不一致时拒绝操作。修改整库根路径会切换 namespace，旧空间的 CLI 收据不能在新空间重用；重启服务后同步更新根目录、端口和设备凭据。跨机器或公网连接不在此版本范围内。Web 的领域切换、跨域展开和布局行为见[知识域视图](domain-views.md)。
 
 CLI 输出 JSON，错误写入 stderr 并返回非零退出码；不会输出本地会话令牌。
 
@@ -41,9 +41,11 @@ npm run --silent lm -- retry review-example-001
 
 档案默认保存在 Living Memory 项目的 `data/local/cli`，可用 `LM_CLI_STATE_DIR` 指定目录；它包含私人学习信息，不应提交 Git。查询、生成、刷新和单纯查看不会创建重温事件，也不会改动 H。
 
+场景调用、逐概念学习历史、JSON 导入恢复和改名/移动后的历史衔接目前通过 Web 提供，不是 CLI 命令；它们分别见[场景调用说明](scenario-confidence-retention.md)、[逐概念学习历史](concept-history.md)、[学习数据导入恢复](learning-data-import.md)和[概念身份说明](concept-identity.md)。CLI 继续负责完整索引的查询/状态、来源刷新、`after` 收尾刷新、明确重温和重试；它不会把场景答案、历史正文或导入文件写入外部 KG。
+
 ## 安装到 progressive-kg 的 Agent 流程
 
-progressive-kg 当前通过 `AGENTS.md` 和 `_system/OPERATIONS.md` 约定 Ingest / Query / Consolidate，并没有这些操作的专用可执行管线。这里安装的是供 Agent 在成功收尾时调用的钩子，不是假设存在文件监听器或内置回调。
+progressive-kg 当前通过 `AGENTS.md` 和 `_system/OPERATIONS.md` 约定 Ingest / Query / Consolidate，并没有这些操作的专用可执行管线。这里安装的是供 Agent 在成功收尾时调用的钩子，不是假设存在文件监听器或内置回调；不接入 progressive-kg 也可以独立使用 Web 和 CLI。
 
 ```bash
 npm run install:kg-hook -- --root ../progressive-kg --check
@@ -66,7 +68,7 @@ python3 _system/living_memory_hook.py ingest --operation-id ingest-example-001
 python3 _system/living_memory_hook.py consolidate --operation-id consolidate-example-001
 ```
 
-只运行当前流程对应的一条。钩子会核对所连接服务的知识根目录，并重新加载服务配置范围内的概念和关系。重复刷新是安全的；操作 ID 用于返回回执和重试关联，本轮不建立持久化查询日志，也不推断用户阅读或学习成功。
+只运行当前流程对应的一条。钩子会核对所连接服务的知识根目录，并重新加载服务配置范围内的概念和关系。重复刷新是安全的；操作 ID 会写入 JSON 回执，便于外部流程关联和手工重试，但本轮不建立持久化查询日志，也不推断用户阅读或学习成功。
 
 服务离线时保留原始查询答案与知识生成结果，报告刷新失败；恢复后重试同一钩子命令。手工编辑文件、绕过此约定的 Agent 或未配置的机器仍需手动刷新，不宣称所有编辑已被自动捕获。
 
@@ -74,11 +76,11 @@ python3 _system/living_memory_hook.py consolidate --operation-id consolidate-exa
 
 Web 切换到“查看真实记录”后，服务通过 `/api/changes` 发送轻量变化通知。页面重新读取同一份状态；断线重连也重新读取，通知本身不作为学习事件保存。正在回忆作答或编辑时延后刷新，避免覆盖输入；示例状态和未来时间预览保留其独立语义。
 
-如果服务重启后换成了另一个知识根目录，当前页面会保留输入、停止写入并持续提示重新加载；不会把旧页面的学习记录发到新知识源。
+如果服务重启后换成了另一个知识根目录，当前页面会保留输入、停止写入并持续提示重新加载；不会把旧页面的学习记录发到新知识源。CLI 和钩子也会因 `sourceId`/namespace 不匹配拒绝刷新或写入；需要迁移支持的学习记录时，按[学习数据导入恢复](learning-data-import.md)在新空间预览并确认，不能把改根目录当作单篇笔记的历史衔接。
 
-同一知识库的服务重启会更新会话令牌。Web 写入遇到过期令牌时会重新获取会话，核对来源后原样重试一次；重温时间、事件 ID 和回答内容不会重建。布局保存、参数保存、刷新和待同步记录共用此机制。会话响应不缓存，并发恢复合并为一次请求。更新前已打开的旧页面需要先用浏览器刷新一次加载新版代码。
+服务重启后 Web 和 CLI 都应重新读取 `/api/session` 或新的 owner 设备凭据。Web 写入遇到过期令牌时会重新获取会话，核对来源后原样重试一次；重温时间、事件 ID 和回答内容不会重建。布局保存、参数保存、刷新和待同步记录共用此机制。若来源 namespace 已变化则停止重试并提示重新加载。会话响应不缓存，并发恢复合并为一次请求。更新前已打开的旧页面需要先用浏览器刷新一次加载新版代码。
 
-本轮通过 CLI / HTTP / SSE 和临时知识库验证查询不重置起点、真实重温可持久化、失败重试、来源隔离、内容修改与通知恢复。85 项自动测试与构建通过；浏览器视觉验收由用户进行。
+当前实现通过 CLI / HTTP / SSE 和临时知识库覆盖查询不重置起点、真实重温可持久化、失败重试、来源隔离、内容修改与通知恢复；场景、历史、导入和身份衔接的专项边界见上方链接。浏览器视觉验收由用户进行。
 
 2026-09-17 验证记录：
 
