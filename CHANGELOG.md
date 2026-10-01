@@ -6,6 +6,8 @@
 
 新增开发命令 `npm run generate:readme-demo`，复用既有生成器重新生成 README 合成 SVG/JSON；素材说明与开发导览提供入口。生成算法、素材内容、依赖解析和记忆规则未改变。
 
+默认示例的“计算图”笔记新增原创静态 SVG 与 Mermaid 计算依赖示例，并提供搜索、大窗、图形/源码切换及主题测试说明。仍为 16 个概念、32 条关系，没有预设学习日期；该笔记正文更新会按既有规则产生新的资料版本。图片/Mermaid 的专项视觉验收仍待用户进行。
+
 ## 0.0.1-preview.1 — 2026-10-01
 
 首个本地 Web 预览版本已发布为 prerelease，分发源码，采用 MIT 许可。此前 `0.0.1` 是开发包元数据，不补造发行记录。以下汇总累计实现；专项人工验收仍按[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)保留。固定版本用法见[版本说明](docs/releases/v0.0.1-preview.1.md)，精确发行提交、CI 和归档核对见[发布记录](docs/releases/preview-publication-2026-10-01.md)及 [GitHub 预览发布](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1)。源码 tag 保留发行前准备快照，本条发布日期在发布后补记。

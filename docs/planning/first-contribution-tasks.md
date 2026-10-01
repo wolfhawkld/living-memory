@@ -9,7 +9,7 @@
 | ID | 任务 | 标签 | GitHub / 状态 |
 | --- | --- | --- | --- |
 | CONTRIB-01 | README 示意素材的 npm 生成入口 | `good first issue`、`documentation` | [#39](https://github.com/wolfhawkld/living-memory/issues/39)，已在 `develop` 完成 |
-| CONTRIB-02 | 可直接打开的合成图片与 Mermaid 笔记 | `good first issue`、`documentation` | [#40](https://github.com/wolfhawkld/living-memory/issues/40)，待认领 |
+| CONTRIB-02 | 可直接打开的合成图片与 Mermaid 笔记 | `good first issue`、`documentation` | [#40](https://github.com/wolfhawkld/living-memory/issues/40)，已在 `develop` 完成，专项视觉待用户验收 |
 | CONTRIB-03 | 空图谱区域的说明与行动入口 | `good first issue`、`enhancement`、`accessibility` | [#41](https://github.com/wolfhawkld/living-memory/issues/41)，待认领 |
 | CONTRIB-04 | HTTP 错误与 preflight 边界回归 | `help wanted` | [#42](https://github.com/wolfhawkld/living-memory/issues/42)，待认领 |
 | CONTRIB-05 | 一个原生 Windows 或 macOS 的首次运行记录 | `help wanted`、`documentation` | [#43](https://github.com/wolfhawkld/living-memory/issues/43)，待认领 |
@@ -40,7 +40,9 @@
 
 ## CONTRIB-02：可直接打开的合成图片与 Mermaid 笔记
 
-**现状：** 图片与 Mermaid 渲染已实现，自动测试使用临时素材；默认 16 篇示例没有媒体内容，用户难以直接从示例找到测试对象。相关实现/人工验收仍见 [#18](https://github.com/wolfhawkld/living-memory/issues/18)，本任务仅补公开示例。
+**已完成（2026-10-01）：** [计算图](../../fixtures/demo-kg/Model/计算图.md)已加入原创静态 SVG 和 Mermaid，示例/阅读说明提供搜索、大窗、图形/源码切换与主题检查入口。本任务仅补公开示例，图片/Mermaid 的专项人工验收仍见 [#18](https://github.com/wolfhawkld/living-memory/issues/18)；以下保留原任务范围。
+
+**原问题：** 图片与 Mermaid 渲染已实现，但默认 16 篇示例没有媒体内容，用户难以直接找到测试对象。
 
 **文件入口：** [示例说明](../../fixtures/demo-kg/README.md)、既有 [Model/计算图.md](../../fixtures/demo-kg/Model/计算图.md)、[附件处理](../../src/server/attachments.ts)、[Markdown 媒体测试](../../tests/markdown-media.test.ts)、[附件测试](../../tests/attachments.test.ts)、[阅读说明](../development/markdown-reader.md)。
 
@@ -54,6 +56,8 @@
 - 自动检查与人工浏览器检查分别记录；未运行浏览器时明确保留图片/Mermaid 视觉待验收，不替用户关闭 #18。
 
 **验证：** 定向检查知识解析、附件与媒体测试，确认图谱数量不变；按贡献指南完成 `npm test`、`npm run build`。视觉效果由用户或认领者另行记录，不要求本地浏览器截图作为提交前提。
+
+**实际检查：** 31 项定向检查、496 项完整 Node/HTTP 测试及构建通过。默认知识解析仍为 16 个概念、32 条关系；SSR 挂载一张图片附件和一个 Mermaid 组件。合成临时账号的实际附件请求验证匿名 `401`、正确版本 `200 / image/svg+xml`、错误版本 `409`，SVG 响应逐字节一致，读取前后学习数据不变。SVG XML/静态资源检查通过；Mermaid 原始全文通过实际 parser 的 6 节点、5 条边及标签核对，隔离语法检查用纯文本替身替代无 DOM 的 DOMPurify 层，不证明 strict sanitizer 或浏览器 SVG 绘制。未安装依赖、改变生产策略、读取个人数据或启动本地浏览器；#18 人工视觉继续保留。
 
 <a id="contrib-03"></a>
 
