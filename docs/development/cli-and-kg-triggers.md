@@ -6,7 +6,7 @@
 
 ## 启动与查询
 
-先按 [运行说明](p0-running.md)启动本地服务。CLI 与服务应在能使用同一知识根目录的环境中运行，例如均在 WSL 中。CLI 不直接打开 SQLite。
+先按[新人运行指南](first-run.md)启动本地服务，并在 Web 完成首次管理员建号。CLI 与服务应在能使用同一知识根目录的环境中运行，例如均在 WSL 中；自定义 `LM_DATA_DIR` 时，两边保持相同设置。CLI 不直接打开 SQLite。
 
 ```bash
 npm run --silent lm -- help

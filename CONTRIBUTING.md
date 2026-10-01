@@ -4,6 +4,8 @@ Living Memory 当前的 P0 时间驱动原型已可运行并进入小范围试�
 
 ## 开始前
 
+首次安装与接入合成/自有知识请按[新人运行指南](docs/development/first-run.md)操作；仓库 `.nvmrc` 与 CI 统一使用 Node 22.23.1。
+
 1. 阅读 [README](README.md)、[首版需求](docs/requirements/v0.1.md)与[开发任务](docs/planning/development-tasks-v0.1.md)，了解已确认方向、范围、依赖与验收标准。
 2. 阅读[个人记忆强化流程](docs/design/personal-memory-workflow.md)，明确内容保持、场景调用以及提示条件的区别。
 3. 涉及界面时参考[视觉规范](docs/design/visualization-spec.md)和[技术选型](docs/research/visualization-options.md)；涉及知识/语音通道时参考[事件设计](docs/design/event-triggers-and-voice.md)。

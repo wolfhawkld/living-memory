@@ -30,7 +30,7 @@ CI 浏览器使用 Linux 软件渲染，验证基本 WebGL 和交互路径。本
 
 `v0.0.1-preview.1` 是候选预览 tag；现有 `package.json` 为 `0.0.1`，预览发布时再统一包元数据和最终 tag，并在 `main` 的已验证提交上固定版本。设计文档中的完整 v0.1 路线与软件预览版本是不同概念，前者仍未整体完成。
 
-首个预览建议提供源码与安装说明。用户在本机执行 `npm ci`、`npm run build` 和 `npm start`，首次打开 `http://127.0.0.1:4317` 创建管理员，再使用合成示例或接入自己的 Markdown 知识源。当前建议使用与 CI 相同的 Node `22.23.1`；完整新人操作路径将在 OSS-03 核验。
+首个预览建议提供源码与安装说明。用户在本机执行 `npm ci`、`npm run build` 和 `npm start`，首次打开 `http://127.0.0.1:4317` 创建管理员，再使用合成示例或接入自己的 Markdown 知识源。当前建议使用与 CI 相同的 Node `22.23.1`；OSS-03 已核验隔离目录运行流程并保存[新人运行指南](../development/first-run.md)，版本文件与后续文档在正式发布前集中合入 `main`。
 
 GitHub release 由 tag 固定源码位置，并自动提供源码归档；发布时应明确标记为 prerelease。当前 `private: true` 继续防止误发 npm 包，首轮不提供独立安装器或托管在线服务。tag、release 页面与源码版本的关系见 [GitHub release 说明](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)和[发布管理](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
 
@@ -42,7 +42,7 @@ GitHub release 由 tag 固定源码位置，并自动提供源码归档；发布
 
 ## 正式预览发布前的清单
 
-- [ ] OSS-03：固定 Node 版本文件，核验干净目录安装、首次建号、示例知识源和自有知识库接入。
+- [x] OSS-03：固定 Node 版本文件，核验干净目录安装、首次建号、示例知识源和自有知识库接入。
 - [ ] OSS-04：整理 README 与过时使用说明，核对对外示例和截图的内容及状态。
 - [ ] OSS-05：记录历史内容、附件、许可与 CI 日志的公开审查范围，处理实际发现。
 - [ ] 按当前已实现功能写明安装步骤、数据备份、已知限制和贡献入口；README 与 CONTRIBUTING 不再相互矛盾。

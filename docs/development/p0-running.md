@@ -4,7 +4,7 @@
 
 ## 环境与启动
 
-使用 Node.js 22.13 或更新版本，建议与当前验证环境一致的 22.23.1。内置 `node:sqlite` 在 Node 22 仍显示实验性提示；本原型通过独立本地服务使用，不依赖浏览器/Obsidian 的 Node 版本。
+推荐 Node.js 22.23.1，仓库 `.nvmrc` 与 CI 使用同一版本（最低 22.13.0）。首次安装、建号和自有 Markdown 接入的完整步骤见[新人运行指南](first-run.md)。内置 `node:sqlite` 在 Node 22 仍显示实验性提示；本原型通过独立本地服务使用，不依赖浏览器/Obsidian 的 Node 版本。
 
 ```bash
 npm ci

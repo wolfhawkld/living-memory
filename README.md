@@ -16,7 +16,7 @@
 
 ## 本地运行
 
-使用 Node.js 22.13 或更新版本：
+推荐 Node.js 22.23.1，与仓库 `.nvmrc` 和 CI 一致（最低 22.13.0）：
 
 ```bash
 npm ci
@@ -24,15 +24,15 @@ npm run build
 npm start
 ```
 
-打开 `http://127.0.0.1:4317`，默认使用仓库内的合成知识源。接入自己的知识库、数据位置与试用方式见[运行说明](docs/development/p0-running.md)，知识域行为见[知识域视图](docs/development/domain-views.md)，检查范围见[验证记录](docs/development/p0-validation.md)。
+打开 `http://127.0.0.1:4317`，默认使用仓库内的合成知识源。第一次安装、建号、数据位置和自有 Markdown 接入见[新人运行指南](docs/development/first-run.md)；试用方式见[运行说明](docs/development/p0-running.md)，知识域行为见[知识域视图](docs/development/domain-views.md)，检查范围见[验证记录](docs/development/p0-validation.md)。
 
 首次打开页面需要创建管理员账号，该账号保留原有知识和学习记录。管理员可创建成员；每位成员有自己的知识域、学习记录和记忆状态。新成员的 Markdown 接入目录及 CLI 认证方式见[私人账号与知识域](docs/development/private-accounts.md)。当前仍是本机服务，在线部署与知识共享属于后续范围。
 
-服务启动后，可用 `npm run --silent lm -- query "概念关键词"` 查询完整知识索引，或在实际完成重温后执行 `npm run --silent lm -- review "概念选择器" --confirm`。CLI、Web 与 progressive-kg 收尾钩子使用同一份学习记录；查询和生成只刷新状态。安装方式、来源核对与失败重试见 [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)。
+服务启动并在页面完成首次建号后，可用 `npm run --silent lm -- query "概念关键词"` 查询完整知识索引，或在实际完成重温后执行 `npm run --silent lm -- review "概念选择器" --confirm`。CLI、Web 与 progressive-kg 收尾钩子使用同一份学习记录；查询和生成只刷新状态。安装方式、来源核对与失败重试见 [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)。
 
 ## 从这里开始
 
-- [开源协作准备与 TODO（2026-09-27）](docs/planning/open-source-readiness-2026-09-27.md)：OSS-01 的 CI 修复与 OSS-02 的主分支同步已完成，下一项为固定新人运行路径；正式预览仍需完成运行、文档和公开内容准备。
+- [开源协作准备与 TODO（2026-09-27）](docs/planning/open-source-readiness-2026-09-27.md)：OSS-01～03 已完成 CI 修复、主分支同步与新人运行核验；下一项为 README 与过时说明整理，正式预览还需文档和公开内容准备。
 - [本地 Web 预览发布准备](docs/releases/local-web-preview.md)：本轮集成范围、候选预览版本、验证边界、数据备份与正式发布前清单。
 - [少量复习入口](docs/development/brief-review.md)：从当前领域按时间状态推荐 3/5 个概念，复用回忆、核对与信心记录；可跳过、结束，单独确认重温才更新时间起点。
 - [复习安排与中断续做](docs/development/review-arrangements.md)：节点重点/暂缓、跨领域每日预算、当前浏览器自动保存作答与暂停续做；恢复时重新核对资料和时间起点。
