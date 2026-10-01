@@ -1,0 +1,173 @@
+.mermaid-diagram {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  margin: 14px 0;
+  padding: 11px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .2));
+  border-radius: 8px;
+  background: var(--ui-panel, rgba(9, 18, 32, .72));
+  color: var(--ui-text, #cbd9eb);
+}
+
+/* Updating must not change toolbar height or shift the surrounding reader. */
+.mermaid-diagram-update-status {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1;
+  padding: 4px 7px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .2));
+  border-radius: 4px;
+  background: var(--ui-panel, #07101d);
+  color: var(--ui-text-muted, #8fa5c3);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.mermaid-diagram-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+
+.mermaid-diagram-label {
+  color: var(--ui-text-muted, #8ca5c6);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.mermaid-diagram-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.mermaid-diagram-actions > button,
+.mermaid-diagram-zoom button {
+  padding: 4px 7px;
+  border: 1px solid var(--ui-border-strong, rgba(138, 174, 230, .28));
+  border-radius: 4px;
+  background: var(--ui-raised, rgba(32, 54, 84, .48));
+  color: var(--ui-text-muted, #b9cceb);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.mermaid-diagram-actions > button:hover,
+.mermaid-diagram-zoom button:hover {
+  border-color: var(--ui-accent, rgba(120, 170, 255, .7));
+  background: var(--ui-hover, rgba(53, 86, 135, .55));
+  color: var(--ui-text, #edf5ff);
+}
+
+.mermaid-diagram-actions > button:focus-visible,
+.mermaid-diagram-zoom button:focus-visible {
+  outline: 2px solid var(--ui-accent, #78aaff);
+  outline-offset: 2px;
+}
+
+.mermaid-diagram-actions > button:disabled,
+.mermaid-diagram-zoom button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.mermaid-diagram-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.mermaid-diagram-zoom > span {
+  min-width: 36px;
+  color: var(--ui-text-subtle, #90a6c5);
+  font-size: 9px;
+  text-align: center;
+}
+
+.mermaid-diagram-viewport {
+  max-width: 100%;
+  min-height: 80px;
+  overflow: auto;
+  padding: 9px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .13));
+  border-radius: 6px;
+  background: var(--ui-panel, #07101d);
+  scrollbar-width: thin;
+}
+
+.mermaid-diagram-scale {
+  width: max-content;
+  min-width: 100%;
+  min-height: 1px;
+}
+
+.mermaid-diagram-image {
+  display: block;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  height: auto;
+  transform-origin: top left;
+}
+
+.mermaid-diagram-source {
+  max-width: 100%;
+  max-height: 420px;
+  margin: 0;
+  padding: 11px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .15));
+  border-radius: 6px;
+  background: var(--ui-code-bg, #07101d);
+  color: var(--ui-code-text, #c9d9ef);
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.mermaid-diagram-source code {
+  font: inherit;
+}
+
+.mermaid-diagram-loading,
+.mermaid-diagram-error {
+  display: flex;
+  min-height: 80px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .13));
+  border-radius: 6px;
+  color: var(--ui-text-muted, #8fa5c3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.mermaid-diagram-error {
+  border-color: var(--ui-error-border, rgba(255, 129, 125, .28));
+  background: var(--ui-error-soft, rgba(105, 39, 45, .18));
+  color: var(--ui-error, #eeb2ae);
+}
+
+.mermaid-diagram-error strong {
+  color: var(--ui-error, #ffd1ca);
+  font-size: 12px;
+}
+
+.mermaid-diagram-error small {
+  color: var(--ui-text-subtle, #bd8f96);
+}

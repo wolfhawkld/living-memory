@@ -24,6 +24,9 @@
 node_modules/
 dist/
 coverage/
+test-results/
+playwright-report/
+.playwright/
 .venv/
 __pycache__/
 *.py[cod]

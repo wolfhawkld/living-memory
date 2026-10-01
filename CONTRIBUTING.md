@@ -1,10 +1,10 @@
 # 协作说明
 
-Living Memory 当前处于研究、设计与原型准备阶段。仓库提供设计依据和离线风格预览，真实 3D 应用、知识库接入与学习事件存储尚待开发。
+Living Memory 当前的 P0 时间驱动原型已可运行并进入小范围试用。仓库提供设计依据、离线风格预览和可运行原型；最新功能与验证进度见 [README](README.md)。实际 GPU 性能与真实延迟试用仍待验证，完整 v0.1 的多维记忆闭环和扩展通道继续按任务推进。
 
 ## 开始前
 
-1. 阅读 [README](README.md) 与[阶段进展总结](docs/progress-summary.md)，了解已确认方向与待决策事项。
+1. 阅读 [README](README.md)、[首版需求](docs/requirements/v0.1.md)与[开发任务](docs/planning/development-tasks-v0.1.md)，了解已确认方向、范围、依赖与验收标准。
 2. 阅读[个人记忆强化流程](docs/design/personal-memory-workflow.md)，明确内容保持、场景调用以及提示条件的区别。
 3. 涉及界面时参考[视觉规范](docs/design/visualization-spec.md)和[技术选型](docs/research/visualization-options.md)；涉及知识/语音通道时参考[事件设计](docs/design/event-triggers-and-voice.md)。
 
@@ -12,11 +12,13 @@ Living Memory 当前处于研究、设计与原型准备阶段。仓库提供设
 
 ## 任务与代码评审
 
-开发前共同确定首版任务、依赖、负责人和可检查的验收标准。使用 GitHub Issues 跟踪确定后的任务；当前不会把所有设计候选自动变成开发承诺。
+完整首版已拆成 LM-001～LM-018，18 项任务仍未整体完成；当前已有其中 P0 子集可运行并进入小范围试用。请先阅读[时间驱动原型](docs/design/time-first-prototype.md)、[P0 运行与联调说明](docs/development/p0-running.md)和[P0 验证记录](docs/development/p0-validation.md)，再认领相应范围、确认实际规模和依赖。用 GitHub Issues 跟踪认领后的工作，关联对应验收，不将完整版本的全部要求压入 P0。
 
-每项任务使用独立分支，通过 Pull Request 合入 `main`。PR 说明实际改变、关联任务、验证结果与尚未覆盖的限制；涉及视觉交互时提供截图或操作记录。检查应与改动相关，文档或简单样式调整不必增加无意义的测试。
+2026-09-26 按用户要求调整协作方式：日常迭代集中在长期开发分支 `develop`，沿用同一分支提交与同步，不再每完成一项任务就创建分支和 PR。任务进度保存在 TODO 与开发记录中；需要多人并行隔离或较大实验时，再按实际需要开短期分支，完成后汇回 `develop`。
 
-架构或任务范围发生变化时，同步更新对应设计记录，注明决定依据。图谱技术已确定为 `3d-force-graph` + Three.js；Obsidian 宿主、React、存储和复习模型仍需按设计记录推进决策。
+`develop` 承接此前连续开发成果；验证稳定、准备阶段性发布或需要集中评审时，再将一组改动通过 PR 合入 `main`。提交前同步远端并完成相关逻辑测试与构建，说明验证结果和未覆盖的限制。浏览器视觉验收由用户进行，Agent 不必重复启动浏览器检查；文档或简单样式调整不必增加无意义的测试。
+
+架构或任务范围发生变化时，同步更新对应设计记录，注明决定依据。用户已确认独立 Web 先行、Obsidian 后续接入，图谱技术为 `3d-force-graph` + Three.js。React、本地服务、SQLite 与初始再访规则是[技术设计](docs/design/technical-design-v0.1.md)的工程提案；记忆语义先用行为轨迹核对，不能由视图或通道各自实现另一套规则。
 
 ## 数据与研究约定
 
@@ -28,4 +30,4 @@ Living Memory 当前处于研究、设计与原型准备阶段。仓库提供设
 
 ## 发布状态
 
-当前协作以私有仓库进行。未来开源时再共同确定项目许可证、示例数据许可与发布流程；本仓库尚未添加开源许可证。
+仓库已公开，源码采用 [MIT 许可证](LICENSE)；第三方依赖和外部知识内容遵循各自许可。当前仍为本地 Web 原型，正式预览尚未发布。阶段集成与发布条件见[本地 Web 预览发布准备](docs/releases/local-web-preview.md)，后续协作完善见[开源 TODO](docs/planning/open-source-readiness-2026-09-27.md)。

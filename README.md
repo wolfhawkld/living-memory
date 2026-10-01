@@ -1,17 +1,65 @@
 # Living Memory
 
-一个处于研究、流程与可视化设计阶段的个人知识与学习项目：用可视化知识图谱，连接知识的外化、整合、回忆、使用与认知修正。
+一个由记忆与遗忘机制驱动的个人知识与学习项目：通过动态知识图谱和学习任务，连接知识的外化、整合、回忆、使用与认知修正。目前 P0 时间驱动原型已可运行并进入小范围试用，完整 v0.1 仍在逐步拆解和扩展。
 
 希望最终帮助人回答：**我学到了什么，它与已有知识有什么关系，我现在能否回忆和使用它，以及下一步值得重新思考什么。**
 
-已整理记忆与遗忘研究结论，并形成个人记忆强化流程 v0.1：围绕内容保持和场景调用，将少量训练融入阅读、查询与工作。用户认可流程大方向，并在查看官方 Demo 后确认 **`3d-force-graph` + Three.js 桌面 3D 可视化方向**，以深色空间、发光、镜头聚焦和关联高亮作为实现基础，同时设计平面阅读模式。宿主与正式复习模型尚未确定，具体实现与性能需通过引擎原型测试。
+已整理记忆与遗忘研究结论，并形成个人记忆强化流程 v0.1：围绕内容保持和场景调用，将少量训练融入阅读、查询与工作。核心闭环是 **记忆目标 → 提取与使用证据 → 状态与遗忘估计 → 巩固行动 → 延迟检验**；图谱呈现并帮助操作这个闭环。
 
-首批材料优先使用用户自建的 **progressive-kg**：各领域中已经学过、部分可能已经会应用的概念。首个场景围绕已有知识的重新唤起、当前能力检验、跨概念整合与认知修正展开，具体任务仍待研究验证。
+用户已确认 **先做独立 Web 原型，再接 Obsidian**，图谱采用 **`3d-force-graph` + Three.js**。本次建议以 TypeScript/React、本地服务和独立学习库实现统一的 Web、CLI 与原生语音通道。初期再访规则可解释、可配置；具体参数、接入路径与性能仍需实测。
+
+首批材料使用用户自建的 **progressive-kg**。当前先做 **P0 时间驱动原型**：少量真实概念、最近确认学习/重温的时间、一个统一衰减参数、动态图谱与可选回忆观察，先体验再扩展。完整 v0.1 再分别管理核心解释、细节、场景提取和适用判断；原有多维设计保留，但不再全部作为首轮实现条件。
 
 视觉目标已明确：**桌面优先，整体深色，突出空间纵深、较明显的发光与镜头运动；每个概念或实体用清晰颜色对应记忆/遗忘相关状态。** 当前已确认直接采用上述 3D 技术方向。颜色背后的阶段估计仍需验证；日常以融入阅读、查询和工作为主，附带少量复习。
 
+知识域浏览采用“完整索引 + 当前领域投影”：服务在内存中保留全部概念和关系，Web 默认按目录领域显示一个受限子图，并提供按需展开的跨域关联。切换领域不会切换学习记录或时间颜色；实现边界和范围参数见[知识域视图](docs/development/domain-views.md)。
+
+## 本地运行
+
+使用 Node.js 22.13 或更新版本：
+
+```bash
+npm ci
+npm run build
+npm start
+```
+
+打开 `http://127.0.0.1:4317`，默认使用仓库内的合成知识源。接入自己的知识库、数据位置与试用方式见[运行说明](docs/development/p0-running.md)，知识域行为见[知识域视图](docs/development/domain-views.md)，检查范围见[验证记录](docs/development/p0-validation.md)。
+
+首次打开页面需要创建管理员账号，该账号保留原有知识和学习记录。管理员可创建成员；每位成员有自己的知识域、学习记录和记忆状态。新成员的 Markdown 接入目录及 CLI 认证方式见[私人账号与知识域](docs/development/private-accounts.md)。当前仍是本机服务，在线部署与知识共享属于后续范围。
+
+服务启动后，可用 `npm run --silent lm -- query "概念关键词"` 查询完整知识索引，或在实际完成重温后执行 `npm run --silent lm -- review "概念选择器" --confirm`。CLI、Web 与 progressive-kg 收尾钩子使用同一份学习记录；查询和生成只刷新状态。安装方式、来源核对与失败重试见 [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)。
+
 ## 从这里开始
 
+- [开源协作准备与 TODO（2026-09-27）](docs/planning/open-source-readiness-2026-09-27.md)：仓库与 CI 检查结果、文档/协作调整和分批任务；OSS-01 已通过 CI，OSS-02 正在准备集中同步默认分支。
+- [本地 Web 预览发布准备](docs/releases/local-web-preview.md)：本轮集成范围、候选预览版本、验证边界、数据备份与正式发布前清单。
+- [少量复习入口](docs/development/brief-review.md)：从当前领域按时间状态推荐 3/5 个概念，复用回忆、核对与信心记录；可跳过、结束，单独确认重温才更新时间起点。
+- [复习安排与中断续做](docs/development/review-arrangements.md)：节点重点/暂缓、跨领域每日预算、当前浏览器自动保存作答与暂停续做；恢复时重新核对资料和时间起点。
+- [实际应用与总结记录](docs/development/application-records.md)：从节点保存使用场景、结果、局限与 insight，在学习历史中回看；预览复制选定的 KG 整理材料，保存不改记忆时间或回忆评分。
+- [知识薄弱点总览](docs/development/learning-overview.md)：跨概念查看最近回忆困难、场景待核对线索和信心对照，按领域筛选并跳转节点；明确当前版本、样本数及缺少证据，不生成记忆能力分数。
+- [浅色主题 TODO](docs/planning/light-theme-todo.md)：主题选择/本机偏好、工作区与阅读层、[3D/2D 图谱](docs/development/theme-graph.md)、[Mermaid 与图片容器](docs/development/theme-media.md)均已接入；THEME-06 自动检查完成，待用户按[试用清单](docs/development/theme-validation.md#用户试用清单)进行浏览器验收。
+- [私人账号与知识域](docs/development/private-accounts.md)：登录、创建成员、私人知识源隔离、旧记录保留、CLI 设备身份及未来共享边界。
+- [场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)：当前优先迭代，记录从场景想起知识的表现，比较事前信心与核对结果，支持本人固定保持和手动恢复衰减。
+- [学习数据导入恢复](docs/development/learning-data-import.md)：JSON 预览、来源/版本对应、重复与冲突检查、事务恢复及导入前备份。
+- [概念改名与移动后的历史衔接](docs/development/concept-identity.md)：人工预览确认路径对应，保留原学习时间与稳定身份，支持连续移动、冲突诊断和绑定前备份。
+- [待同步协调与超时恢复](docs/development/pending-sync.md)：按知识空间协调多个页面的队列；参数请求可按历史版本重复确认；请求超时保留原记录并释放同步锁。更新后需刷新所有项目页面。
+- [时间提示与回忆表现对照](docs/development/time-recall-comparison.md)：在知识薄弱点总览中查看冻结的历史时间指标与自评，分开估计日期和提示条件，定位近期仍模糊、较久仍清晰的概念。
+- [知识修正建议的人工跟进](docs/development/knowledge-corrections.md)：在原应用/总结下记录已纳入当前版本、暂不采用或重新打开，保留处理历史并支持导出恢复；决定不改变记忆时间。
+- [知识修正待办总览](docs/development/correction-overview.md)：集中查看各领域待处理和版本待复核的建议，筛选状态并直接定位较早的原记录，保留正文折叠与人工决定。
+- [节点回忆变化追踪](docs/development/learning-progress.md)：分别对照同一资料版本最近两次概念解释与场景练习，展示真实作答间隔、提示条件、信心和核对结果。
+- [演示后的迭代 TODO（2026-09-22）](docs/planning/iteration-todo-2026-09-22.md)：当前完成范围、原有待办入口，以及学习历史、少量复习和场景调用的后续顺序。
+- [逐概念学习历史](docs/development/concept-history.md)：查看重温、补记与回忆观察，区分当前起点、旧版本、冻结观察值和待同步记录。
+- [Markdown 与大窗阅读](docs/development/markdown-reader.md)：渲染知识正文、表格与公式，打开大窗口阅读和调整字号。
+- [当前优先：时间驱动原型](docs/design/time-first-prototype.md)：LM-003 收敛方案、单参数曲线、最小交互、五步开发与试用条件。
+- [初始模拟数值与连线说明](docs/development/time-colors-and-links.md)：可复现的示例颜色、数值记录及局部图谱连线解释。
+- [P0 运行与联调](docs/development/p0-running.md)：启动方式、progressive-kg 接入、时间模拟、观察记录和当前检查边界。
+- [知识域视图](docs/development/domain-views.md)：完整索引、目录领域切换、跨域展开、CLI/Web 范围和布局保存。
+- [CLI 与 KG 日常触发](docs/development/cli-and-kg-triggers.md)：查询、明确确认重温、重试、Agent 收尾钩子与页面变化通知。
+- [首版需求分析](docs/requirements/v0.1.md)：用户确认、记忆理论到产品行为的映射、首版范围与边界。
+- [首版技术设计](docs/design/technical-design-v0.1.md)：记忆属性、遗忘/再访规则、知识与事件契约、Web/CLI/语音共用架构。
+- [18 项开发任务](docs/planning/development-tasks-v0.1.md)：四个里程碑、依赖、责任线、交付物与完成条件。
+- [23 项验收用例](docs/requirements/acceptance-v0.1.md)：记忆语义、数据恢复、真实 3D 与原生语音的可检查标准，尚未执行。
 - [阶段进展总结](docs/progress-summary.md)：已确认方向、研究与流程、实际产物、未决事项和下一阶段建议。
 - [事件触发与语音设计](docs/design/event-triggers-and-voice.md)：复用 progressive-kg 生成/查询隐式刷新状态，增加 CLI 之外的 ChatGPT 语音入口。
 - [离线视觉预览](prototypes/visual-direction.html)：在浏览器中打开，比较空间光效、克制星图与信息阅读；所有关系和状态均为演示。
@@ -38,8 +86,10 @@
 
 ## 参与协作
 
-先阅读[阶段进展总结](docs/progress-summary.md)与[协作说明](CONTRIBUTING.md)，再共同确定任务、依赖、负责人和验收标准。开发通过任务分支与 Pull Request 推进。
+先阅读[首版需求](docs/requirements/v0.1.md)、[任务拆分](docs/planning/development-tasks-v0.1.md)与[协作说明](CONTRIBUTING.md)，再认领任务。日常开发沿用 `develop` 分支；阶段性发布或集中评审时再通过 Pull Request 合入 `main`。
 
-本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。项目许可证将在未来开源前确定。
+本项目采用 [MIT 许可证](LICENSE)，版权归属 Damon Long。第三方依赖和外部知识资源遵循各自的许可证。
 
-状态：2026-09-15，研究总结、系统流程与已确认的可视化方向已保存，附一个离线 HTML/SVG 风格预览。尚未接入真实知识库、图谱渲染引擎或学习状态模型。
+本仓库包含设计文档和可分享的示例预览。progressive-kg 作为外部知识资源接入；个人会话日志、Agent 本机配置和私有学习记录保留在本地。
+
+状态：2026-09-27，P0 已具备时间图谱、领域与全库搜索、最小回忆观察、[CLI 与 KG 触发子集](docs/development/cli-and-kg-triggers.md)，现已增加[逐概念学习历史](docs/development/concept-history.md)及 [Markdown 大窗阅读、图片附件与 Mermaid 渲染](docs/development/markdown-reader.md)。后续顺序见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。已完成[场景调用、信心校准与长期保持](docs/development/scenario-confidence-retention.md)、[私人多账号](docs/development/private-accounts.md)，主题适配已覆盖页面、图谱及 [Mermaid/媒体](docs/development/theme-media.md)，用户已确认基础图谱主题体验。现已接入[少量复习入口](docs/development/brief-review.md)、[实际应用与总结记录](docs/development/application-records.md)、[知识薄弱点总览](docs/development/learning-overview.md)、[复习安排与中断续做](docs/development/review-arrangements.md)、[学习数据导入恢复](docs/development/learning-data-import.md)和[改名/移动后的历史衔接](docs/development/concept-identity.md)；应用/总结已获用户试用确认，494 项 Node 测试、构建与主题构建检查通过，复习安排浏览器试用按用户要求跳过，保留未验收；总览、导入恢复、历史衔接和其余专项视觉验收由用户进行。完整 v0.1 尚未完成；实际 GPU 性能、真实延迟试用和记忆收益仍待验证，在线共享、语音链路及 Obsidian 宿主属于后续范围。

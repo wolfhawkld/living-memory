@@ -1,0 +1,460 @@
+.brief-review-panel {
+  min-height: 0;
+  min-width: 0;
+  max-height: min(46vh, 360px);
+  overflow-y: auto;
+  flex: 0 1 auto;
+  margin: 0 9px 10px;
+  padding: 16px 14px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .16));
+  border-radius: 8px;
+  background: var(--ui-panel, rgba(23, 31, 45, .76));
+  color: var(--ui-text, #cbd8eb);
+}
+
+.brief-review-heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.brief-review-heading-main {
+  min-width: 0;
+}
+
+.brief-review-kicker,
+.brief-review-progress-kicker {
+  color: var(--ui-accent, #78aaff);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.brief-review-heading h2 {
+  min-width: 0;
+  margin: 4px 0 0;
+  color: var(--ui-text, #dce9fb);
+  font-size: 14px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.brief-review-count {
+  flex: 0 0 auto;
+  color: var(--ui-text-subtle, #778ba8);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.brief-review-domain {
+  margin: 9px 0 0;
+  color: var(--ui-accent, #82a7d6);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.brief-review-description,
+.brief-review-candidate-note,
+.brief-review-disabled {
+  margin: 8px 0 0;
+  color: var(--ui-text-muted, #9aabc3);
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.brief-review-daily {
+  margin-top: 11px;
+  padding: 9px 10px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .16));
+  border-radius: 7px;
+  background: var(--ui-raised, rgba(18, 31, 51, .42));
+}
+
+.brief-review-daily-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.brief-review-daily-metrics > div { min-width: 0; }
+.brief-review-daily-metrics span { display: block; color: var(--ui-text-subtle, #778ba8); font-size: 9px; line-height: 1.35; }
+.brief-review-daily-metrics strong { display: block; margin-top: 2px; color: var(--ui-text, #dce9fb); font-size: 11px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.brief-review-daily p { margin: 7px 0 0; color: var(--ui-text-subtle, #778ba8); font-size: 9px; line-height: 1.45; overflow-wrap: anywhere; }
+.brief-review-daily .brief-review-daily-notice { color: var(--ui-warning, #e2bd80); }
+
+.brief-review-empty {
+  margin: 9px 0 0;
+  padding: 8px 9px;
+  border: 1px dashed var(--ui-warning-border, rgba(244, 189, 112, .3));
+  border-radius: 6px;
+  background: var(--ui-warning-soft, rgba(86, 59, 25, .2));
+  color: var(--ui-warning, #e2bd80);
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.brief-review-disabled {
+  color: var(--ui-warning, #e2bd80);
+}
+
+.brief-review-controls {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.brief-review-budget {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 95px;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--ui-text-muted, #9fb2ce);
+  font-size: 10px;
+}
+
+.brief-review-budget select {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--ui-border-strong, rgba(138, 174, 230, .28));
+  border-radius: 5px;
+  outline: 0;
+  background: var(--ui-input, #0b1626);
+  color: var(--ui-text, #dce9fb);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.brief-review-start,
+.brief-review-confirm,
+.brief-review-next,
+.brief-review-end,
+.brief-review-pause {
+  min-width: 0;
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.brief-review-start,
+.brief-review-confirm {
+  border: 1px solid var(--ui-accent-border, rgba(120, 170, 255, .58));
+  background: var(--ui-accent, linear-gradient(135deg, #477abf, #31598e));
+  color: var(--ui-on-accent, #edf5ff);
+}
+
+.brief-review-start {
+  flex: 1 1 105px;
+}
+
+.brief-review-plan {
+  flex: 0 1 auto;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--ui-border-strong, rgba(138, 174, 230, .28));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-muted, #aebfd8);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.brief-review-plan:hover:not(:disabled),
+.brief-review-copy:hover:not(:disabled),
+.brief-review-discard:hover:not(:disabled),
+.brief-review-pause:hover:not(:disabled) {
+  border-color: var(--ui-accent, #78aaff);
+  background: var(--ui-hover, rgba(53, 86, 135, .55));
+  color: var(--ui-text, #edf5ff);
+}
+
+.brief-review-start:hover:not(:disabled),
+.brief-review-confirm:hover:not(:disabled) {
+  border-color: var(--ui-accent, #abd0ff);
+  background: var(--ui-accent, linear-gradient(135deg, #568bd1, #3b6aaa));
+}
+
+.brief-review-next,
+.brief-review-end,
+.brief-review-pause {
+  border: 1px solid var(--ui-border-strong, rgba(138, 174, 230, .28));
+  background: var(--ui-raised, rgba(32, 54, 84, .48));
+  color: var(--ui-text, #b3c6e3);
+}
+
+.brief-review-next:hover:not(:disabled),
+.brief-review-end:hover:not(:disabled),
+.brief-review-pause:hover:not(:disabled) {
+  border-color: var(--ui-accent, #78aaff);
+  background: var(--ui-hover, rgba(53, 86, 135, .55));
+}
+
+.brief-review-panel button:focus-visible,
+.brief-review-progress-card button:focus-visible,
+.brief-review-budget select:focus-visible,
+.brief-review-concept-controls button:focus-visible,
+.brief-review-plan-dialog button:focus-visible,
+.brief-review-plan-dialog input:focus-visible {
+  outline: 2px solid var(--ui-accent, #78aaff);
+  outline-offset: 2px;
+}
+
+.brief-review-panel button:disabled,
+.brief-review-progress-card button:disabled,
+.brief-review-budget select:disabled,
+.brief-review-concept-controls button:disabled,
+.brief-review-plan-dialog button:disabled,
+.brief-review-plan-dialog input:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.brief-review-progress-card {
+  display: flex;
+  width: min(520px, 100%);
+  min-width: 0;
+  max-height: min(560px, calc(100vh - 40px));
+  max-height: min(560px, calc(100dvh - 40px));
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  color: var(--ui-text, #dce9fb);
+}
+
+.brief-review-progress-meta {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--ui-text-subtle, #778ba8);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.brief-review-progress-card h2 {
+  min-width: 0;
+  margin: 8px 0 11px;
+  color: var(--ui-text, #ecf3ff);
+  font-size: clamp(18px, 4vw, 24px);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.brief-review-result {
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .16));
+  border-radius: 7px;
+  background: var(--ui-raised, rgba(18, 31, 51, .42));
+  color: var(--ui-text-muted, #aebfd8);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.brief-review-result-saved {
+  border-color: var(--ui-success-border, rgba(92, 227, 208, .24));
+  background: var(--ui-success-soft, rgba(20, 61, 64, .22));
+  color: var(--ui-success, #93e0d1);
+}
+
+.brief-review-result-queued {
+  border-color: var(--ui-warning-border, rgba(244, 189, 112, .27));
+  background: var(--ui-warning-soft, rgba(86, 59, 25, .2));
+  color: var(--ui-warning, #e2bd80);
+}
+
+.brief-review-result-unavailable {
+  border-color: var(--ui-error-border, rgba(255, 129, 125, .28));
+  background: var(--ui-error-soft, rgba(105, 39, 45, .18));
+  color: var(--ui-error, #eeb2ae);
+}
+
+.brief-review-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.brief-review-counts > div {
+  min-width: 0;
+  padding: 8px 7px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .14));
+  border-radius: 6px;
+  background: var(--ui-raised, rgba(16, 29, 48, .45));
+  text-align: center;
+}
+
+.brief-review-counts span {
+  display: block;
+  color: var(--ui-text-subtle, #778ba8);
+  font-size: 9px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.brief-review-counts strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--ui-text, #dce9fb);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.brief-review-status,
+.brief-review-locked {
+  margin: 12px 0 0;
+  color: var(--ui-text-muted, #aebfd8);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.brief-review-status-saved {
+  color: var(--ui-success, #93e0d1);
+}
+
+.brief-review-status-queued,
+.brief-review-locked {
+  color: var(--ui-warning, #e2bd80);
+}
+
+.brief-review-confirm {
+  align-self: flex-start;
+  margin-top: 12px;
+}
+
+.brief-review-progress-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.brief-review-suspended {
+  margin-top: 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--ui-warning-border, rgba(244, 189, 112, .3));
+  border-radius: 7px;
+  background: var(--ui-warning-soft, rgba(86, 59, 25, .2));
+}
+
+.brief-review-suspended-heading { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 8px; }
+.brief-review-suspended-heading strong { color: var(--ui-warning, #e2bd80); font-size: 11px; }
+.brief-review-suspended-heading span { color: var(--ui-text-subtle, #778ba8); font-size: 9px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
+.brief-review-suspended p { margin: 7px 0 0; color: var(--ui-text-muted, #aebfd8); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.brief-review-suspended .brief-review-resume-error { color: var(--ui-error, #ffaaa6); }
+.brief-review-suspended-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.brief-review-suspended-actions button { min-height: 30px; padding: 6px 8px; border-radius: 5px; cursor: pointer; font-size: 10px; font-weight: 600; }
+.brief-review-resume { border: 1px solid var(--ui-accent-border, rgba(120, 170, 255, .58)); background: var(--ui-accent, linear-gradient(135deg, #477abf, #31598e)); color: var(--ui-on-accent, #edf5ff); }
+.brief-review-discard, .brief-review-copy { border: 1px solid var(--ui-border-strong, rgba(138, 174, 230, .28)); background: transparent; color: var(--ui-text-muted, #b9cce5); }
+
+.brief-review-concept-controls {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px 13px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .16));
+  border-radius: 9px;
+  background: var(--ui-panel, rgba(23, 31, 45, .76));
+  color: var(--ui-text, #dce9fb);
+}
+
+.brief-review-concept-control-heading { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 10px; }
+.brief-review-concept-control-heading strong { font-size: 12px; }
+.brief-review-concept-control-heading span { color: var(--ui-text-subtle, #778ba8); font-size: 9px; text-align: right; }
+.brief-review-concept-control-row { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; }
+.brief-review-concept-control-label { flex: 0 0 auto; color: var(--ui-text-muted, #aebfd8); font-size: 10px; }
+.brief-review-toggle-group, .brief-review-defer-group { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.brief-review-toggle-group button, .brief-review-defer-group button { min-height: 28px; padding: 5px 8px; border: 1px solid var(--ui-border-strong, rgba(138, 174, 230, .28)); border-radius: 5px; background: transparent; color: var(--ui-text-muted, #b9cce5); cursor: pointer; font-size: 9px; font-weight: 600; }
+.brief-review-toggle-group button.is-active { border-color: var(--ui-accent-border, rgba(120, 170, 255, .58)); background: var(--ui-selected, rgba(63, 104, 167, .3)); color: var(--ui-text, #edf5ff); }
+.brief-review-defer-status { margin: 0; color: var(--ui-text-subtle, #778ba8); font-size: 10px; line-height: 1.4; }
+.brief-review-defer-status.is-active { color: var(--ui-warning, #e2bd80); }
+.brief-review-concept-note { margin: 0; color: var(--ui-text-subtle, #778ba8); font-size: 9px; line-height: 1.5; }
+
+.brief-review-plan-dialog {
+  width: min(700px, calc(100vw - 32px));
+  max-width: none;
+  max-height: min(88dvh, 760px);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-border-strong, rgba(138, 174, 230, .3));
+  border-radius: 16px;
+  background: var(--ui-bg, #0d1728);
+  color: var(--ui-text, #e7f0ff);
+  box-shadow: var(--ui-shadow, 0 28px 100px rgba(0, 0, 0, .6)), var(--ui-glow, 0 0 50px rgba(50, 113, 190, .1));
+}
+
+.brief-review-plan-dialog[open] { display: flex; flex-direction: column; }
+.brief-review-plan-dialog::backdrop { background: var(--ui-backdrop, rgba(2, 6, 14, .78)); backdrop-filter: blur(8px); }
+.brief-review-plan-shell { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.brief-review-plan-header { display: flex; flex: 0 0 auto; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 25px 29px 19px; border-bottom: 1px solid var(--ui-border, rgba(126, 155, 199, .17)); background: linear-gradient(135deg, var(--ui-raised, rgba(22, 43, 72, .65)), var(--ui-bg, rgba(13, 23, 40, .9))); }
+.brief-review-plan-header h2 { margin: 7px 0 0; color: var(--ui-text, #f0f6ff); font-size: clamp(21px, 4vw, 29px); line-height: 1.2; }
+.brief-review-plan-header p { max-width: 540px; margin: 8px 0 0; color: var(--ui-text-muted, #9eb1cc); font-size: 12px; line-height: 1.55; }
+.brief-review-plan-close { flex: 0 0 auto; width: 36px; height: 36px; border: 1px solid var(--ui-border-strong, #3b5677); border-radius: 8px; background: var(--ui-raised, rgba(26, 47, 76, .8)); color: var(--ui-text-muted, #c6d7ee); font-size: 25px; line-height: 1; cursor: pointer; }
+.brief-review-plan-close:hover:not(:disabled), .brief-review-plan-footer-close:hover:not(:disabled) { border-color: var(--ui-accent, #78aaff); background: var(--ui-hover, rgba(50, 87, 137, .72)); color: var(--ui-text, #fff); }
+.brief-review-plan-body { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 21px 29px 25px; scrollbar-gutter: stable; }
+.brief-review-plan-notes { display: grid; gap: 5px; padding: 11px 13px; border: 1px solid var(--ui-border, rgba(126, 155, 199, .17)); border-radius: 8px; background: var(--ui-panel, rgba(23, 38, 62, .62)); color: var(--ui-text-muted, #a8b9d1); font-size: 10px; line-height: 1.55; }
+.brief-review-plan-notes p { margin: 0; overflow-wrap: anywhere; }
+.brief-review-plan-progress { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 15px; }
+.brief-review-plan-progress > div { min-width: 0; padding: 11px 12px; border: 1px solid var(--ui-border, rgba(126, 155, 199, .14)); border-radius: 8px; background: var(--ui-raised, rgba(16, 29, 48, .45)); }
+.brief-review-plan-progress span { display: block; color: var(--ui-text-subtle, #778ba8); font-size: 10px; line-height: 1.4; }
+.brief-review-plan-progress strong { display: block; margin-top: 4px; color: var(--ui-text, #dce9fb); font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.brief-review-plan-status, .brief-review-plan-loading, .brief-review-plan-empty { margin: 14px 0 0; padding: 10px 12px; border: 1px dashed var(--ui-border-strong, rgba(138, 174, 230, .28)); border-radius: 8px; color: var(--ui-text-muted, #9eb1cc); font-size: 11px; line-height: 1.5; }
+.brief-review-plan-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding: 10px 12px; border: 1px solid var(--ui-error-border, rgba(255, 129, 125, .35)); border-radius: 8px; background: var(--ui-error-soft, rgba(92, 30, 39, .3)); color: var(--ui-error, #ffaaa6); font-size: 11px; line-height: 1.5; }
+.brief-review-plan-error button { flex: 0 0 auto; padding: 5px 9px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font-size: 10px; }
+.brief-review-plan-budget-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-top: 17px; padding: 15px 16px; border: 1px solid var(--ui-border-strong, rgba(138, 174, 230, .24)); border-radius: 10px; background: var(--ui-panel, rgba(15, 28, 48, .52)); }
+.brief-review-plan-budget-card > div { min-width: 0; }
+.brief-review-plan-label { display: block; color: var(--ui-accent, #78aaff); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.brief-review-plan-budget-card strong { display: block; margin-top: 5px; color: var(--ui-text, #e7f0ff); font-size: 14px; }
+.brief-review-plan-budget-card p { margin: 6px 0 0; color: var(--ui-text-muted, #9eb1cc); font-size: 10px; line-height: 1.5; }
+.brief-review-plan-budget-card label { display: flex; flex: 0 0 145px; flex-direction: column; gap: 5px; color: var(--ui-text-muted, #b7c8df); font-size: 10px; font-weight: 600; }
+.brief-review-plan-budget-card input { width: 100%; min-height: 38px; padding: 7px 9px; border: 1px solid var(--ui-border-strong, #344c6c); border-radius: 7px; outline: 0; background: var(--ui-input, #081221); color: var(--ui-text, #e7f0ff); font-size: 14px; font-variant-numeric: tabular-nums; }
+.brief-review-plan-budget-card small { color: var(--ui-text-subtle, #7186a5); font-size: 9px; font-weight: 400; }
+.brief-review-plan-save { display: block; min-height: 37px; margin: 13px 0 0 auto; padding: 8px 13px; border: 1px solid var(--ui-accent-border, rgba(120, 170, 255, .58)); border-radius: 7px; background: var(--ui-accent, linear-gradient(135deg, #477abf, #31598e)); color: var(--ui-on-accent, #edf5ff); cursor: pointer; font-size: 11px; font-weight: 600; }
+.brief-review-plan-save:hover:not(:disabled) { border-color: var(--ui-accent, #abd0ff); background: var(--ui-accent, linear-gradient(135deg, #568bd1, #3b6aaa)); }
+.brief-review-plan-footer { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 29px 15px; border-top: 1px solid var(--ui-border, rgba(126, 155, 199, .17)); color: var(--ui-text-subtle, #7186a5); font-size: 10px; line-height: 1.5; }
+.brief-review-plan-footer-close { flex: 0 0 auto; min-height: 34px; padding: 7px 12px; border: 1px solid var(--ui-border-strong, #3a5271); border-radius: 7px; background: var(--ui-raised, rgba(28, 48, 77, .52)); color: var(--ui-text-muted, #b9cce5); cursor: pointer; font-size: 10px; font-weight: 600; }
+
+@media (max-width: 560px) {
+  .brief-review-daily-metrics { gap: 5px; }
+  .brief-review-suspended-heading, .brief-review-concept-control-heading, .brief-review-concept-control-row { align-items: flex-start; flex-direction: column; }
+  .brief-review-suspended-heading span, .brief-review-concept-control-heading span { text-align: left; }
+  .brief-review-toggle-group, .brief-review-defer-group { justify-content: flex-start; }
+  .brief-review-plan-dialog { width: 96vw; max-height: 92dvh; border-radius: 12px; }
+  .brief-review-plan-header { padding: 20px 19px 16px; }
+  .brief-review-plan-body { padding: 18px 19px 22px; }
+  .brief-review-plan-footer { align-items: flex-start; flex-direction: column; padding: 11px 19px 14px; }
+  .brief-review-plan-progress { gap: 5px; }
+  .brief-review-plan-progress > div { padding: 9px 8px; }
+  .brief-review-plan-progress strong { font-size: 13px; }
+  .brief-review-plan-budget-card { flex-direction: column; gap: 13px; }
+  .brief-review-plan-budget-card label { flex: 0 0 auto; width: 100%; }
+  .brief-review-plan-save { width: 100%; margin-left: 0; }
+}
+
+.brief-review-task-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.brief-review-task-reason { color: var(--ui-text-muted, #9aabc3); font-size: 12px; line-height: 1.6; }

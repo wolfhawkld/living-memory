@@ -2,6 +2,8 @@
 
 日期：2026-09-15。本文是可修订的研究起点，不是已经确认的产品规格。
 
+2026-09-16 更新：用户强调记忆与遗忘机制主导系统开发，并选择先独立 Web、后接 Obsidian。当前开发范围以[首版需求](requirements/v0.1.md)、[技术设计](design/technical-design-v0.1.md)和[开发任务](planning/development-tasks-v0.1.md)为准；下文保留早期研究背景。
+
 进展：用户已要求总结研究并设计系统流程。已形成[共研结果总结](research/consolidated-findings.md)与[个人记忆强化流程 v0.1](design/personal-memory-workflow.md)；其中的时间预算、任务安排和状态表达是本轮设计建议，尚未通过试用确认。
 
 最新进展：用户认可流程大方向并要求分析可视化选型，明确选择**突出空间纵深、较明显发光与镜头运动，桌面优先**。用户查看官方 `3d-force-graph` 示例后确认桌面 3D 原型采用 **`3d-force-graph` + Three.js**，并保留镜头聚焦与关系高亮作为交互方向。据此形成[可视化体验](design/visualization-spec.md)与[技术选型](research/visualization-options.md)，平面阅读模式仍作为配套阅读入口；具体实现细节、组件版本、配色和动画参数仍待原型验证，尚未完成引擎、性能或宿主集成测试。

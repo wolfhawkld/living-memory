@@ -1,0 +1,198 @@
+.learning-progress-panel {
+  min-width: 0;
+  margin: 14px 0;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .16));
+  border-radius: 10px;
+  background: var(--ui-panel, rgba(16, 29, 48, .42));
+  color: var(--ui-text-muted, #aebcd0);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.learning-progress-panel > summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 12px;
+  color: var(--ui-text, #dce9fb);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.learning-progress-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.learning-progress-panel > summary::before {
+  color: var(--ui-accent, #8fb8ee);
+  content: '＋';
+  font-size: 12px;
+  line-height: 1;
+}
+
+.learning-progress-panel[open] > summary::before {
+  content: '－';
+}
+
+.learning-progress-panel > summary:focus-visible {
+  outline: 2px solid var(--ui-accent, #78aaff);
+  outline-offset: -2px;
+}
+
+.learning-progress-body {
+  min-width: 0;
+  padding: 0 10px 11px;
+}
+
+.learning-progress-as-of,
+.learning-progress-empty,
+.learning-progress-single,
+.learning-progress-excluded,
+.learning-progress-caveat {
+  margin: 0;
+  color: var(--ui-text-subtle, #8297b5);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.learning-progress-as-of {
+  padding: 0 2px 8px;
+}
+
+.learning-progress-task {
+  min-width: 0;
+  padding: 10px 2px 0;
+  border-top: 1px solid var(--ui-border, rgba(126, 155, 199, .14));
+}
+
+.learning-progress-task + .learning-progress-task {
+  margin-top: 10px;
+}
+
+.learning-progress-task-heading,
+.learning-progress-task-meta,
+.learning-progress-point-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.learning-progress-task-heading h3 {
+  margin: 0;
+  color: var(--ui-text, #dce9fb);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.learning-progress-task-heading > span,
+.learning-progress-task-meta,
+.learning-progress-point-recorded {
+  color: var(--ui-text-subtle, #8297b5);
+  font-size: 10px;
+}
+
+.learning-progress-task-meta {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  margin-top: 3px;
+}
+
+.learning-progress-task-meta span {
+  overflow-wrap: anywhere;
+}
+
+.learning-progress-empty,
+.learning-progress-single {
+  margin-top: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .12));
+  border-radius: 6px;
+  background: var(--ui-raised, rgba(32, 54, 84, .24));
+}
+
+.learning-progress-points {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.learning-progress-point {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--ui-border, rgba(126, 155, 199, .13));
+  border-radius: 7px;
+  background: var(--ui-raised, rgba(32, 54, 84, .23));
+}
+
+.learning-progress-point-heading strong {
+  min-width: 0;
+  color: var(--ui-text, #dce9fb);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.learning-progress-point-heading time {
+  flex: 0 1 auto;
+  color: var(--ui-text-muted, #9fb2cc);
+  font-size: 10px;
+  text-align: right;
+}
+
+.learning-progress-point-recorded {
+  margin-top: 2px;
+}
+
+.learning-progress-metrics {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  margin: 7px 0 0;
+}
+
+.learning-progress-metrics div {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 7px;
+}
+
+.learning-progress-metrics dt {
+  color: var(--ui-text-subtle, #8297b5);
+}
+
+.learning-progress-metrics dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ui-text-muted, #b9cbe1);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.learning-progress-excluded {
+  margin-top: 9px;
+  color: var(--ui-warning, #c5a36e);
+}
+
+.learning-progress-caveat {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ui-border, rgba(126, 155, 199, .12));
+}
+
+.learning-progress-caveat p + p {
+  margin-top: 3px;
+}
+
+@media (max-width: 420px) {
+  .learning-progress-points {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

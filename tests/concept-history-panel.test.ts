@@ -1,0 +1,264 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import type {
+  ApplicationRecord,
+  AnchorEvent,
+  ConceptHistory,
+  MemoryState,
+  Observation,
+} from '../src/shared/types.js';
+import {
+  ConceptHistoryPanel,
+  HistoryObservationAnswer,
+  type ConceptHistoryPanelProps,
+} from '../src/web/ConceptHistoryPanel.js';
+
+function anchor(overrides: Partial<AnchorEvent> = {}): AnchorEvent {
+  return {
+    eventId: 'anchor-1',
+    conceptId: 'concept-1',
+    sourceRevision: 'revision-2',
+    occurredAt: '2026-09-18T08:00:00.000Z',
+    recordedAt: '2026-09-18T08:01:00.000Z',
+    kind: 'review',
+    ...overrides,
+  };
+}
+
+function observation(overrides: Partial<Observation> = {}): Observation {
+  return {
+    eventId: 'observation-1',
+    conceptId: 'concept-1',
+    sourceRevision: 'revision-2',
+    observedAt: '2026-09-19T10:00:00.000Z',
+    recordedAt: '2026-09-19T10:02:00.000Z',
+    configRevision: 4,
+    halfLifeDays: 7.125,
+    anchorEventId: 'anchor-1',
+    elapsedDays: 1.25,
+    decay: 0.882,
+    answer: '秘密的原始回答，不应在默认历史 HTML 中出现。',
+    rating: 'partial',
+    exposure: 'unexposed',
+    observedExposure: false,
+    ...overrides,
+  };
+}
+
+function state(overrides: Partial<MemoryState> = {}): MemoryState {
+  return {
+    conceptId: 'concept-1',
+    status: 'recent',
+    decay: 0.882,
+    elapsedDays: 1.25,
+    anchor: anchor(),
+    reason: null,
+    asOf: '2026-09-20T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function history(overrides: Partial<ConceptHistory> = {}): ConceptHistory {
+  return {
+    sourceId: 'source-test',
+    conceptId: 'concept-1',
+    sourceRevision: 'revision-2',
+    asOf: '2026-09-20T00:00:00.000Z',
+    state: state(),
+    entries: [
+      { type: 'anchor', event: anchor() },
+      { type: 'observation', event: observation() },
+    ],
+    total: 2,
+    nextCursor: null,
+    ...overrides,
+  };
+}
+
+function panel(overrides: Partial<ConceptHistoryPanelProps> = {}): string {
+  return renderToStaticMarkup(createElement(ConceptHistoryPanel, {
+    history: history(),
+    loading: false,
+    loadingMore: false,
+    error: null,
+    onRetry: () => undefined,
+    onLoadMore: () => undefined,
+    onRevealAnswer: () => undefined,
+    pendingCount: 0,
+    simulated: false,
+    ...overrides,
+  }));
+}
+
+test('application and summary records hide personal content until explicitly revealed and do not claim recall mastery', () => {
+  const event: ApplicationRecord = {
+    eventId: 'application-1', conceptId: 'concept-1', sourceRevision: 'revision-1',
+    occurredAt: '2026-09-19T10:00:00.000Z', recordedAt: '2026-09-19T10:01:00.000Z',
+    kind: 'application', context: '私人业务场景', content: '原始工作总结', result: '私人结果',
+    limitations: '具体业务约束', insight: '总结答案线索', correction: '修订答案线索', references: '私有资料地址',
+    assistance: 'people-or-ai', outcome: 'success',
+  };
+  for (const kind of ['application', 'summary'] as const) {
+    const html = panel({ history: history({ entries: [{ type: 'application', event: { ...event, kind } }], total: 1 }) });
+    assert.match(html, kind === 'application' ? /实际应用记录/ : /总结 \/ insight/);
+    assert.match(html, /他人 \/ AI 协助/);
+    assert.match(html, /自报结果：成功/);
+    assert.match(html, /不计入独立回忆或信心校准，不改变重温起点/);
+    assert.match(html, /来源版本已变化/);
+    assert.match(html, /aria-expanded="false"/);
+    for (const value of [event.context, event.content, event.result, event.limitations, event.insight, event.correction, event.references]) {
+      assert.ok(!html.includes(value), 'personal content must be absent before reveal');
+    }
+  }
+});
+
+test('scenario evidence metadata is visible but scenario and applicability stay behind answer reveal', () => {
+  const event = observation({ learning: { task: 'scenario', scenario: '场景里的敏感线索', applicability: '核对补充的答案线索',
+    confidence: 75, confidenceAt: '2026-09-19T09:59:00.000Z', cue: 'independent', outcome: 'unverified', basis: 'unknown' } });
+  const html = panel({ history: history({ entries: [{ type: 'observation', event }], total: 1 }) });
+  assert.match(html, /场景调用观察/);
+  assert.match(html, /75%/);
+  assert.match(html, /未核对/);
+  assert.doesNotMatch(html, /场景里的敏感线索|核对补充的答案线索|秘密的原始回答/);
+});
+
+test('focused history locates one application without revealing its content and offers the full timeline', () => {
+  const event: ApplicationRecord = {
+    eventId: 'older-application', conceptId: 'concept-1', sourceRevision: 'revision-1',
+    occurredAt: '2026-08-01T10:00:00.000Z', recordedAt: '2026-08-01T10:01:00.000Z',
+    kind: 'summary', context: '私有场景', content: '私有总结', result: '', limitations: '',
+    insight: '', correction: '尚未展开的修正建议', references: '',
+    assistance: 'independent', outcome: 'unverified',
+  };
+  const html = panel({
+    focusedApplicationEventId: event.eventId,
+    onClearFocus: () => undefined,
+    history: history({ entries: [{ type: 'application', event }], total: 1, focusedApplicationEventId: event.eventId }),
+  });
+  assert.match(html, /当前定位 1 条/);
+  assert.match(html, /older-application/);
+  assert.match(html, /查看全部学习历史/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /私有场景|私有总结|尚未展开的修正建议|加载更多历史/);
+  for (const overrides of [{ loading: true }, { error: '记录不存在' }]) {
+    const pending = panel({ history: null, focusedApplicationEventId: event.eventId, onClearFocus: () => undefined, ...overrides });
+    assert.match(pending, /查看全部学习历史/);
+  }
+});
+
+test('manual retention events are labeled as decisions and preserve the paused original anchor', () => {
+  const event = { eventId: 'hold-1', conceptId: 'concept-1', sourceRevision: 'revision-1', occurredAt: '2026-09-19T10:00:00Z', recordedAt: '2026-09-19T10:00:00Z', active: true, previousEventId: null };
+  const html = panel({ history: history({ state: state({ status: 'retained', decay: null, elapsedDays: null, retention: event }),
+    entries: [{ type: 'retention', event }], total: 1 }) });
+  assert.match(html, /长期保持（本人确认）/);
+  assert.match(html, /衰减暂停/);
+  assert.match(html, /资料版本已变化/);
+  assert.doesNotMatch(html, /100%/);
+});
+
+test('does not show an empty loaded state before the first history response', () => {
+  assert.equal(panel({ history: null }), '');
+  assert.match(panel({ history: null, loading: true }), /正在加载学习历史/);
+});
+
+test('renders an explicit empty history response', () => {
+  const html = panel({ history: history({ entries: [], total: 0 }) });
+  assert.match(html, /还没有已保存的学习记录/);
+  assert.match(html, /学习历史/);
+  assert.doesNotMatch(html, /正在加载学习历史/);
+});
+
+test('keeps observation answers out of SSR HTML until the answer is actively revealed', () => {
+  const pendingAnchor = anchor({ eventId: 'pending-anchor', sourceRevision: 'revision-2' });
+  const oldEntry = anchor({ eventId: 'old-anchor', sourceRevision: 'revision-1', kind: 'estimated' });
+  const event = observation({
+    eventId: 'old-observation',
+    sourceRevision: 'revision-1',
+    elapsedDays: 4.25,
+    decay: 0.6,
+    halfLifeDays: 7.125,
+    configRevision: 9,
+    exposure: 'exposed',
+    observedExposure: true,
+  });
+  const html = panel({
+    history: history({
+      state: state({ status: 'pending', anchor: pendingAnchor }),
+      entries: [
+        { type: 'anchor', event: oldEntry },
+        { type: 'observation', event },
+      ],
+      total: 2,
+    }),
+    pendingCount: 2,
+  });
+
+  assert.doesNotMatch(html, /秘密的原始回答/);
+  assert.match(html, /展开原始回答/);
+  assert.match(html, /最新起点 · 待确认/);
+  assert.doesNotMatch(html, /当前有效起点/);
+  assert.match(html, /补记起点/);
+  assert.match(html, /来源版本已变化 · 不用于当前曲线/);
+  assert.match(html, /Δt 4\.25 天/);
+  assert.match(html, /D 0\.600/);
+  assert.match(html, /H 7\.125 天/);
+  assert.match(html, /配置 v9/);
+  assert.match(html, /资料已查看/);
+  assert.match(html, /还有 2 条记录待同步/);
+  assert.match(html, /它们不会混入已保存历史/);
+});
+
+test('current anchor summary remains visible when its event is outside the current page', () => {
+  const current = anchor({ eventId: 'current-anchor', occurredAt: '2026-09-17T06:00:00.000Z' });
+  const html = panel({
+    history: history({
+      state: state({ anchor: current }),
+      entries: [{ type: 'observation', event: observation({ eventId: 'older-observation' }) }],
+      total: 8,
+      nextCursor: 'next-page',
+    }),
+  });
+
+  assert.match(html, /当前有效起点/);
+  assert.match(html, /2026/);
+  assert.match(html, /加载更多历史/);
+  assert.doesNotMatch(html, /current-anchor/);
+});
+
+test('preserves visible history alongside an error, pagination state, and simulation notice', () => {
+  const html = panel({
+    error: '网络暂时不可用',
+    loadingMore: true,
+    pendingCount: 1,
+    simulated: true,
+    history: history({ nextCursor: 'next-page' }),
+  });
+
+  assert.match(html, /历史加载失败：网络暂时不可用/);
+  assert.match(html, />重试</);
+  assert.match(html, /学习观察/);
+  assert.doesNotMatch(html, /秘密的原始回答/);
+  assert.match(html, /正在加载更多/);
+  assert.match(html, /当前为时间预览，真实学习历史不会随预览时间改变/);
+  assert.match(html, /还有 1 条记录待同步/);
+});
+
+test('renders an error and retry affordance when the initial request has no history', () => {
+  const html = panel({ history: null, error: '服务暂时不可用' });
+  assert.match(html, /历史加载失败：服务暂时不可用/);
+  assert.match(html, /重试加载/);
+  assert.doesNotMatch(html, /还没有已保存的学习记录/);
+});
+
+test('the standalone answer component also keeps the answer out of SSR markup', () => {
+  const event = observation({ answer: '只在主动展开后可见' });
+  const html = renderToStaticMarkup(createElement(HistoryObservationAnswer, {
+    event,
+    onRevealAnswer: () => undefined,
+  }));
+  assert.match(html, /展开原始回答/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /只在主动展开后可见/);
+});
