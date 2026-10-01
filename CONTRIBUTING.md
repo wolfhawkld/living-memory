@@ -2,6 +2,8 @@
 
 Living Memory 是一个使用 React、本地 Web 服务和 SQLite 的桌面优先本地应用。知识源是只读 Markdown，仓库自带的 `fixtures/demo-kg` 是可公开复现的合成示例。当前实现与运行边界以 [README](README.md)、[新人运行指南](docs/development/first-run.md) 和[文档导航](docs/README.md)为准；早期设计讨论不替代这些当前事实。
 
+定位代码从[模块与数据流导览](docs/development/codebase-guide.md)开始。第一次贡献可从[首批可认领任务](docs/planning/first-contribution-tasks.md)选择；每项列出文件入口、范围和验收条件，认领状态以关联 Issue 为准。
+
 ## 开始前先确认范围
 
 开始较大的功能、行为变化或数据变更前，先在 [Issues](https://github.com/wolfhawkld/living-memory/issues) 描述问题、预期行为和范围，或在已有 Issue 中沟通后再认领。说明涉及的页面/API、依赖、数据兼容和验证方式；不把完整 v0.1 的愿景默认扩大成当前任务。

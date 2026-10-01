@@ -66,7 +66,7 @@ Windows 原生、macOS、真实桌面 GPU 与大知识库性能仍待验证；�
 
 2026-10-01 已在 WSL2/Linux x86_64、Node 22.23.1 下验证隔离目录安装、构建、首次建号、知识源接入和重启保留。[提交 `5274166` 的 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36833118633) 通过 Node/HTTP 测试、构建、主题检查和浏览器回归。该结果验证软件路径，不构成目标设备性能或学习收益结论。
 
-开源运行文档、有限范围的公开内容检查和贡献约定已完成，接下来补齐模块导览与首批协作任务，再核对最终版本与预览发布。记忆模型扩展依据实际延迟观察推进。完整 v0.1 的任务和验收规格保留，不将已有 P0 子集视为全部完成。
+开源运行文档、有限范围的公开内容检查和贡献约定已完成；[模块导览](docs/development/codebase-guide.md)和[首批协作任务](docs/planning/first-contribution-tasks.md)已整理，任务正在发布。下一步核对版本兼容约定与预览发布。记忆模型扩展依据实际延迟观察推进。完整 v0.1 的任务和验收规格保留，不将已有 P0 子集视为全部完成。
 
 - [开源准备与完成记录](docs/planning/open-source-readiness-2026-09-27.md)
 - [近期迭代与未验收项](docs/planning/iteration-todo-2026-09-22.md)
@@ -76,6 +76,8 @@ Windows 原生、macOS、真实桌面 GPU 与大知识库性能仍待验证；�
 ## 参与协作
 
 欢迎改进运行文档、合成示例、测试和独立功能。先阅读[协作说明](CONTRIBUTING.md)，在 [Issues](https://github.com/wolfhawkld/living-memory/issues) 描述问题或确认任务范围。维护者日常沿用 `develop`；外部贡献者可 fork、使用短期分支，并向 `develop` 提交 PR。经过验证的一组改动再集中合入 `main`。
+
+定位实现请看[模块与数据流导览](docs/development/codebase-guide.md)，第一次参与可从[首批可认领任务](docs/planning/first-contribution-tasks.md)选择。
 
 安全漏洞使用[私密报告入口](SECURITY.md)，社区交流遵守[行为准则](CODE_OF_CONDUCT.md)；维护责任与分支约定见[维护者说明](MAINTAINERS.md)。
 

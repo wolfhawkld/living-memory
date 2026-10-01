@@ -6,7 +6,9 @@
 
 ## 下次接续：开源协作准备
 
-2026-09-27 已保存[开源协作准备总结与 TODO](open-source-readiness-2026-09-27.md)。2026-10-01 已完成 **OSS-01：CI 认证修复**和 **OSS-02：默认分支同步与预览发布准备**，累计成果通过 [PR #37](https://github.com/wolfhawkld/living-memory/pull/37) 合入 `main`。随后完成 **OSS-03：固定新人运行路径**，提交 `5274166` 的 [CI](https://github.com/wolfhawkld/living-memory/actions/runs/36833118633) 全部通过；[新人指南](../development/first-run.md)与隔离运行核验已保存。现已完成 **OSS-04：README 与过时说明整理**，新增[分类文档导航](../README.md)和[合成时间状态示意](../assets/README.md)，保留历史验证记录。[发布范围与清单](../releases/local-web-preview.md)已更新；候选 tag 尚未创建，下一项为 **OSS-05：审查公开内容**，正式预览继续等待内容检查及最终发布清单。本地浏览器视觉验收仍由用户进行。
+2026-10-01 已完成 **OSS-01～06**：CI 认证修复、默认分支同步、新人运行、首页与文档整理、有限范围公开内容检查，以及贡献/维护约定。成果通过 [PR #37](https://github.com/wolfhawkld/living-memory/pull/37) 和 [PR #38](https://github.com/wolfhawkld/living-memory/pull/38) 分批集成到 `main`；具体证据与边界见[开源准备记录](open-source-readiness-2026-09-27.md)。
+
+当前执行 **OSS-07：开发导览与首批协作任务**。[模块导览](../development/codebase-guide.md)与[可认领任务](first-contribution-tasks.md)已整理，待发布和复核 GitHub Issues 后记录完成。下一项为 **OSS-08：发布和兼容性维护**；[候选预览清单](../releases/local-web-preview.md)仍需最终核对，尚未创建 tag 或 release。本地浏览器视觉验收仍由用户进行。
 
 ## 原有 TODO 在哪里
 
