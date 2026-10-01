@@ -12,7 +12,7 @@
 | CONTRIB-02 | 可直接打开的合成图片与 Mermaid 笔记 | `good first issue`、`documentation` | [#40](https://github.com/wolfhawkld/living-memory/issues/40)，已在 `develop` 完成，专项视觉待用户验收 |
 | CONTRIB-03 | 空图谱区域的说明与行动入口 | `good first issue`、`enhancement`、`accessibility` | [#41](https://github.com/wolfhawkld/living-memory/issues/41)，已在 `develop` 完成，视觉待用户验收 |
 | CONTRIB-04 | HTTP 错误与 preflight 边界回归 | `help wanted` | [#42](https://github.com/wolfhawkld/living-memory/issues/42)，已在 `develop` 完成 |
-| CONTRIB-05 | 一个原生 Windows 或 macOS 的首次运行记录 | `help wanted`、`documentation` | [#43](https://github.com/wolfhawkld/living-memory/issues/43)，待认领 |
+| CONTRIB-05 | 原生 Windows 的首次运行记录 | `help wanted`、`documentation` | [#43](https://github.com/wolfhawkld/living-memory/issues/43)，待认领；macOS 暂缓 |
 
 标签表示适合参与的范围，不承诺固定工时。一个任务只做下面写出的交付；发现其他缺陷先记录，不把任务扩大为架构或依赖改造。发布后，以 GitHub Issue 的认领与完成状态为准。
 
@@ -107,20 +107,22 @@
 
 <a id="contrib-05"></a>
 
-## CONTRIB-05：一个原生 Windows 或 macOS 的首次运行记录
+## CONTRIB-05：原生 Windows 的首次运行记录
 
-**现状：** [新人运行指南](../development/first-run.md)已验证 WSL2/Linux x86_64、Node 22.23.1 与 npm 10.9.8；Windows 原生和 macOS 尚无等价记录。本任务一次认领一个实际可用的平台，另一个平台仍保留未验证状态。
+**范围调整（2026-10-01）：** 用户暂无 macOS 设备，已明确暂不需要 macOS 支持；本任务只安排原生 Windows 验证，macOS 保留为暂缓、未验证。
 
-**范围：** 在干净 checkout 和独立临时数据目录运行现有默认示例，提交带日期的记录，例如 `docs/development/platform-validation/<平台>-<日期>.md`，并从新人指南链接。记录 OS/架构、Node/npm、提交版本、shell、准确命令、结果与限制。
+**现状：** [新人运行指南](../development/first-run.md)已验证 WSL2/Linux x86_64、Node 22.23.1 与 npm 10.9.8；Windows 原生尚无等价记录，WSL2/Linux 的结果不能代替原生 Windows 验证。
+
+**范围：** 在原生 Windows 的干净 checkout 和独立临时数据目录运行现有默认示例，提交带日期的记录，例如 `docs/development/platform-validation/windows-<日期>.md`，并从新人指南链接。记录 OS/架构、Node/npm、提交版本、shell、准确命令、结果与限制。
 
 **验收：**
 
 - 覆盖 `npm ci`、`npm run build`、本机服务启动、合成管理员建号、默认 16 个概念查询、一次明确重温及停止/重启后保留。
 - 使用公开 fixture；把运行数据与凭据放在独立临时目录，不复制或提交数据库、会话、账号密码、完整私密日志。
-- 区分命令/HTTP/CLI 结果与浏览器视觉；没测 GPU、E2E 或另一平台时不声明已经通过。
+- 区分命令/HTTP/CLI 结果与浏览器视觉；没测 GPU 或 E2E 时不声明已经通过。
 - 失败也可作为有价值的记录：保留可公开复现的命令和精简错误，另开具体缺陷，不借此更新依赖或扩大支持承诺。
 
-**验证：** 由认领者在所记录的平台实测；维护者检查记录可复现性、本地链接与 `git diff --check`。不要为了此任务更换日常个人数据目录或使用真实 vault。
+**验证：** 由认领者在原生 Windows 实测；维护者检查记录可复现性、本地链接与 `git diff --check`。不要为了此任务更换日常个人数据目录或使用真实 vault。
 
 ## 本批之外
 

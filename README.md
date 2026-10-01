@@ -60,7 +60,7 @@ npm start
 
 完整备份需停止服务后保留整个数据目录与外部知识库；JSON 不含知识正文、附件、账号密码或浏览器草稿。浏览器待同步记录与复习草稿另存在本机，不能只靠服务端备份恢复。
 
-Windows 原生、macOS、真实桌面 GPU 与大知识库性能仍待验证；图片/Mermaid 等专项人工验收情况见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。ChatGPT 语音资源接入、Obsidian 插件、社交、在线/跨设备同步与移动端属于后续范围。
+Windows 原生仍待验证；macOS 暂缓，当前未验证；真实桌面 GPU 与大知识库性能仍待验证。图片/Mermaid 等专项人工验收情况见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。ChatGPT 语音资源接入、Obsidian 插件、社交、在线/跨设备同步与移动端属于后续范围。
 
 ## 验证与路线
 

@@ -155,4 +155,4 @@ CLI 重温回执默认另存于仓库 `data/local/cli`，不会随 `LM_DATA_DIR`
 | 重启后仍要求登录 | 这是正常账号流程；只有全新数据目录才显示首次建号 |
 | CLI 返回 `AUTH_REQUIRED` | 先在页面完成首次建号，核对 CLI 的数据目录、设备凭据与服务地址 |
 
-2026-10-01 已在 WSL2/Linux x86_64、Node 22.23.1、npm 10.9.8 的独立源码副本验证干净安装、构建和 HTTP 首次运行流程。Windows 原生、macOS 与目标设备 GPU 性能仍待验证；浏览器视觉体验由用户验收。具体检查结果保存在[OSS-03 记录](../planning/open-source-readiness-2026-09-27.md#oss-03-实施记录2026-10-01)。
+2026-10-01 已在 WSL2/Linux x86_64、Node 22.23.1、npm 10.9.8 的独立源码副本验证干净安装、构建和 HTTP 首次运行流程。Windows 原生仍待验证；macOS 暂缓，当前未验证；目标设备 GPU 性能仍待验证；浏览器视觉体验由用户验收。具体检查结果保存在[OSS-03 记录](../planning/open-source-readiness-2026-09-27.md#oss-03-实施记录2026-10-01)。

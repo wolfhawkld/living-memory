@@ -14,7 +14,7 @@
 
 **接续首批协作任务：** CONTRIB-01 / #39 已增加 `npm run generate:readme-demo`，两次输出与既有素材逐字节一致。CONTRIB-02 / [#40](https://github.com/wolfhawkld/living-memory/issues/40)已在“计算图”加入原创静态 SVG 和 Mermaid，仍为 16 个概念、32 条关系；31 项定向、496 项 Node/HTTP、构建及隔离示例验证通过，图形视觉仍由用户验收。CONTRIB-03 / [#41](https://github.com/wolfhawkld/living-memory/issues/41)已补充空知识库图谱说明与刷新入口，保留示例/时间预览写锁并说明如何恢复刷新；499 项 Node/HTTP、构建及主题产物检查通过，视觉与按钮操作待用户验收。
 
-CONTRIB-04 / [#42](https://github.com/wolfhawkld/living-memory/issues/42)已补充真实 HTTP 边界检查：无效 JSON、普通接口精确 1 MiB 上限、允许/拒绝的 preflight 与未知 API。4 项定向、503 项 Node/HTTP 测试及构建通过，失败请求前后导出和时间状态不变；生产路由、认证、依赖与记忆规则未修改。共用 413 文案误写“20 MiB”的问题留作后续修正。下一项 CONTRIB-05 / [#43](https://github.com/wolfhawkld/living-memory/issues/43)需要在原生 Windows 或 macOS 实测首次运行；现有 WSL2/Linux 记录不能替代，继续保留待实测。
+CONTRIB-04 / [#42](https://github.com/wolfhawkld/living-memory/issues/42)已补充真实 HTTP 边界检查：无效 JSON、普通接口精确 1 MiB 上限、允许/拒绝的 preflight 与未知 API。4 项定向、503 项 Node/HTTP 测试及构建通过，失败请求前后导出和时间状态不变；生产路由、认证、依赖与记忆规则未修改。共用 413 文案误写“20 MiB”的问题留作后续修正。下一项 CONTRIB-05 / [#43](https://github.com/wolfhawkld/living-memory/issues/43)只安排原生 Windows 首次运行验证；现有 WSL2/Linux 记录不能替代，继续保留待实测。用户于 2026-10-01 明确暂无 macOS 设备、暂不需要 macOS 支持，因此 macOS 适配与验证暂缓，不列为近期验收要求。
 
 ## 原有 TODO 在哪里
 
