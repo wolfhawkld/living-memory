@@ -57,6 +57,9 @@ export interface LivingMemoryApp extends Express {
 const DEFAULT_PORT = 4317;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 300;
+const BYTES_PER_MIB = 1024 * 1024;
+const JSON_BODY_LIMIT = BYTES_PER_MIB;
+const IMPORT_BODY_LIMIT = MAX_IMPORT_BYTES + 4096;
 
 function envNumber(name: string, fallback: number): number {
   const value = Number(process.env[name]);
@@ -126,7 +129,12 @@ function originAllowed(value: string | undefined, servicePort: number): boolean 
 
 function apiError(res: Response, error: unknown): void {
   if (error && typeof error === 'object' && 'type' in error && error.type === 'entity.too.large') {
-    res.status(413).json({ error: { code: 'BODY_TOO_LARGE', message: '请求数据过大，请使用不超过 20 MiB 的学习数据备份。' } });
+    // body-parser reports the active parser's limit, including the import envelope.
+    const isImportBody = 'limit' in error && error.limit === IMPORT_BODY_LIMIT;
+    const message = isImportBody
+      ? `请求数据过大，请使用不超过 ${MAX_IMPORT_BYTES / BYTES_PER_MIB} MiB 的学习数据备份。`
+      : `请求数据过大，请使用不超过 ${JSON_BODY_LIMIT / BYTES_PER_MIB} MiB 的请求数据。`;
+    res.status(413).json({ error: { code: 'BODY_TOO_LARGE', message } });
     return;
   }
   if (error instanceof StoreError) {
@@ -306,7 +314,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   const sessionOf = (req: Request) => (req as AccountRequest).accountSession;
   const now = options.now ?? (() => new Date());
   const app = express() as LivingMemoryApp;
-  const jsonBody = express.json({ limit: '1mb' });
+  const jsonBody = express.json({ limit: JSON_BODY_LIMIT });
   // Bulk restore is parsed only after account/source/token checks.
   app.use((req, res, next) => /^\/api\/import\/(preview|commit)\/?$/i.test(req.path)
     ? next() : jsonBody(req, res, next));
@@ -382,7 +390,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     next();
   };
 
-  const importBody = express.json({ limit: MAX_IMPORT_BYTES + 4096 });
+  const importBody = express.json({ limit: IMPORT_BODY_LIMIT });
   const requireSourceHeader = (req: Request, _res: Response, next: NextFunction) => {
     if (!req.header('x-lm-source-id')) { next(new StoreError('SOURCE_REQUIRED', '请确认当前知识空间后操作。')); return; }
     next();

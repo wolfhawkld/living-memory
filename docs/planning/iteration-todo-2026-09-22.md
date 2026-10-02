@@ -1,6 +1,6 @@
 # 演示后的迭代 TODO
 
-更新：2026-10-01。用户已完成本轮演示，接下来回到个人知识与记忆管理的主线。演示完成不等于真实延迟回忆、长期学习收益或目标设备性能已验收。
+更新：2026-10-02。用户已完成本轮演示，接下来回到个人知识与记忆管理的主线。演示完成不等于真实延迟回忆、长期学习收益或目标设备性能已验收。
 
 这是按当前代码与近期记录整理的工作清单，不替代完整 v0.1 的 18 项任务，也不把下列建议全部视为已经排期。
 
@@ -14,11 +14,11 @@
 
 **接续首批协作任务：** CONTRIB-01 / #39 已增加 `npm run generate:readme-demo`，两次输出与既有素材逐字节一致。CONTRIB-02 / [#40](https://github.com/wolfhawkld/living-memory/issues/40)已在“计算图”加入原创静态 SVG 和 Mermaid，仍为 16 个概念、32 条关系；31 项定向、496 项 Node/HTTP、构建及隔离示例验证通过，图形视觉仍由用户验收。CONTRIB-03 / [#41](https://github.com/wolfhawkld/living-memory/issues/41)已补充空知识库图谱说明与刷新入口，保留示例/时间预览写锁并说明如何恢复刷新；499 项 Node/HTTP、构建及主题产物检查通过，视觉与按钮操作待用户验收。
 
-CONTRIB-04 / [#42](https://github.com/wolfhawkld/living-memory/issues/42)已补充真实 HTTP 边界检查：无效 JSON、普通接口精确 1 MiB 上限、允许/拒绝的 preflight 与未知 API。4 项定向、503 项 Node/HTTP 测试及构建通过，失败请求前后导出和时间状态不变；生产路由、认证、依赖与记忆规则未修改。共用 413 文案误写“20 MiB”的问题留作后续修正。
+CONTRIB-04 / [#42](https://github.com/wolfhawkld/living-memory/issues/42)已补充真实 HTTP 边界检查：无效 JSON、普通接口精确 1 MiB 上限、允许/拒绝的 preflight 与未知 API。4 项定向、503 项 Node/HTTP 测试及构建通过，失败请求前后导出和时间状态不变；该任务未修改生产路由、认证、依赖与记忆规则。实施时保留的 413 文案问题已在下述后续修复中解决。
 
 CONTRIB-05 / [#43](https://github.com/wolfhawkld/living-memory/issues/43)已完成[原生 Windows 首次运行记录](../development/platform-validation/windows-2026-10-01.md)：Windows NT 10.0.26200.0 x64、PowerShell 5.1.26100.9444、Node 22.23.1、npm 10.9.8，对 `develop` 提交 `c8cd557` 的干净归档验证安装、构建、服务建号、16 个概念/32 条关系、CLI 明确重温、停止重启保留与幂等重试。WSL 只准备源码归档，应用运行使用原生 Windows Node；原生 Git clone、浏览器视觉与 GPU 未测试，也未重新验证已发布 tag。用户于 2026-10-01 明确暂无 macOS 设备、暂不需要 macOS 支持，因此 macOS 适配与验证继续暂缓，不列为近期验收要求。
 
-首批五项的实施与运行记录已完成。下一项可靠性跟进可修正普通 API 超限响应的“20 MiB”文案，使提示与普通接口 1 MiB、导入接口 20 MiB 的实际边界一致；图片/Mermaid、主题及其他跳过的人工验收继续保留，真实延迟试用仍需本人进行。
+首批五项的实施与运行记录已完成。2026-10-02 修正普通 API 超限响应文案，提示请求数据上限 1 MiB；导入 preview/commit 仍提示学习备份上限 20 MiB，HTTP 包装余量保持不变。8 项定向、503 项完整 Node/HTTP 测试及构建通过，拒绝请求前后学习数据、配置与备份不变；未改认证、错误码、依赖、数据格式或记忆规则。图片/Mermaid、主题及其他跳过的人工验收继续保留，真实延迟试用仍需本人进行。
 
 ## 原有 TODO 在哪里
 

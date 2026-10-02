@@ -1,6 +1,6 @@
 # 首批可认领的协作任务（OSS-07）
 
-更新日期：2026-10-01，针对当前 `develop`。以下保留首批协作任务的范围，已完成与待实施状态见任务索引。请先阅读[新人运行指南](../development/first-run.md)、[开发导览](../development/codebase-guide.md)和[贡献约定](../../CONTRIBUTING.md)，在对应 Issue 留下认领范围，避免重复工作；外部贡献的 PR 目标为 `develop`。
+更新日期：2026-10-02，针对当前 `develop`。以下保留首批协作任务的范围，已完成与待实施状态见任务索引。请先阅读[新人运行指南](../development/first-run.md)、[开发导览](../development/codebase-guide.md)和[贡献约定](../../CONTRIBUTING.md)，在对应 Issue 留下认领范围，避免重复工作；外部贡献的 PR 目标为 `develop`。
 
 本批优先选择文档、合成示例、独立 UI 与边界测试，不要求个人知识库。已有历史 Issue 包含已实现但仍待专项验收的功能；合并过代码不等于人工验收完成，本批不自动关闭那些 Issue。
 
@@ -99,11 +99,13 @@
 - 验证失败写请求没有产生学习事件或改变重温/配置，临时服务和数据正确清理。
 - preflight 分别覆盖当前允许的本机 origin 和不允许的 origin，不把服务改为公网开放。
 
-**当前契约提示：** 普通超限请求应为 `413 / BODY_TOO_LARGE`，无效 JSON 为 `400 / INVALID_JSON`；允许的 OPTIONS 为 204，外部 origin 为 `403 / ORIGIN_FORBIDDEN`，未知 API 用 GET 验证 `404 / NOT_FOUND`。检查允许的 methods/headers、origin 回写与 `Vary`。目前共用 413 文案写 20 MiB，与普通 API 的 1 MiB 不一致；先断言状态/错误码，不把此文案固化成正确的限额说明，文案修正另行确认范围。
+**当前契约提示（2026-10-02）：** 普通超限请求应为 `413 / BODY_TOO_LARGE`，无效 JSON 为 `400 / INVALID_JSON`；允许的 OPTIONS 为 204，外部 origin 为 `403 / ORIGIN_FORBIDDEN`，未知 API 用 GET 验证 `404 / NOT_FOUND`。普通超限文案明确提示不超过 1 MiB 的请求数据；导入 `/api/import/preview` 与 `/api/import/commit` 使用独立 parser，继续提示不超过 20 MiB 的学习数据备份。普通 parser 的实际阈值为 1,048,576 字节，导入 HTTP 外壳仍为 `MAX_IMPORT_BYTES + 4096`，导入备份本身仍为 20 MiB。实现按 body-parser 错误中的实际 `limit` 区分两种 parser；认证、状态码、错误码、依赖、数据与记忆规则不变。此前共用 413 文案误写“20 MiB”的问题已于 2026-10-02 修复。检查仍包括允许的 methods/headers、origin 回写与 `Vary`。
 
 **验证：** 定向运行新增测试文件，再按贡献指南完成 `npm test`、`npm run build`。若测出契约与实现矛盾，在 Issue 描述具体证据，再讨论修复范围；不顺手改变安全边界。
 
 **实际检查：** 4 项定向用例、503 项完整 Node/HTTP 测试及构建通过。无效 JSON 返回 `400 / INVALID_JSON`；合法重温请求加尾随空白，恰好 1,048,576 字节返回 `201` 并保存新起点，另一记录多 1 字节返回 `413 / BODY_TOO_LARGE`，原有数据不变。匿名 `OPTIONS` 的本机 `http://127.0.0.1:5173` 返回 `204`、空正文、origin 回写、`Vary: Origin` 及预期 methods/headers；同协议/端口的外部 host 返回 `403 / ORIGIN_FORBIDDEN` 且无允许 origin。已认证的未知 API 返回 `404 / NOT_FOUND`。各失败请求和预检前后完整导出、Snapshot 一致；既有重温起点与配置保留，临时服务与目录清理。未关闭账号验证、读取个人数据、运行本地浏览器或改动生产代码/依赖；共用 413 的“20 MiB”文案问题继续保留，未固化该文案。
+
+**后续文案修复检查（2026-10-02）：** 普通接口及导入接口共 8 项定向检查、503 项完整 Node/HTTP 测试和构建通过。普通请求恰好 1 MiB 可写入，多 1 字节被拒且提示 1 MiB；导入 preview/commit 的超限请求返回原 `413 / BODY_TOO_LARGE` 并提示 20 MiB 学习备份。被拒导入前后完整导出与数据目录条目一致，无新增学习记录或备份；大于普通上限的合法导入仍可预览。仅调整文案及对应断言，实际限制、认证、数据格式和记忆规则保持原有行为。
 
 <a id="contrib-05"></a>
 

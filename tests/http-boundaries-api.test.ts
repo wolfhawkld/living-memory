@@ -324,6 +324,9 @@ test('a non-import request accepts exactly 1 MiB of valid JSON and rejects large
     });
     assert.equal(rejected.status, 413);
     assert.equal(errorCode(rejected), 'BODY_TOO_LARGE');
+    const rejectedMessage = rejected.json<{ error: { message: string } }>().error.message;
+    assert.match(rejectedMessage, /1 MiB/);
+    assert.doesNotMatch(rejectedMessage, /20 MiB|学习数据备份/);
     await assertStateUnchanged(auth, acceptedState);
   } finally {
     await client.stop();
