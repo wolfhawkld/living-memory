@@ -16,6 +16,7 @@
     "install:kg-hook": "tsx src/integrations/install-kg-hook.ts",
     "build": "tsc --noEmit && vite build",
     "generate:readme-demo": "node --import tsx scripts/generate-readme-demo.ts",
+    "feishu:probe:offline": "node --import tsx scripts/feishu-probe-offline.ts",
     "check:theme-build": "node --import tsx scripts/check-theme-build.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
