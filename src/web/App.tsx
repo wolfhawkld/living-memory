@@ -62,6 +62,8 @@ import './learning-progress.css';
 import { ConfidenceInput, LearningEvidenceFields } from './LearningEvidenceFields';
 import { ScenarioPractice } from './ScenarioPractice';
 import { ApplicationRecordDialog } from './ApplicationRecordDialog';
+import type { ApplicationRecordDraft } from './application-record';
+import { buildScenarioApplicationDraft, resolveScenarioApplicationConcept } from './scenario-application-handoff';
 import type { SaveCorrection } from './ApplicationCorrectionPanel';
 import './application-record.css';
 import './application-correction.css';
@@ -268,7 +270,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const confirmCorrectionNavigation = useCallback(() => correctionEditingRef.current.size === 0
     || window.confirm('当前复核说明尚未提交，继续操作会关闭这份草稿。确定继续吗？'), []);
   const [scenarioOpen, setScenarioOpen] = useState(false);
-  const [applicationDraft, setApplicationDraft] = useState<{ concept: Concept; sourceId: string } | null>(null);
+  const [applicationDraft, setApplicationDraft] = useState<{ concept: Concept; sourceId: string; initialDraft?: ApplicationRecordDraft } | null>(null);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [overviewSelectionError, setOverviewSelectionError] = useState<string | null>(null);
   const overviewOpenRef = useRef(false);
@@ -1389,17 +1391,50 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       showNotice({ tone: 'info', text: '场景记录已保存在原知识源的待同步队列；重新连接原知识源后可重试。' });
       return true;
     }
-    if (!writeToken || writeLocked || busyAction) return false;
+    if (!writeToken || writeLocked || busyAction || learningWriteRef.current) return false;
+    learningWriteRef.current = true;
     setBusyAction('scenario');
-    const result = await writeWithRetry({ path: '/observations', method: 'POST', payload,
-      eventId: payload.eventId, conceptId: payload.conceptId, label: '场景调用观察',
-      send: () => api.postObservation(payload, writeToken, sourceId) });
-    setBusyAction(null);
-    if (result.ok) {
-      showNotice({ tone: 'success', text: '场景调用与事前信心已保存，可在关联节点的学习历史中查看。' });
-      await reloadRealSnapshot();
+    try {
+      const result = await writeWithRetry({ path: '/observations', method: 'POST', payload,
+        eventId: payload.eventId, conceptId: payload.conceptId, label: '场景调用观察',
+        send: () => api.postObservation(payload, writeToken, sourceId) });
+      if (result.ok) {
+        showNotice({ tone: 'success', text: '场景调用与事前信心已保存，可在关联节点的学习历史中查看。' });
+        await reloadRealSnapshot();
+      }
+      return result.ok || Boolean(result.queued);
+    } finally {
+      learningWriteRef.current = false;
+      setBusyAction(null);
     }
-    return result.ok || Boolean(result.queued);
+  };
+
+  const continueScenarioApplication = async (payload: ObservationRequest) => {
+    if (writeLockedRef.current || sourceIdRef.current !== sourceId) {
+      throw new Error('场景观察已保留，但当前知识空间无法继续写入。请回到原知识空间，从节点入口记录应用 / 总结。');
+    }
+    const latest = await loadSnapshot(undefined, sourceId);
+    if (!latest || writeLockedRef.current) {
+      throw new Error('场景观察已保留，但应用 / 总结草稿未打开。请恢复实时记录后重试。');
+    }
+    const concept = resolveScenarioApplicationConcept(payload, sourceId, sourceIdRef.current, latest);
+    const initialDraft = buildScenarioApplicationDraft(payload);
+    const targetDomain = domainIdOf(concept);
+    if (layoutWriteTimer.current !== null) {
+      window.clearTimeout(layoutWriteTimer.current);
+      layoutWriteTimer.current = null;
+    }
+    activeDomainRef.current = targetDomain;
+    setScenarioReader(null);
+    setScenarioOpen(false);
+    setSelectedId(concept.id);
+    setActiveDomainId(targetDomain);
+    setExpandedIds([]);
+    setHistoryFocus(null);
+    reviewEventRef.current = null;
+    setFocusRevision((current) => current + 1);
+    try { window.localStorage.setItem(`living-memory.domain.v1.${sourceId}`, targetDomain); } catch { /* Navigation remains available. */ }
+    setApplicationDraft({ sourceId, concept, initialDraft });
   };
 
   const saveApplication = async (payload: ApplicationRecordRequest): Promise<boolean> => {
@@ -1926,11 +1961,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         onRefresh={() => { if (!sourceReloadPending && !overviewActionRef.current) { setOverviewSelectionError(null); void overviewLoader.refresh(); } }} /> : null}
 
       {applicationDraft ? <ApplicationRecordDialog key={`${applicationDraft.sourceId}:${applicationDraft.concept.id}`}
-        concept={applicationDraft.concept} busy={busyAction === 'application'} onSave={saveApplication}
+        concept={applicationDraft.concept} initialDraft={applicationDraft.initialDraft} busy={busyAction === 'application'} onSave={saveApplication}
         onClose={() => setApplicationDraft(null)} /> : null}
 
       {scenarioOpen ? <ScenarioPractice key={sourceId} snapshot={snapshot} sourceId={sourceId} busy={busyAction === 'scenario'}
         onClose={() => { setScenarioOpen(false); setScenarioReader(null); }} onSave={saveScenarioObservation}
+        onLoadPrompts={(options) => api.getScenarioPrompts(sourceId, options)}
+        onContinueApplication={continueScenarioApplication}
         wasSourceViewed={(concept) => sourceViewedKeys.includes(sourceExposureKey(sourceId, concept))}
         onSourceExposed={(concept) => markSourceViewed(concept.id)}
         onReadSource={(concept) => { markSourceViewed(concept.id); setScenarioReader(concept); }} /> : null}

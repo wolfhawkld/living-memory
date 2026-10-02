@@ -130,6 +130,7 @@ function ProgressPoint({ point, task, label }: {
     <dl className="learning-progress-metrics">
       {task === 'concept' ? <div><dt>自评</dt><dd>{lookupLabel(ratingLabels, point.rating)}</dd></div> : null}
       {task === 'scenario' ? <>
+        <div><dt>场景来源</dt><dd>{point.scenarioRevisit ? '同场景回访' : '未标记回访'}</dd></div>
         <div><dt>核对结果</dt><dd>{lookupLabel(outcomeLabels, point.outcome)}</dd></div>
         <div><dt>核对依据</dt><dd>{lookupLabel(basisLabels, point.basis)}</dd></div>
       </> : null}

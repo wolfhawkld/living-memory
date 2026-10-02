@@ -201,6 +201,26 @@ function parseHistoryCursor(value: unknown): string | undefined {
   return value;
 }
 
+function parseScenarioPromptLimit(value: unknown): number {
+  if (value === undefined) return 20;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    throw new StoreError('INVALID_SCENARIO_PROMPTS_LIMIT', 'limit 必须是 1 到 50 的整数。');
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 50) {
+    throw new StoreError('INVALID_SCENARIO_PROMPTS_LIMIT', 'limit 必须是 1 到 50 的整数。');
+  }
+  return parsed;
+}
+
+function parseScenarioPromptCursor(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !value) {
+    throw new StoreError('INVALID_SCENARIO_PROMPTS_CURSOR', '场景回访分页游标无效，请重新读取场景。');
+  }
+  return value;
+}
+
 function parseHistoryApplicationEventId(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) {
@@ -503,6 +523,18 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       corrections: store.getCorrections(),
       anchors: store.getAnchors(),
     }));
+  }));
+  app.get('/api/scenario-prompts', asyncRoute((req, res) => {
+    const { source, store } = contextOf(req);
+    const limit = parseScenarioPromptLimit(req.query.limit);
+    const cursor = parseScenarioPromptCursor(req.query.cursor);
+    const conceptIds = new Set(source.index.concepts.map((concept) => concept.id));
+    const page = store.getScenarioPrompts(conceptIds, limit, cursor);
+    res.set('Cache-Control', 'no-store').json({
+      sourceId: source.namespace,
+      asOf: now().toISOString(),
+      ...page,
+    });
   }));
   app.get('/api/review-plan', asyncRoute((req, res) => {
     const { source, store } = contextOf(req);

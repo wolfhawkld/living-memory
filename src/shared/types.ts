@@ -57,6 +57,8 @@ export interface RetentionEvent extends RetentionRequest { recordedAt: string }
 export interface LearningEvidence {
   task: 'concept' | 'scenario';
   scenario?: string;
+  /** True when this scenario deliberately reuses a previously recorded prompt. */
+  scenarioRevisit?: true;
   applicability?: string;
   /** Percentage, integer 0..100; null means no prospective prediction. */
   confidence: number | null;
@@ -75,7 +77,7 @@ export interface CalibrationSummary {
 }
 
 export interface LearningSummary {
-  scenario: { total: number; independentSuccess: number; assisted: number; partial: number; failure: number; unverified: number };
+  scenario: { total: number; independentSuccess: number; assisted: number; partial: number; failure: number; unverified: number; revisited?: number };
   calibration: { concept: CalibrationSummary; scenario: CalibrationSummary };
 }
 

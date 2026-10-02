@@ -114,6 +114,7 @@ function overviewObservation(event: Observation): OverviewObservation {
     cue: evidence?.cue ?? UNKNOWN_OBSERVATION.cue,
     outcome: evidence?.outcome ?? UNKNOWN_OBSERVATION.outcome,
     basis: evidence?.basis ?? UNKNOWN_OBSERVATION.basis,
+    ...(evidence?.task === 'scenario' && evidence.scenarioRevisit ? { scenarioRevisit: true as const } : {}),
   };
 }
 

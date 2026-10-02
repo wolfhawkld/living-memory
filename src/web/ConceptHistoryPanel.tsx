@@ -197,6 +197,7 @@ function ObservationEntry({
         </div>
         {oldRevision ? <p className="concept-history-old-note">{oldRevision}</p> : null}
         {event.learning ? <div className="concept-history-learning">
+          {event.learning.scenarioRevisit ? <div>同场景回访 · 不代表新场景迁移</div> : null}
           <div>事前信心：{event.learning.confidence === null ? '未预测' : `${event.learning.confidence}%`}</div>
           <div>作答方式：{{ independent: '独立作答', hinted: '借助提示', lookup: '查阅后作答', unknown: '不确定' }[event.learning.cue]}</div>
           <div>核对结果：{{ success: '成功', partial: '部分成功', failure: '未成功', unverified: '尚未核对' }[event.learning.outcome]} · {{ 'self-check': '自己对照资料', application: '实际应用核对', unknown: '依据未记录' }[event.learning.basis]}</div>

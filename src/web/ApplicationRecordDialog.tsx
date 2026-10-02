@@ -25,6 +25,7 @@ export { buildApplicationMaterial } from './application-record';
 
 export interface ApplicationRecordDialogProps {
   concept: Concept;
+  initialDraft?: ApplicationRecordDraft;
   busy: boolean;
   onSave: (request: ApplicationRecordRequest) => Promise<boolean>;
   onClose: () => void;
@@ -36,9 +37,9 @@ interface DialogState extends ApplicationRecordDraft {
   saveError: string | null;
 }
 
-function initialState(): DialogState {
+function initialState(draft?: ApplicationRecordDraft): DialogState {
   return {
-    ...createApplicationRecordDraft(),
+    ...(draft ? { ...draft } : createApplicationRecordDraft()),
     submittedRequest: null,
     validationError: null,
     saveError: null,
@@ -95,9 +96,9 @@ function textArea(
   </>;
 }
 
-export function ApplicationRecordDialog({ concept, busy, onSave, onClose }: ApplicationRecordDialogProps): ReactElement {
+export function ApplicationRecordDialog({ concept, initialDraft, busy, onSave, onClose }: ApplicationRecordDialogProps): ReactElement {
   const stateRef = useRef<DialogState | null>(null);
-  if (!stateRef.current) stateRef.current = initialState();
+  if (!stateRef.current) stateRef.current = initialState(initialDraft);
   const [state, setState] = useState<DialogState>(stateRef.current);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -192,6 +193,7 @@ export function ApplicationRecordDialog({ concept, busy, onSave, onClose }: Appl
 
       <section className="application-record-body" aria-labelledby={titleId}>
         <p className="application-record-intro">这条记录用于积累知识在真实工作和学习中的使用证据。它独立于回忆测试，不会自动改变衰减状态，也不会自动写回共享知识源。</p>
+        {initialDraft ? <p className="application-record-intro">已从场景核对预填学习总结，请检查并补充自己的理解。若确实用于工作，可切换为实际应用，再填写辅助方式和结果；原始回答仍单独保存在场景观察中。</p> : null}
 
         <div className="application-record-kind" role="group" aria-label="记录类型">
           {APPLICATION_KINDS.map((kind) => <button key={kind} type="button" aria-pressed={state.kind === kind} disabled={fieldDisabled} onClick={() => updateField(setState, 'kind', kind)}>{APPLICATION_KIND_LABELS[kind]}</button>)}

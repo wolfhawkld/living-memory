@@ -12,6 +12,8 @@ export interface LearningProgressPoint {
   confidence: number | null;
   outcome: LearningEvidence['outcome'];
   basis: LearningEvidence['basis'];
+  /** Absent on older/newly written prompts; absence does not establish novelty. */
+  scenarioRevisit?: true;
   elapsedDays: number | null;
   halfLifeDays: number;
   configRevision: number;

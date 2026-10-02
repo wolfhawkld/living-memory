@@ -52,6 +52,7 @@ test('observation learning evidence is validated, normalized, idempotent, summar
       learning: {
         task: 'scenario',
         scenario: '  需要为多智能体编排器选择一个可解释的强校验模型。  ',
+        scenarioRevisit: true,
         confidence: 70,
         confidenceAt: '2026-01-01T23:59:00+00:00',
         cue: 'independent',
@@ -66,6 +67,7 @@ test('observation learning evidence is validated, normalized, idempotent, summar
     assert.deepEqual(exported.observations[0].learning, {
       task: 'scenario',
       scenario: '需要为多智能体编排器选择一个可解释的强校验模型。',
+      scenarioRevisit: true,
       confidence: 70,
       confidenceAt: '2026-01-01T23:59:00.000Z',
       cue: 'independent',
@@ -74,6 +76,7 @@ test('observation learning evidence is validated, normalized, idempotent, summar
     });
     const history = (await client.request(`/api/concepts/${encodeURIComponent(concept.id)}/history`)).json<any>();
     assert.equal(history.learning.scenario.total, 1);
+    assert.equal(history.learning.scenario.revisited, 1);
     assert.equal(history.learning.scenario.independentSuccess, 1);
     assert.equal(history.learning.calibration.scenario.count, 1);
     assert.equal(history.learning.calibration.scenario.meanConfidence, 70);
@@ -103,6 +106,10 @@ test('learning evidence rejects invalid confidence, time pairing, scenario text,
     response = await client.request('/api/observations', { method: 'POST', headers, body: { ...base, eventId: 'invalid-learning-scenario', learning: { ...base.learning, task: 'scenario', confidence: null, confidenceAt: null } } });
     assert.equal(response.status, 400); assert.equal(code(response), 'INVALID_LEARNING');
     response = await client.request('/api/observations', { method: 'POST', headers, body: { ...base, eventId: 'invalid-learning-basis', learning: { ...base.learning, confidence: null, confidenceAt: null, outcome: 'failure', basis: 'unknown' } } });
+    assert.equal(response.status, 400); assert.equal(code(response), 'INVALID_LEARNING');
+    response = await client.request('/api/observations', { method: 'POST', headers, body: { ...base, eventId: 'invalid-learning-revisit', learning: { ...base.learning, task: 'scenario', scenario: 'scenario', scenarioRevisit: false } } });
+    assert.equal(response.status, 400); assert.equal(code(response), 'INVALID_LEARNING');
+    response = await client.request('/api/observations', { method: 'POST', headers, body: { ...base, eventId: 'invalid-concept-revisit', learning: { ...base.learning, scenarioRevisit: true } } });
     assert.equal(response.status, 400); assert.equal(code(response), 'INVALID_LEARNING');
     assert.equal((await client.request('/api/export')).json<any>().observations.length, 0);
   } finally {

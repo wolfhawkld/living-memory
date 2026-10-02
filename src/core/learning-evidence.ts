@@ -23,6 +23,7 @@ function calibration(events: Observation[], task: 'concept' | 'scenario'): Calib
 /** Call with observations from a single concept and source revision. No fitted mastery score. */
 export function summarizeLearning(events: Observation[]): LearningSummary {
   const scenarios = events.filter((event) => event.learning?.task === 'scenario');
+  const revisited = scenarios.filter((event) => event.learning?.scenarioRevisit === true).length;
   return {
     scenario: {
       total: scenarios.length,
@@ -34,6 +35,7 @@ export function summarizeLearning(events: Observation[]): LearningSummary {
       partial: scenarios.filter((event) => event.learning!.outcome === 'partial').length,
       failure: scenarios.filter((event) => event.learning!.outcome === 'failure').length,
       unverified: scenarios.filter((event) => event.learning!.outcome === 'unverified').length,
+      ...(revisited > 0 ? { revisited } : {}),
     },
     calibration: { concept: calibration(events, 'concept'), scenario: calibration(events, 'scenario') },
   };

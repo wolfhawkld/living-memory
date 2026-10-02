@@ -10,6 +10,7 @@ export interface OverviewObservation {
   cue: LearningEvidence['cue'];
   outcome: LearningEvidence['outcome'];
   basis: LearningEvidence['basis'];
+  scenarioRevisit?: true;
 }
 
 export interface LearningOverviewItem {

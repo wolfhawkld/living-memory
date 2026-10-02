@@ -17,6 +17,18 @@ import type {
 
 const AS_OF = '2026-01-10T00:00:00.000Z';
 
+test('scenario revisit metadata survives the overview without revealing the scenario or answers', () => {
+  const result = buildLearningOverview({
+    sourceId: 'synthetic', asOf: AS_OF, concepts: [concept('rule')], states: {},
+    observations: [observation('rule', 'revisit', '2026-01-09T00:00:00.000Z', {}, evidence({
+      task: 'scenario', scenario: 'PRIVATE_SCENARIO', applicability: 'PRIVATE_CHECK', scenarioRevisit: true,
+    }))], applications: [], corrections: [], anchors: [],
+  });
+  assert.equal(result.items[0].scenario.latest?.scenarioRevisit, true);
+  assert.equal(result.items[0].scenario.revisited, 1);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SCENARIO|PRIVATE_CHECK|private answer/);
+});
+
 function concept(
   id: string,
   revision = 'v1',

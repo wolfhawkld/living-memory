@@ -7,7 +7,9 @@ import type {
   RecallRating,
   Snapshot,
 } from '../shared/types';
+import type { ScenarioPrompts } from '../shared/scenario-prompts';
 import { MarkdownView } from './MarkdownView';
+import { saveScenarioRequest } from './scenario-save';
 
 /** Values are stored as integer percentages so the persisted evidence is explicit and portable. */
 export const SCENARIO_CONFIDENCE_OPTIONS = [
@@ -34,6 +36,8 @@ export interface ScenarioPracticeState {
   readonly sourceViewedBefore: Readonly<Record<string, boolean>>;
   stage: ScenarioPracticeStage;
   scenario: string;
+  /** Whether the prompt came from a previously saved scenario observation. */
+  scenarioRevisit: boolean;
   confidence: number | null;
   confidenceAt: string | null;
   answer: string;
@@ -47,6 +51,8 @@ export interface ScenarioPracticeState {
   exposure: Exposure;
   /** Set before the first save attempt and reused for every retry. */
   submittedRequest: ObservationRequest | null;
+  /** The parent confirmed this frozen request was retained (server or local queue). */
+  observationSaved: boolean;
   validationError: string | null;
   saveError: string | null;
 }
@@ -61,6 +67,12 @@ export interface ScenarioPracticeProps {
   wasSourceViewed: (concept: Concept) => boolean;
   /** Notify the parent after the feedback summary exposes a concept for future attempts. */
   onSourceExposed?: (concept: Concept) => void;
+  /** Load saved scenario prompt text without exposing concept, answer, or result. */
+  onLoadPrompts?: (options: { limit?: number; cursor?: string; signal?: AbortSignal }) => Promise<ScenarioPrompts>;
+  /** Optional prompt supplied by history navigation; it remains a blind setup. */
+  initialScenario?: string;
+  /** After a successful observation save, open an editable application / summary draft. */
+  onContinueApplication?: (request: ObservationRequest) => void | Promise<void>;
 }
 
 function deepFreeze<T>(value: T): T {
@@ -99,12 +111,15 @@ export function newScenarioEventId(): string {
 export function createScenarioPracticeState(
   snapshot: Snapshot,
   sourceViewedBefore: Readonly<Record<string, boolean>> = {},
+  initialScenario = '',
+  scenarioRevisit = Boolean(initialScenario.trim()),
 ): ScenarioPracticeState {
   return {
     snapshot: freezeScenarioSnapshot(snapshot),
     sourceViewedBefore: Object.freeze({ ...sourceViewedBefore }),
     stage: 'setup',
-    scenario: '',
+    scenario: initialScenario,
+    scenarioRevisit,
     confidence: null,
     confidenceAt: null,
     answer: '',
@@ -117,6 +132,7 @@ export function createScenarioPracticeState(
     basis: 'unknown',
     exposure: 'unknown',
     submittedRequest: null,
+    observationSaved: false,
     validationError: null,
     saveError: null,
   };
@@ -200,6 +216,7 @@ export function buildScenarioObservationRequest(state: ScenarioPracticeState): O
   const learning: LearningEvidence = {
     task: 'scenario',
     scenario: state.scenario.trim(),
+    ...(state.scenarioRevisit ? { scenarioRevisit: true } : {}),
     ...(state.applicability.trim() ? { applicability: state.applicability.trim() } : {}),
     confidence: state.confidence,
     confidenceAt: state.confidenceAt,
@@ -228,10 +245,33 @@ function updateDraft(state: ScenarioPracticeState, update: Partial<ScenarioPract
   return { ...state, ...update, validationError: null, saveError: null };
 }
 
+/** A failed write still owns a draft and frozen request that must be confirmed before discard. */
+export function hasUnsavedScenarioDraft(state: ScenarioPracticeState): boolean {
+  return !state.observationSaved && (
+    Boolean(state.scenario.trim())
+    || Boolean(state.answer.trim())
+    || state.confidence !== null
+    || Boolean(state.conceptId)
+    || Boolean(state.applicability.trim())
+  );
+}
+
 function parseConfidence(value: string): number | null {
   if (!value) return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 100 ? parsed : null;
+}
+
+function formatPromptDate(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '时间未知';
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  }).format(date);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 const CUE_LABELS: Record<ScenarioCue, string> = {
@@ -273,16 +313,31 @@ export function ScenarioPractice({
   onReadSource,
   wasSourceViewed,
   onSourceExposed,
+  onLoadPrompts,
+  initialScenario = '',
+  onContinueApplication,
 }: ScenarioPracticeProps): ReactElement {
   const initialState = useRef<ScenarioPracticeState | null>(null);
   if (!initialState.current) {
     const frozenSnapshot = freezeScenarioSnapshot(snapshot);
     const sourceViewedBefore = captureScenarioSourceExposure(frozenSnapshot, wasSourceViewed);
-    initialState.current = createScenarioPracticeState(frozenSnapshot, sourceViewedBefore);
+    initialState.current = createScenarioPracticeState(frozenSnapshot, sourceViewedBefore, initialScenario, Boolean(initialScenario.trim()));
   }
   const [state, setState] = useState<ScenarioPracticeState>(initialState.current);
   const [conceptQuery, setConceptQuery] = useState('');
   const [saving, setSaving] = useState(false);
+  const [continuing, setContinuing] = useState(false);
+  const [continueError, setContinueError] = useState<string | null>(null);
+  const [promptsOpen, setPromptsOpen] = useState(false);
+  const [prompts, setPrompts] = useState<ScenarioPrompts | null>(null);
+  const [promptsLoading, setPromptsLoading] = useState(false);
+  const [promptsLoadingMore, setPromptsLoadingMore] = useState(false);
+  const [promptsError, setPromptsError] = useState<string | null>(null);
+  const savingRef = useRef(false);
+  const continuingRef = useRef(false);
+  const promptsRequestRef = useRef(0);
+  const promptsAbortRef = useRef<AbortController | null>(null);
+  const promptsSourceIdRef = useRef(sourceId);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const answerRef = useRef<HTMLTextAreaElement>(null);
   const scenarioRef = useRef<HTMLTextAreaElement>(null);
@@ -300,9 +355,10 @@ export function ScenarioPractice({
   const outcomeId = useId();
   const basisId = useId();
   const exposureId = useId();
-  const isBusy = busy || saving;
+  const isBusy = busy || saving || continuing;
 
   onSourceExposedRef.current = onSourceExposed;
+  promptsSourceIdRef.current = sourceId;
 
   const concept = selectedConcept(state);
   const concepts = state.snapshot.concepts;
@@ -347,13 +403,116 @@ export function ScenarioPractice({
     else queryRef.current?.focus({ preventScroll: true });
   }, [state.stage]);
 
+  useEffect(() => () => {
+    promptsRequestRef.current += 1;
+    promptsAbortRef.current?.abort();
+    promptsAbortRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    promptsRequestRef.current += 1;
+    promptsAbortRef.current?.abort();
+    promptsAbortRef.current = null;
+    setPrompts(null);
+    setPromptsLoading(false);
+    setPromptsLoadingMore(false);
+    setPromptsError(null);
+    setPromptsOpen(false);
+  }, [sourceId]);
+
+  useEffect(() => {
+    if (state.stage === 'setup') return;
+    promptsRequestRef.current += 1;
+    promptsAbortRef.current?.abort();
+    promptsAbortRef.current = null;
+    setPromptsLoading(false);
+    setPromptsLoadingMore(false);
+    setPromptsError(null);
+    setPromptsOpen(false);
+  }, [state.stage]);
+
+  const loadPrompts = async (mode: 'initial' | 'more' = 'initial') => {
+    if (!onLoadPrompts || promptsLoading || promptsLoadingMore) return;
+    const cursor = mode === 'more' ? prompts?.nextCursor ?? undefined : undefined;
+    if (mode === 'more' && !cursor) return;
+
+    promptsAbortRef.current?.abort();
+    const controller = new AbortController();
+    const requestId = promptsRequestRef.current + 1;
+    const requestSourceId = sourceId;
+    promptsRequestRef.current = requestId;
+    promptsAbortRef.current = controller;
+    if (mode === 'initial') {
+      setPromptsOpen(true);
+      setPrompts(null);
+      setPromptsLoading(true);
+    } else setPromptsLoadingMore(true);
+    setPromptsError(null);
+    try {
+      const response = await onLoadPrompts({ limit: 8, ...(cursor ? { cursor } : {}), signal: controller.signal });
+      if (requestId !== promptsRequestRef.current || promptsSourceIdRef.current !== requestSourceId || controller.signal.aborted) return;
+      if (!response || response.sourceId !== requestSourceId) throw new Error('已保存场景来自另一知识空间，请刷新后重试。');
+      if (mode === 'initial') {
+        setPrompts(response);
+      } else {
+        setPrompts((current) => {
+          if (!current) return response;
+          const seen = new Set(current.items.map((item) => item.eventId));
+          return {
+            ...response,
+            items: [...current.items, ...response.items.filter((item) => !seen.has(item.eventId))],
+          };
+        });
+      }
+    } catch (error: unknown) {
+      if (requestId !== promptsRequestRef.current || controller.signal.aborted || isAbortError(error)) return;
+      setPromptsError(error instanceof Error && error.message ? error.message : '已保存场景加载失败，请重试。');
+    } finally {
+      if (requestId !== promptsRequestRef.current) return;
+      if (mode === 'initial') setPromptsLoading(false);
+      else setPromptsLoadingMore(false);
+      if (promptsAbortRef.current === controller) promptsAbortRef.current = null;
+    }
+  };
+
+  const hasUnsavedDraft = hasUnsavedScenarioDraft(state);
+
   const close = () => {
-    if (!isBusy) onClose();
+    if (isBusy) return;
+    if (hasUnsavedDraft && typeof window !== 'undefined'
+      && !window.confirm('当前场景或回答尚未保存，关闭会丢失输入。确定关闭吗？')) return;
+    onClose();
   };
 
   const changeScenario = (event: ChangeEvent<HTMLTextAreaElement>) => {
     if (state.stage !== 'setup') return;
     setState((current) => ({ ...current, scenario: event.target.value, validationError: null, saveError: null }));
+  };
+
+  const selectPrompt = (item: ScenarioPrompts['items'][number]) => {
+    setState((current) => updateDraft(current, {
+      scenario: item.scenario,
+      scenarioRevisit: true,
+      confidence: null,
+      confidenceAt: null,
+      conceptId: null,
+      answer: '',
+      applicability: '',
+      cue: 'unknown',
+      outcome: 'unverified',
+      basis: 'unknown',
+      exposure: 'unknown',
+    }));
+    setConceptQuery('');
+    setPromptsOpen(false);
+    setPromptsError(null);
+  };
+
+  const startNewScenario = () => {
+    if (state.stage !== 'setup') return;
+    setState((current) => updateDraft(current, { scenario: '', scenarioRevisit: false, confidence: null, confidenceAt: null }));
+    setPromptsOpen(false);
+    setPromptsError(null);
   };
 
   const start = () => {
@@ -376,8 +535,10 @@ export function ScenarioPractice({
     setConceptQuery(next.title);
   };
 
-  const save = async () => {
-    if (isBusy) return;
+  const save = async (continueToApplication = false) => {
+    if (isBusy || savingRef.current || continuingRef.current) return;
+    if (!continueToApplication && state.observationSaved) return;
+    if (continueToApplication && !onContinueApplication) return;
     const error = state.submittedRequest ? null : validateScenarioPractice(state);
     if (error) {
       setState((current) => ({ ...current, validationError: error }));
@@ -385,16 +546,28 @@ export function ScenarioPractice({
     }
     const request = state.submittedRequest ?? buildScenarioObservationRequest(state);
     if (!state.submittedRequest) setState((current) => ({ ...current, submittedRequest: request, validationError: null, saveError: null }));
+    savingRef.current = true;
+    continuingRef.current = continueToApplication;
     setSaving(true);
+    setContinuing(continueToApplication);
+    setContinueError(null);
     try {
-      const saved = await onSave(request);
-      if (saved) onClose();
-      else setState((current) => ({ ...current, submittedRequest: request, saveError: '记录没有确认写入，请检查连接后重试。' }));
-    } catch (error: unknown) {
-      const message = error instanceof Error && error.message ? error.message : '记录没有确认写入，请检查连接后重试。';
-      setState((current) => ({ ...current, submittedRequest: request, saveError: message }));
+      const result = await saveScenarioRequest(request, { onSave, onContinueApplication }, {
+        observationSaved: state.observationSaved,
+        continueToApplication,
+      });
+      if (result.saved) {
+        setState((current) => ({ ...current, submittedRequest: request, observationSaved: true, saveError: null }));
+        if (result.continuationError) setContinueError(result.continuationError);
+        else if (!continueToApplication || result.continued) onClose();
+      } else {
+        setState((current) => ({ ...current, submittedRequest: request, observationSaved: false, saveError: result.saveError ?? '记录尚未确认写入，请检查连接后重试。' }));
+      }
     } finally {
+      savingRef.current = false;
+      continuingRef.current = false;
       setSaving(false);
+      setContinuing(false);
     }
   };
 
@@ -429,11 +602,33 @@ export function ScenarioPractice({
 
         {state.stage === 'setup' ? (
           <section className="scenario-practice-body" aria-labelledby={titleId}>
-            <p className="scenario-practice-intro">写下一个你正在处理的业务、研究或工作场景。之后先只看场景作答，系统会在提交后让你检索可能适用的概念。</p>
+            <p className="scenario-practice-intro">写下一个你正在处理的业务、研究或工作场景，也可以回访已保存的场景。之后先只看场景作答，系统会在提交后让你检索可能适用的概念。</p>
+            {onLoadPrompts || state.scenarioRevisit ? <div className="scenario-prompt-toolbar">
+              {onLoadPrompts ? <button type="button" className="scenario-button secondary" onClick={() => {
+                const nextOpen = !promptsOpen;
+                setPromptsOpen(nextOpen);
+                if (nextOpen && !prompts && !promptsLoading) void loadPrompts('initial');
+              }} disabled={isBusy || promptsLoading}>{promptsOpen ? '收起已保存场景' : '回访已保存场景'}</button> : null}
+              {state.scenarioRevisit ? <button type="button" className="scenario-button quiet" onClick={startNewScenario} disabled={isBusy}>新场景</button> : null}
+            </div> : null}
+            {promptsOpen && onLoadPrompts ? <div className="scenario-prompts" aria-label="已保存场景">
+              {promptsLoading ? <p className="scenario-prompts-status" role="status">正在加载已保存场景…</p> : null}
+              {!promptsLoading && promptsError ? <div className="scenario-prompts-error" role="alert"><span>{promptsError}</span><button type="button" className="scenario-button quiet" onClick={() => void loadPrompts('initial')}>重试</button></div> : null}
+              {!promptsLoading && !promptsError && prompts && prompts.items.length === 0 ? <p className="scenario-prompts-status">还没有可回访的已保存场景。</p> : null}
+              {!promptsLoading && !promptsError && prompts?.items.length ? <>
+                <p className="scenario-prompts-note">列表仅提供场景文字和时间，不显示旧概念、回答或核对结果。题面本身可能含已有线索。</p>
+                <div className="scenario-prompts-list" role="listbox" aria-label="选择一个已保存场景">
+                  {prompts.items.map((item) => <button type="button" role="option" className="scenario-prompt-option" key={item.eventId} onClick={() => selectPrompt(item)}>
+                    <span>{item.scenario}</span><small>{formatPromptDate(item.observedAt)}</small>
+                  </button>)}
+                </div>
+                {prompts.nextCursor ? <button type="button" className="scenario-button quiet scenario-prompts-more" onClick={() => void loadPrompts('more')} disabled={isBusy || promptsLoadingMore}>{promptsLoadingMore ? '加载中…' : '加载更多场景'}</button> : null}
+              </> : null}
+            </div> : null}
             <label className="scenario-practice-field" htmlFor={scenarioId}>
-              <span>场景描述</span>
+              <span>{state.scenarioRevisit ? '场景描述 · 同场景回访' : '场景描述'}</span>
               <textarea id={scenarioId} ref={scenarioRef} value={state.scenario} maxLength={SCENARIO_MAX_LENGTH} onChange={changeScenario} placeholder="例如：需要为一个多代理系统设计负责意图识别、规则校验和上下文记忆的 orchestrator……" />
-              <small>{state.scenario.length} / {SCENARIO_MAX_LENGTH}</small>
+              <small>{state.scenario.length} / {SCENARIO_MAX_LENGTH}{state.scenarioRevisit ? ' · 可编辑为同一场景的改写；不代表新场景迁移能力' : ''}</small>
             </label>
             <label className="scenario-practice-field scenario-confidence" htmlFor={confidenceId}>
               <span>开始前的信心</span>
@@ -472,6 +667,7 @@ export function ScenarioPractice({
             <div className="scenario-feedback-columns">
               <div className="scenario-feedback-main">
                 <p className="scenario-feedback-notice">请核对原始回答是否已想起该概念并说明适用理由；核对后新发现的概念不算这次独立想起。</p>
+                {state.scenarioRevisit ? <p className="scenario-revisit-note" role="status">同场景回访：这次结果用于和此前同一场景对照，不代表新场景迁移能力。</p> : null}
                 <div className="scenario-answer-echo"><span>场景</span><p>{state.scenario}</p></div>
                 <div className="scenario-answer-echo"><span>你的回答</span><p>{state.answer || '（空白回答）'}</p></div>
 
@@ -506,13 +702,17 @@ export function ScenarioPractice({
                 <label className="scenario-practice-field" htmlFor={exposureId}><span>提交前是否看过资料</span><select id={exposureId} value={state.exposure} disabled={Boolean(state.submittedRequest) || isBusy} onChange={(event) => setState((current) => updateDraft(current, { exposure: event.target.value as Exposure }))}>{(Object.keys(EXPOSURE_LABELS) as Exposure[]).map((key) => <option key={key} value={key}>{EXPOSURE_LABELS[key]}</option>)}</select>{concept && state.sourceViewedBefore[concept.id] ? <small>该概念在练习开始前已被查看，保存时会按“看过”记录。</small> : null}</label>
                 {state.validationError ? <p className="scenario-practice-error" role="alert">{state.validationError}</p> : null}
                 {state.saveError ? <p className="scenario-practice-error" role="alert">{state.saveError}</p> : null}
+                {continueError ? <p className="scenario-practice-error" role="alert">{continueError}</p> : null}
               </aside>
             </div>
             <div className="scenario-practice-actions">
-              <button type="button" className="scenario-button secondary" onClick={close} disabled={isBusy}>取消，不保存</button>
-              <button type="button" className="scenario-button primary" onClick={() => void save()} disabled={isBusy || !concept}>{isBusy ? '保存中…' : state.submittedRequest ? '重试保存' : '保存这次场景观察'}</button>
+              <button type="button" className="scenario-button secondary" onClick={close} disabled={isBusy}>{state.observationSaved ? '关闭（观察已保留）' : '取消，不保存'}</button>
+              {onContinueApplication ? <button type="button" className="scenario-button secondary" onClick={() => void save(true)} disabled={isBusy || !concept}>
+                {continuing ? '打开应用 / 总结中…' : state.observationSaved ? '继续写应用 / 总结' : '保存观察并写应用 / 总结'}
+              </button> : null}
+              <button type="button" className="scenario-button primary" onClick={() => void save()} disabled={isBusy || !concept || state.observationSaved}>{isBusy ? '保存中…' : state.observationSaved ? '观察已保留' : state.submittedRequest ? '重试保存' : '保存这次场景观察'}</button>
             </div>
-            <p className="scenario-practice-footnote">这条记录描述一次场景调用表现，不会把主观自评直接当作客观记忆强度。</p>
+            <p className="scenario-practice-footnote">这条记录描述一次场景调用表现，不会把主观自评直接当作客观记忆强度。应用 / 总结入口只会预填学习总结，实际应用请另行选择并确认。</p>
           </section>
         ) : null}
       </div>

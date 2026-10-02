@@ -47,3 +47,16 @@ test('summary shows sample counts, keeps self-check limits and empty state visib
   assert.match(empty, /等待事前信心/);
   assert.doesNotMatch(empty, /NaN|Infinity/);
 });
+
+test('same-scenario revisits remain prediction evidence with explicit counts, not transfer scores', () => {
+  const events = [observation(), observation({ scenarioRevisit: true }), observation({ scenarioRevisit: true, cue: 'lookup' })];
+  const before = structuredClone(events);
+  const summary = summarizeLearning(events);
+  assert.equal(summary.scenario.total, 3);
+  assert.equal(summary.scenario.revisited, 2);
+  assert.equal(summary.calibration.scenario.count, 2);
+  assert.deepEqual(events, before);
+  const html = renderToStaticMarkup(createElement(LearningSummaryPanel, { summary }));
+  assert.match(html, /同场景回访 2 次/);
+  assert.match(html, /不代表新场景迁移能力/);
+});

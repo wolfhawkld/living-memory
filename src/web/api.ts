@@ -14,6 +14,7 @@ import { createSessionRecovery, type LocalSession } from './session-recovery';
 import { inspectLayout } from '../shared/layout';
 import type { AccountUser } from '../shared/accounts';
 import type { LearningOverview } from '../shared/learning-overview';
+import type { ScenarioPrompts } from '../shared/scenario-prompts';
 import type { CorrectionRequest } from '../shared/corrections';
 import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
@@ -507,6 +508,14 @@ export const api = {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
     return requestJson<LearningOverview>('/learning-overview', {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal,
+    });
+  },
+  getScenarioPrompts: (sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) => {
+    if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
+    const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
+    if (options.cursor) params.set('cursor', options.cursor);
+    return requestJson<ScenarioPrompts>(`/scenario-prompts?${params}`, {
+      headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
     });
   },
   getConceptHistory: (conceptId: string, sourceId: string, options: { limit?: number; cursor?: string; applicationEventId?: string; signal?: AbortSignal } = {}) => {

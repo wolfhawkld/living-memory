@@ -56,6 +56,7 @@ import { DAY_MS, MODEL_VERSION } from '../shared/types.js';
 import { decayAt, isValidInstant, projectMemory } from '../core/time-model.js';
 import { summarizeLearning } from '../core/learning-evidence.js';
 import { buildLearningProgress } from '../core/learning-progress.js';
+import { buildScenarioPromptPage, type ScenarioPromptCursor } from '../core/scenario-prompts.js';
 import { buildImportPlan, type PreparedConfig, type PreparedImport } from './import-plan.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 7;
@@ -302,8 +303,13 @@ function normalizeLearningEvidence(value: unknown, observedAt?: string): Learnin
       throw new StoreError('INVALID_LEARNING', 'scenario 任务必须包含不超过 4000 个字符的场景描述。');
     }
     scenario = record.scenario.trim();
+    if (record.scenarioRevisit !== undefined && record.scenarioRevisit !== true) {
+      throw new StoreError('INVALID_LEARNING', 'scenarioRevisit 只能是 scenario 任务中的 true。');
+    }
   } else if (record.scenario !== undefined) {
     throw new StoreError('INVALID_LEARNING', 'concept 任务不能携带 scenario。');
+  } else if (record.scenarioRevisit !== undefined) {
+    throw new StoreError('INVALID_LEARNING', 'scenarioRevisit 只能用于 scenario 任务，并且必须为 true。');
   }
 
   let applicability: string | undefined;
@@ -321,6 +327,7 @@ function normalizeLearningEvidence(value: unknown, observedAt?: string): Learnin
   return {
     task: record.task,
     ...(scenario !== undefined ? { scenario } : {}),
+    ...(record.scenarioRevisit === true ? { scenarioRevisit: true as const } : {}),
     ...(applicability !== undefined ? { applicability } : {}),
     confidence: confidence as number | null,
     confidenceAt,
@@ -463,6 +470,49 @@ function decodeHistoryCursor(value: string): ConceptHistoryCursor {
     eventAt: new Date(Date.parse(eventAt)).toISOString(),
     recordedAt: new Date(Date.parse(recordedAt)).toISOString(),
     eventId,
+  };
+}
+
+interface ScenarioPromptStoreCursor extends ScenarioPromptCursor {
+  namespace: string;
+}
+
+function invalidScenarioPromptCursor(): never {
+  throw new StoreError('INVALID_SCENARIO_PROMPTS_CURSOR', '场景回访分页游标无效，请重新读取场景。');
+}
+
+function encodeScenarioPromptCursor(cursor: ScenarioPromptStoreCursor): string {
+  return Buffer.from(JSON.stringify({
+    version: 1,
+    namespace: cursor.namespace,
+    observedAt: cursor.observedAt,
+    recordedAt: cursor.recordedAt,
+    eventId: cursor.eventId,
+  }), 'utf8').toString('base64url');
+}
+
+function decodeScenarioPromptCursor(value: string): ScenarioPromptStoreCursor {
+  if (!/^[A-Za-z0-9_-]{1,2048}$/.test(value)) invalidScenarioPromptCursor();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+  } catch {
+    invalidScenarioPromptCursor();
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) invalidScenarioPromptCursor();
+  const record = parsed as Record<string, unknown>;
+  if (record.version !== 1
+      || typeof record.namespace !== 'string' || !record.namespace.trim()
+      || typeof record.eventId !== 'string' || !EVENT_ID_PATTERN.test(record.eventId)
+      || typeof record.observedAt !== 'string' || !isValidInstant(record.observedAt)
+      || typeof record.recordedAt !== 'string' || !isValidInstant(record.recordedAt)) {
+    invalidScenarioPromptCursor();
+  }
+  return {
+    namespace: record.namespace,
+    observedAt: new Date(Date.parse(record.observedAt as string)).toISOString(),
+    recordedAt: new Date(Date.parse(record.recordedAt as string)).toISOString(),
+    eventId: record.eventId,
   };
 }
 
@@ -1157,6 +1207,25 @@ export class Store {
         ...(learning ? { learning } : {}),
       };
     });
+  }
+
+  /**
+   * Return previously recorded scenario prompts for the current source index.
+   * The source revision is intentionally not part of this filter: an old
+   * scenario may be useful for practising the current version of a concept.
+   */
+  getScenarioPrompts(conceptIds: ReadonlySet<string>, limit: number, rawCursor?: string): {
+    items: Array<{ eventId: string; scenario: string; observedAt: string }>;
+    total: number;
+    nextCursor: string | null;
+  } {
+    const cursor = rawCursor === undefined ? undefined : decodeScenarioPromptCursor(rawCursor);
+    if (cursor && cursor.namespace !== this.namespace) invalidScenarioPromptCursor();
+    const page = buildScenarioPromptPage(this.getObservations(), conceptIds, limit, cursor);
+    const nextCursor = page.hasMore && page.last
+      ? encodeScenarioPromptCursor({ namespace: this.namespace, ...page.last })
+      : null;
+    return { items: page.items, total: page.total, nextCursor };
   }
 
   getRetentions(): RetentionEvent[] {

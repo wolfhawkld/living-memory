@@ -174,3 +174,15 @@ test('single and empty groups are insufficient, and projection does not mutate i
   assert.deepEqual(empty.tasks.concept, { total: 0, previous: null, latest: null, intervalDays: null, conditions: 'insufficient' });
   assert.deepEqual(empty.tasks.scenario, { total: 0, previous: null, latest: null, intervalDays: null, conditions: 'insufficient' });
 });
+
+test('a marked scenario revisit is retained as metadata and changes the reported comparison condition', () => {
+  const events = [
+    observation({ eventId: 'first', observedAt: '2026-09-10T00:00:00Z' }, { task: 'scenario' }),
+    observation({ eventId: 'revisit', observedAt: '2026-09-20T00:00:00Z' }, { task: 'scenario', scenarioRevisit: true }),
+  ];
+  const result = buildLearningProgress({ conceptId: 'concept-a', sourceRevision: 'rev-2', observations: events, asOf: AS_OF });
+  assert.equal(result.tasks.scenario.conditions, 'different');
+  assert.equal(result.tasks.scenario.latest?.scenarioRevisit, true);
+  assert.equal(result.tasks.scenario.previous?.scenarioRevisit, undefined);
+  assert.doesNotMatch(JSON.stringify(result), /private answer|private scenario text|private applicability text/);
+});

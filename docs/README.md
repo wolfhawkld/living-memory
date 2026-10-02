@@ -1,6 +1,6 @@
 # Living Memory 文档导航
 
-更新：2026-10-01。当前使用从[新人运行指南](development/first-run.md)开始，项目概览见[仓库首页](../README.md)。这里保留功能、设计、研究和历史入口；有日期的测试数量与待实现描述只反映对应阶段，不代表今天的完整状态。
+更新：2026-10-02。当前使用从[新人运行指南](development/first-run.md)开始，项目概览见[仓库首页](../README.md)。这里保留功能、设计、研究和历史入口；有日期的测试数量与待实现描述只反映对应阶段，不代表今天的完整状态。
 
 ## 快速开始
 
@@ -26,6 +26,7 @@
 - [少量复习入口](development/brief-review.md)：从当前领域按时间状态推荐 3/5 个概念，复用回忆、核对与信心记录；可跳过、结束，单独确认重温才更新时间起点。
 - [复习安排与中断续做](development/review-arrangements.md)：节点重点/暂缓、跨领域每日预算、当前浏览器自动保存作答与暂停续做；恢复时重新核对资料和时间起点。
 - [场景调用、信心校准与长期保持](development/scenario-confidence-retention.md)：场景调用与事前信心记录、核对结果比较、本人固定保持和手动恢复衰减。
+- [场景回访与总结交接](development/scenario-revisit.md)：仅以旧工作场景题面再次作答，标明同场景回访；保存观察后主动整理成可编辑总结，原答与实际应用判断分别保留。
 - [逐概念学习历史](development/concept-history.md)：查看重温、补记与回忆观察，区分当前起点、旧版本、冻结观察值和待同步记录。
 - [实际应用与总结记录](development/application-records.md)：从节点保存使用场景、结果、局限与 insight，在学习历史中回看；预览复制选定的 KG 整理材料，保存不改记忆时间或回忆评分。
 - [知识薄弱点总览](development/learning-overview.md)：跨概念查看最近回忆困难、场景待核对线索和信心对照，按领域筛选并跳转节点；明确当前版本、样本数及缺少证据，不生成记忆能力分数。
@@ -42,6 +43,8 @@
 - [CLI 与 KG 日常触发](development/cli-and-kg-triggers.md)：查询、明确确认重温、重试、Agent 收尾钩子与页面变化通知。
 
 ## 路线、主题与验证进度
+
+- [核心记忆流程整体 goal（2026-10-02）](planning/core-workflow-goal-2026-10-02.md)：本轮实施范围、自动验证与必须由本人完成的真实场景 / 延迟回忆验收。
 
 - [开源协作准备与 TODO（2026-09-27）](planning/open-source-readiness-2026-09-27.md)：开源任务、已完成的运行/CI/文档/内容检查与后续协作准备。
 - [本地 Web 预览发布清单](releases/local-web-preview.md)：本轮集成范围、验证边界、数据备份与已完成的发布清单。

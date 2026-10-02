@@ -114,6 +114,16 @@ test('time preview explicitly keeps the real saved observations', () => {
   assert.match(html, /当前为时间预览，以下仍为真实学习记录/);
 });
 
+test('scenario revisit labels remain visible without exposing answers or claiming novelty', () => {
+  const html = render(progress({ tasks: {
+    concept: { total: 0, previous: null, latest: null, intervalDays: null, conditions: 'insufficient' },
+    scenario: { total: 2, previous: point(), latest: point({ scenarioRevisit: true }), intervalDays: 1, conditions: 'different' },
+  } }));
+  assert.match(html, /同场景回访/);
+  assert.match(html, /未标记回访/);
+  assert.doesNotMatch(html, /首次场景|新场景成功|private-event-id/);
+});
+
 test('same-time intervals and legacy missing metadata remain readable', () => {
   const html = render(progress({
     tasks: {

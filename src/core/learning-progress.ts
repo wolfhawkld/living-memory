@@ -96,6 +96,7 @@ function pointOf({ observation, observedTimestamp }: TimedObservation): Learning
     confidence: confidenceOf(observation, observedTimestamp),
     outcome: validOutcome(evidence?.outcome),
     basis: validBasis(evidence?.basis),
+    ...(evidence?.task === 'scenario' && evidence.scenarioRevisit ? { scenarioRevisit: true as const } : {}),
     elapsedDays: observation.elapsedDays,
     halfLifeDays: observation.halfLifeDays,
     configRevision: observation.configRevision,
@@ -124,7 +125,8 @@ function conditionsOf(task: Task, latest: LearningProgressPoint | null, previous
   const sameCue = latest.cue === previous.cue;
   const sameExposure = latestExposure === previousExposure;
   const sameBasis = task !== 'scenario' || latest.basis === previous.basis;
-  return sameCue && sameExposure && sameBasis ? 'same' : 'different';
+  const sameRevisit = task !== 'scenario' || latest.scenarioRevisit === previous.scenarioRevisit;
+  return sameCue && sameExposure && sameBasis && sameRevisit ? 'same' : 'different';
 }
 
 function pairOf(task: Task, records: readonly TimedObservation[]): LearningProgressPair {

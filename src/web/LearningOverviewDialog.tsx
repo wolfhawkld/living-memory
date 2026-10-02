@@ -109,6 +109,7 @@ function latestScenario(item: LearningOverviewItem): ReactElement {
   return <>
     <strong>{OUTCOME_LABELS[latest.outcome]} · {CUE_LABELS[latest.cue]}</strong>
     <small>{formatDate(latest.observedAt)} · {latest.observedExposure ? '已查看资料' : EXPOSURE_LABELS[latest.exposure]} · 共 {item.scenario.total} 次</small>
+    {latest.scenarioRevisit ? <small>最近一次为同场景回访</small> : null}
   </>;
 }
 
@@ -249,6 +250,7 @@ export function LearningOverviewDialog({
           <p>仅统计已同步的学习证据与应用 / 总结元数据；不包含正文、业务场景、答案或待同步记录。</p>
           <p>当前资料版本 · 数据截至 {dataVersion} · 待同步记录：{Number.isFinite(pendingCount) && pendingCount > 0 ? `${Math.floor(pendingCount)} 条（本总览未包含）` : '0 条（本总览未包含）'}</p>
           <p>旧版本记录仅保留在计数中，不进入当前版本统计。百分比表示已核对结果，不是记忆率；信心对照来自自报核对，样本少时不推断稳定能力，也不生成综合评分。</p>
+          <p>场景统计可以包含同场景回访，不能据此认定能迁移到新的工作场景。</p>
         </div>}
 
         <div className="learning-overview-toolbar" aria-label="总览筛选">

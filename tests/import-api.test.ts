@@ -144,6 +144,53 @@ test('import preview is read-only; moved roots map by path/version, restore atom
   } finally { await donor.stop(); await target.stop(); donor.cleanup(); target.cleanup(); }
 });
 
+test('export, preview, and commit preserve the scenario revisit marker across isolated source namespaces', async () => {
+  const donor = await runningApp();
+  const target = await runningApp();
+  try {
+    const donorSession = await session(donor);
+    const targetSession = await session(target);
+    const donorSnapshot = (await donor.request('/api/snapshot?scope=all')).json<Snapshot>();
+    const donorConcept = donorSnapshot.concepts[0];
+    const observation = {
+      eventId: 'scenario-revisit-import', conceptId: donorConcept.id, sourceRevision: donorConcept.source.revision,
+      observedAt: '2026-01-01T00:00:00.000Z', configRevision: donorSnapshot.config.revision, anchorEventId: null,
+      answer: 'PRIVATE IMPORT ANSWER', rating: 'blank', exposure: 'unexposed', observedExposure: false,
+      learning: {
+        task: 'scenario', scenario: 'PRIVATE IMPORT SCENARIO', scenarioRevisit: true,
+        confidence: null, confidenceAt: null, cue: 'unknown', outcome: 'unverified', basis: 'unknown',
+      },
+    };
+    assert.equal((await donor.request('/api/observations', { method: 'POST', headers: headers(donorSession), body: observation })).status, 201);
+    const exported = (await donor.request('/api/export')).json<ExportData>();
+    assert.equal(exported.observations[0]?.learning?.scenarioRevisit, true);
+
+    const previewResponse = await target.request('/api/import/preview', {
+      method: 'POST', headers: headers(targetSession), body: { data: exported, options: DEFAULT_IMPORT_OPTIONS },
+    });
+    assert.equal(previewResponse.status, 200, previewResponse.body);
+    const preview = previewResponse.json<ImportPreview>();
+    assert.equal(preview.canImport, true, JSON.stringify(preview.issues));
+    assert.equal(preview.counts.added.observations, 1);
+    const commitRequest: ImportCommitRequest = {
+      data: exported, options: DEFAULT_IMPORT_OPTIONS, previewToken: preview.token,
+      importId: 'scenario-revisit-import-restore', confirmed: true,
+    };
+    const committed = await target.request('/api/import/commit', {
+      method: 'POST', headers: headers(targetSession), body: commitRequest,
+    });
+    assert.equal(committed.status, 201, committed.body);
+    assert.equal(committed.json<ImportReceipt>().counts.added.observations, 1);
+    const restored = (await target.request('/api/export')).json<ExportData>();
+    assert.equal(restored.observations.find((event) => event.eventId === observation.eventId)?.learning?.scenarioRevisit, true);
+    const prompts = await target.request('/api/scenario-prompts', { headers: { 'x-lm-source-id': targetSession.sourceId } });
+    assert.equal(prompts.status, 200, prompts.body);
+    assert.deepEqual(prompts.json<{ items: Array<{ eventId: string; scenario: string }> }>().items, [{
+      eventId: observation.eventId, scenario: observation.learning.scenario, observedAt: observation.observedAt,
+    }]);
+  } finally { await donor.stop(); await target.stop(); donor.cleanup(); target.cleanup(); }
+});
+
 test('import requires current account/source/token, validates body, and rejects stale preview without writes', async () => {
   const client = await runningApp();
   try {

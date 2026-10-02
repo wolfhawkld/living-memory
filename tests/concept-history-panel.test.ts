@@ -47,6 +47,17 @@ function observation(overrides: Partial<Observation> = {}): Observation {
   };
 }
 
+test('scenario revisit history is labelled while its prompt and original answer remain folded', () => {
+  const event = observation({ learning: {
+    task: 'scenario', scenario: 'PRIVATE_REVISIT_PROMPT', applicability: 'PRIVATE_REVISIT_CHECK',
+    scenarioRevisit: true, confidence: null, confidenceAt: null, cue: 'unknown', outcome: 'unverified', basis: 'unknown',
+  } });
+  const html = panel({ history: history({ entries: [{ type: 'observation', event }] }) });
+  assert.match(html, /同场景回访/);
+  assert.match(html, /不代表新场景迁移/);
+  assert.doesNotMatch(html, /PRIVATE_REVISIT_PROMPT|PRIVATE_REVISIT_CHECK|秘密的原始回答/);
+});
+
 function state(overrides: Partial<MemoryState> = {}): MemoryState {
   return {
     conceptId: 'concept-1',

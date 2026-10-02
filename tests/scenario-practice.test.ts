@@ -7,6 +7,7 @@ import {
   buildScenarioObservationRequest,
   createScenarioPracticeState,
   freezeScenarioSnapshot,
+  hasUnsavedScenarioDraft,
   ScenarioPractice,
   startScenarioPractice,
   submitScenarioAnswer,
@@ -107,6 +108,43 @@ test('scenario submission preserves blank recall and freezes timing, anchor and 
   assert.equal(buildScenarioObservationRequest(blank).rating, 'blank');
 });
 
+test('a saved prompt seeds only the scenario and marks a same-scenario revisit', () => {
+  const state = createScenarioPracticeState(snapshot, { [concept.id]: true }, '已保存的合成工作场景', true);
+  assert.equal(state.stage, 'setup');
+  assert.equal(state.scenario, '已保存的合成工作场景');
+  assert.equal(state.scenarioRevisit, true);
+  assert.equal(state.confidence, null);
+  assert.equal(state.answer, '');
+  assert.equal(state.conceptId, null);
+  assert.equal(state.applicability, '');
+
+  let feedback = startScenarioPractice(state, '2026-09-22T10:00:00.000Z');
+  feedback = submitScenarioAnswer(feedback, '2026-09-22T10:01:00.000Z', 'scenario-revisit-1');
+  feedback = {
+    ...feedback,
+    conceptId: concept.id,
+    answer: '重新写下的回答',
+    applicability: '重新核对的适用性',
+    cue: 'independent',
+    outcome: 'partial',
+    basis: 'self-check',
+  };
+  const request = buildScenarioObservationRequest(feedback);
+  assert.equal(request.learning?.scenarioRevisit, true);
+  assert.equal(request.eventId, 'scenario-revisit-1');
+  assert.equal(request.answer, '重新写下的回答');
+  assert.equal(request.learning?.scenario, '已保存的合成工作场景');
+});
+
+test('a failed frozen request remains a discardable draft until it is retained', () => {
+  const state = feedbackState();
+  const request = buildScenarioObservationRequest(state);
+  const failed = { ...state, submittedRequest: request, observationSaved: false };
+  const retained = { ...failed, observationSaved: true };
+  assert.equal(hasUnsavedScenarioDraft(failed), true);
+  assert.equal(hasUnsavedScenarioDraft(retained), false);
+});
+
 test('an anchor from an older source revision is not sent as the current observation anchor', () => {
   const oldRevisionSnapshot = structuredClone(snapshot);
   oldRevisionSnapshot.states[concept.id].anchor = {
@@ -139,6 +177,28 @@ test('the setup stage does not leak concept choices or source summaries before t
 
   assert.match(html, /场景描述/);
   assert.match(html, /开始前的信心/);
+  assert.doesNotMatch(html, /布尔逻辑/);
+  assert.doesNotMatch(html, /用真值与逻辑联结词表达规则/);
+  assert.doesNotMatch(html, /搜索概念、别名或领域/);
+});
+
+test('a supplied revisit prompt stays in blind setup and does not expose concept material', () => {
+  const html = renderToStaticMarkup(createElement(ScenarioPractice, {
+    snapshot,
+    sourceId: 'source:test',
+    initialScenario: '已保存的业务场景提示',
+    onLoadPrompts: async () => ({ sourceId: 'source:test', asOf: '2026-09-22T00:00:00.000Z', items: [], total: 0, nextCursor: null }),
+    busy: false,
+    onClose: () => undefined,
+    onSave: async () => true,
+    onReadSource: () => undefined,
+    wasSourceViewed: () => false,
+  }));
+
+  assert.match(html, /回访已保存场景/);
+  assert.match(html, /新场景/);
+  assert.match(html, /已保存的业务场景提示/);
+  assert.match(html, /同场景回访/);
   assert.doesNotMatch(html, /布尔逻辑/);
   assert.doesNotMatch(html, /用真值与逻辑联结词表达规则/);
   assert.doesNotMatch(html, /搜索概念、别名或领域/);

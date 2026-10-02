@@ -5,6 +5,7 @@ export function LearningSummaryPanel({ summary }: { summary: LearningSummary | u
   return <section className="learning-summary" aria-label="场景调用与信心校准">
     <h3>场景调用与信心校准</h3>
     <p>当前资料版本 · 场景记录 {summary.scenario.total} 次</p>
+    {summary.scenario.revisited ? <p>其中同场景回访 {summary.scenario.revisited} 次，计数不代表新场景迁移能力。</p> : null}
     <dl className="learning-counts">
       <div><dt>独立想起并核对适用</dt><dd>{summary.scenario.independentSuccess}</dd></div>
       <div><dt>借助提示或查阅</dt><dd>{summary.scenario.assisted}</dd></div>
@@ -18,6 +19,6 @@ export function LearningSummaryPanel({ summary }: { summary: LearningSummary | u
           : <p>等待事前信心与明确的独立作答结果。</p>}
       </div>;
     })}
-    <p className="source-hint">结果由你核对，样本少时只作观察。部分成功、看过资料、借助提示及未核对的记录不进入信心比较；各项计数可能重叠。</p>
+    <p className="source-hint">结果由你核对，样本少时只作观察。部分成功、看过资料、借助提示及未核对的记录不进入信心比较；各项计数可能重叠。场景比较可包含同场景回访，只核对当次预测。</p>
   </section>;
 }
