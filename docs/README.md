@@ -49,6 +49,7 @@
 - [核心记忆流程整体 goal（2026-10-02）](planning/core-workflow-goal-2026-10-02.md)：本轮实施范围、自动验证与必须由本人完成的真实场景 / 延迟回忆验收。
 - [关键细节与概念辨别批量 goal（2026-10-02）](planning/practice-cards-goal-2026-10-02.md)：下一批核心功能及集中验收边界。
 - [场景卡与分阶段提示 goal（2026-10-02）](planning/scenario-cards-goal-2026-10-02.md)：人工场景与案例族、阶段原答和两项核对，承接 LM-011 的下一批范围。
+- [练习卡方向调整（2026-10-02）](planning/automatic-practice-backlog-2026-10-02.md)：暂缓手工维护，后续自动设计、选题及来源变化维护，本人少量确认。
 
 - [开源协作准备与 TODO（2026-09-27）](planning/open-source-readiness-2026-09-27.md)：开源任务、已完成的运行/CI/文档/内容检查与后续协作准备。
 - [本地 Web 预览发布清单](releases/local-web-preview.md)：本轮集成范围、验证边界、数据备份与已完成的发布清单。

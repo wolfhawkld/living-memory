@@ -52,9 +52,11 @@ npm start
 
 工作中没想起的概念，可以通过[场景回访](docs/development/scenario-revisit.md)再次先答后核对；同场景练熟不等于能迁移到新问题。核对后可主动进入应用 / 总结草稿，补充适用条件、局限和 insight。
 
-容易模糊的细节或相似概念的适用边界，可以编写[细节与辨别练习卡](docs/development/practice-cards.md)。问题、出处和参考答案由本人核对，先答后看；练习记录与整个概念解释的成绩独立，资料变化后先复核。
+已有的[细节与辨别练习卡](docs/development/practice-cards.md)支持人工维护问题、出处和参考答案，先答后看；练习记录与整个概念解释的成绩独立，资料变化后先复核。
 
-要练习从业务问题想到方法，可以维护[人工场景卡](docs/development/scenario-cards.md)：保留无提示原答，按需逐步查看结构或名称提示，分别核对候选召回和适用理由。同案例重练不代表已经能迁移到新问题。
+已有的[人工场景卡](docs/development/scenario-cards.md)保留无提示原答，按需逐步查看结构或名称提示，分别核对候选召回和适用理由。同案例重练不代表已经能迁移到新问题。
+
+项目当前反馈是手工练习卡维护负担较高，已暂缓把它作为日常主线；现有功能和记录保留。后续计划改为[自动设计与维护、少量确认](docs/planning/automatic-practice-backlog-2026-10-02.md)，自动化尚未实现。
 
 学习流程与证据边界见[个人记忆强化流程](docs/design/personal-memory-workflow.md)和[记忆研究汇总](docs/research/consolidated-findings.md)。
 
