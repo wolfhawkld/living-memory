@@ -136,6 +136,7 @@ function safeMeta(value: string | null | undefined): string {
 }
 
 function CountSummary({ counts }: { counts: ImportCounts }): ReactElement {
+  const hasPractice = counts.practiceCards !== undefined || counts.practiceAttempts !== undefined;
   return <div className="import-data-count-grid" aria-label="导入影响统计">
     {EVENT_KINDS.map((kind) => <div className="import-data-count-card" key={kind}>
       <span>{EVENT_LABELS[kind]}</span>
@@ -145,6 +146,10 @@ function CountSummary({ counts }: { counts: ImportCounts }): ReactElement {
     <div className="import-data-count-card import-data-count-card-muted"><span>重复记录</span><strong>{finiteCount(counts.duplicates)}</strong><small>幂等跳过</small></div>
     <div className="import-data-count-card import-data-count-card-muted"><span>配置变化</span><strong>{finiteCount(counts.configurations)}</strong><small>模型 / 参数</small></div>
     <div className="import-data-count-card import-data-count-card-muted"><span>未关联概念</span><strong>{finiteCount(counts.unresolvedConcepts)}</strong><small>历史保留</small></div>
+    {hasPractice ? <>
+      <div className="import-data-count-card"><span>练习卡版本</span><strong>{finiteCount(counts.practiceCards)}</strong><small>新增</small></div>
+      <div className="import-data-count-card"><span>练习回答</span><strong>{finiteCount(counts.practiceAttempts)}</strong><small>新增</small></div>
+    </> : null}
   </div>;
 }
 

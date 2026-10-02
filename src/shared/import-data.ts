@@ -27,6 +27,9 @@ export interface ImportCounts {
   matchedConcepts: number;
   remappedConcepts: number;
   unresolvedConcepts: number;
+  /** Present only when the backup contains the additive practice section. */
+  practiceCards?: number;
+  practiceAttempts?: number;
 }
 export interface ImportPreview {
   sourceId: string;

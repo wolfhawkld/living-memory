@@ -10,6 +10,8 @@ import { applyIdentityBindings } from './identity-source.js';
 import { reviewDayKey, type ReviewPlanResponse, type ReviewPlanUpdate } from '../shared/review-plan.js';
 import { isValidInstant } from '../core/time-model.js';
 import { buildLearningOverview } from '../core/learning-overview.js';
+import { buildPracticeCards } from '../core/practice.js';
+import { parsePracticeCardRequest, parsePracticeAttemptRequest } from './practice-validation.js';
 import { sendConceptAttachment } from './attachments.js';
 import { loadKnowledgeGraph, KnowledgeSourceError, type KnowledgeSource } from './kg.js';
 import { createChangeFeed } from './changes.js';
@@ -535,6 +537,34 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       asOf: now().toISOString(),
       ...page,
     });
+  }));
+  app.get('/api/practice-cards', asyncRoute((req, res) => {
+    const { source, store } = contextOf(req);
+    res.set('Cache-Control', 'no-store').json({ sourceId: source.namespace, asOf: now().toISOString(),
+      items: buildPracticeCards(store.getPracticeData(), source.index.concepts) });
+  }));
+  app.get('/api/practice-cards/:cardId/history', asyncRoute((req, res) => {
+    const { source, store } = contextOf(req);
+    const cardId = req.params.cardId;
+    if (typeof cardId !== 'string' || !store.getPracticeCard(cardId)) {
+      throw new StoreError('PRACTICE_CARD_NOT_FOUND', '找不到当前知识空间的练习卡。', 404);
+    }
+    const data = store.getPracticeData();
+    res.set('Cache-Control', 'no-store').json({ sourceId: source.namespace, cardId,
+      cards: data.cards.filter((card) => card.cardId === cardId),
+      attempts: data.attempts.filter((attempt) => attempt.cardId === cardId) });
+  }));
+  app.post('/api/practice-cards', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
+    const receipt = store.addPracticeCard(parsePracticeCardRequest(req.body), source.index.concepts);
+    if (receipt.status === 'accepted') changes.publish('practice');
+    res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
+  }));
+  app.post('/api/practice-attempts', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
+    const receipt = store.addPracticeAttempt(parsePracticeAttemptRequest(req.body), source.index.concepts);
+    if (receipt.status === 'accepted') changes.publish('practice');
+    res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.get('/api/review-plan', asyncRoute((req, res) => {
     const { source, store } = contextOf(req);

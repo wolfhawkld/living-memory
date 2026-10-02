@@ -212,7 +212,7 @@ export interface WriteReceipt {
 export interface ChangeNotification {
   sourceId: string;
   revision: number;
-  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application' | 'correction' | 'review-plan' | 'import' | 'identity';
+  reason: 'connected' | 'source' | 'review' | 'observation' | 'config' | 'retention' | 'application' | 'correction' | 'review-plan' | 'import' | 'identity' | 'practice';
 }
 
 export interface LayoutPosition { x: number; y: number; z: number }
@@ -232,6 +232,8 @@ export interface ExportData {
   retentions?: RetentionEvent[];
   applications?: ApplicationRecord[];
   corrections?: import('./corrections.js').CorrectionEvent[];
+  /** Versioned private questions and answers; independent of concept recall scores. */
+  practice?: import('./practice.js').PracticeData;
   reviewPlan?: import('./review-plan.js').ReviewPlan;
   layout: Layout;
   /** Optional v1 additions for portable recovery; no account credentials or absolute root paths. */

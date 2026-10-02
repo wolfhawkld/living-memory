@@ -36,6 +36,14 @@ import type {
   CorrectionRequest,
   CorrectionStatus,
 } from '../shared/corrections.js';
+import type {
+  PracticeAttempt,
+  PracticeAttemptRequest,
+  PracticeCardEvent,
+  PracticeCardRequest,
+  PracticeData,
+  PracticeSource,
+} from '../shared/practice.js';
 import {
   DEFAULT_IMPORT_OPTIONS,
   type ImportCommitRequest,
@@ -58,6 +66,7 @@ import { summarizeLearning } from '../core/learning-evidence.js';
 import { buildLearningProgress } from '../core/learning-progress.js';
 import { buildScenarioPromptPage, type ScenarioPromptCursor } from '../core/scenario-prompts.js';
 import { buildImportPlan, type PreparedConfig, type PreparedImport } from './import-plan.js';
+import { parsePracticeAttemptRequest, parsePracticeCardRequest } from './practice-validation.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 7;
 const IDENTITY_DEFAULT_PREFERENCE: ConceptReviewPreference = { focus: false, deferUntil: null };
@@ -78,6 +87,8 @@ export interface StoredAnchor extends AnchorEvent {
 }
 
 export type StoreWriteResult = { status: 'accepted' | 'duplicate'; eventId: string };
+
+type PracticeEventKind = 'practice-card' | 'practice-attempt';
 
 interface ConceptHistoryCursor {
   namespace: string;
@@ -347,6 +358,27 @@ function parseStoredLearning(value: string | null): LearningEvidence | undefined
     // unreadable. The original observation remains available without it.
     return undefined;
   }
+}
+
+function parseStoredPracticeSources(value: string): PracticeSource[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new StoreError('PRACTICE_DATA_CORRUPT', '练习卡来源数据无效，请检查本地数据。', 500);
+  }
+  if (!Array.isArray(parsed)) throw new StoreError('PRACTICE_DATA_CORRUPT', '练习卡来源数据无效，请检查本地数据。', 500);
+  return parsed.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new StoreError('PRACTICE_DATA_CORRUPT', '练习卡来源数据无效，请检查本地数据。', 500);
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.conceptId !== 'string' || !record.conceptId
+        || typeof record.sourceRevision !== 'string' || !record.sourceRevision) {
+      throw new StoreError('PRACTICE_DATA_CORRUPT', '练习卡来源数据无效，请检查本地数据。', 500);
+    }
+    return { conceptId: record.conceptId, sourceRevision: record.sourceRevision };
+  });
 }
 
 function safeSqliteMessage(error: unknown): string {
@@ -627,6 +659,51 @@ export class Store {
         request_payload TEXT NOT NULL,
         PRIMARY KEY(namespace, event_id)
       );
+      CREATE TABLE IF NOT EXISTS practice_cards (
+        namespace TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        card_id TEXT NOT NULL,
+        previous_event_id TEXT,
+        occurred_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('detail', 'comparison')),
+        title TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        reference_answer TEXT NOT NULL,
+        reference_notes TEXT NOT NULL,
+        sources_json TEXT NOT NULL,
+        source_checked INTEGER NOT NULL CHECK(source_checked = 1),
+        paused INTEGER NOT NULL CHECK(paused IN (0, 1)),
+        request_payload TEXT NOT NULL,
+        PRIMARY KEY(namespace, event_id)
+      );
+      CREATE TABLE IF NOT EXISTS practice_attempts (
+        namespace TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        card_id TEXT NOT NULL,
+        card_event_id TEXT NOT NULL,
+        answered_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        confidence INTEGER,
+        confidence_at TEXT,
+        exposure TEXT NOT NULL CHECK(exposure IN ('unexposed', 'exposed', 'unknown')),
+        observed_exposure INTEGER NOT NULL CHECK(observed_exposure IN (0, 1)),
+        cue TEXT NOT NULL CHECK(cue IN ('independent', 'hinted', 'lookup', 'unknown')),
+        outcome TEXT NOT NULL CHECK(outcome IN ('success', 'partial', 'failure', 'unverified')),
+        check_notes TEXT NOT NULL,
+        request_payload TEXT NOT NULL,
+        PRIMARY KEY(namespace, event_id)
+      );
+      CREATE TABLE IF NOT EXISTS practice_card_sources (
+        namespace TEXT NOT NULL,
+        card_event_id TEXT NOT NULL,
+        card_id TEXT NOT NULL,
+        concept_id TEXT NOT NULL,
+        source_revision TEXT NOT NULL,
+        PRIMARY KEY(namespace, card_event_id, concept_id),
+        FOREIGN KEY(namespace, card_event_id) REFERENCES practice_cards(namespace, event_id) ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS layouts (
         namespace TEXT PRIMARY KEY,
         layout_json TEXT NOT NULL,
@@ -693,6 +770,12 @@ export class Store {
         ON corrections(namespace, application_event_id, occurred_at DESC, recorded_at DESC, event_id DESC);
       CREATE INDEX IF NOT EXISTS corrections_by_concept_history
         ON corrections(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
+      CREATE INDEX IF NOT EXISTS practice_cards_by_card
+        ON practice_cards(namespace, card_id, occurred_at, recorded_at, event_id);
+      CREATE INDEX IF NOT EXISTS practice_attempts_by_card
+        ON practice_attempts(namespace, card_id, answered_at, recorded_at, event_id);
+      CREATE INDEX IF NOT EXISTS practice_sources_by_concept
+        ON practice_card_sources(namespace, concept_id, card_event_id);
       CREATE INDEX IF NOT EXISTS identity_bindings_by_concept
         ON identity_bindings(namespace, concept_id, confirmed_at, operation_id);
     `);
@@ -767,7 +850,7 @@ export class Store {
     }
   }
 
-  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction'; payload: string } | null {
+  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | PracticeEventKind; payload: string } | null {
     const anchor = this.db.prepare('SELECT request_payload FROM anchors WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (anchor) return { kind: 'anchor', payload: anchor.request_payload };
     const observation = this.db.prepare('SELECT request_payload FROM observations WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
@@ -777,7 +860,11 @@ export class Store {
     const application = this.db.prepare('SELECT request_payload FROM applications WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (application) return { kind: 'application', payload: application.request_payload };
     const correction = this.db.prepare('SELECT request_payload FROM corrections WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    return correction ? { kind: 'correction', payload: correction.request_payload } : null;
+    if (correction) return { kind: 'correction', payload: correction.request_payload };
+    const card = this.db.prepare('SELECT request_payload FROM practice_cards WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
+    if (card) return { kind: 'practice-card', payload: card.request_payload };
+    const attempt = this.db.prepare('SELECT request_payload FROM practice_attempts WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
+    return attempt ? { kind: 'practice-attempt', payload: attempt.request_payload } : null;
   }
 
   hasEvent(eventId: string): boolean {
@@ -1005,6 +1092,418 @@ export class Store {
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
     return { status: 'accepted', eventId: request.eventId };
+  }
+
+  private practiceConceptMap(concepts: Concept[]): Map<string, Concept> {
+    if (!Array.isArray(concepts)) throw new StoreError('PRACTICE_SOURCE_MISSING', '当前知识源概念列表无效。', 409);
+    const result = new Map<string, Concept>();
+    for (const concept of concepts) {
+      if (!concept || typeof concept.id !== 'string' || !concept.id.trim()
+          || !concept.source || typeof concept.source.revision !== 'string') continue;
+      if (result.has(concept.id) && result.get(concept.id)?.source.revision !== concept.source.revision) {
+        throw new StoreError('PRACTICE_SOURCE_CONFLICT', `当前知识源包含重复且版本不同的概念 ${concept.id}。`, 409);
+      }
+      result.set(concept.id, concept);
+    }
+    return result;
+  }
+
+  private assertPracticeSourcesCurrent(sources: PracticeSource[], concepts: Concept[]): void {
+    const current = this.practiceConceptMap(concepts);
+    for (const source of sources) {
+      const concept = current.get(source.conceptId);
+      if (!concept) {
+        throw new StoreError('PRACTICE_SOURCE_MISSING', `练习卡引用的概念 ${source.conceptId} 已不在当前知识源中。`, 409);
+      }
+      if (concept.source.revision !== source.sourceRevision) {
+        throw new StoreError('PRACTICE_CARD_CONFLICT', `练习卡引用的概念 ${source.conceptId} 来源版本已变化，请重新核对后保存。`, 409);
+      }
+    }
+  }
+
+  private practiceCardFromRow(row: {
+    event_id: string;
+    card_id: string;
+    previous_event_id: string | null;
+    occurred_at: string;
+    recorded_at: string;
+    kind: 'detail' | 'comparison';
+    title: string;
+    prompt: string;
+    reference_answer: string;
+    reference_notes: string;
+    sources_json: string;
+    source_checked: number;
+    paused: number;
+  }): PracticeCardEvent {
+    return {
+      eventId: row.event_id,
+      cardId: row.card_id,
+      previousEventId: row.previous_event_id,
+      occurredAt: row.occurred_at,
+      recordedAt: row.recorded_at,
+      kind: row.kind,
+      title: row.title,
+      prompt: row.prompt,
+      referenceAnswer: row.reference_answer,
+      referenceNotes: row.reference_notes,
+      sources: parseStoredPracticeSources(row.sources_json),
+      sourceChecked: true,
+      paused: row.paused === 1,
+    };
+  }
+
+  private practiceAttemptFromRow(row: {
+    event_id: string;
+    card_id: string;
+    card_event_id: string;
+    answered_at: string;
+    recorded_at: string;
+    answer: string;
+    confidence: number | null;
+    confidence_at: string | null;
+    exposure: 'unexposed' | 'exposed' | 'unknown';
+    observed_exposure: number;
+    cue: 'independent' | 'hinted' | 'lookup' | 'unknown';
+    outcome: 'success' | 'partial' | 'failure' | 'unverified';
+    check_notes: string;
+  }): PracticeAttempt {
+    return {
+      eventId: row.event_id,
+      cardId: row.card_id,
+      cardEventId: row.card_event_id,
+      answeredAt: row.answered_at,
+      recordedAt: row.recorded_at,
+      answer: row.answer,
+      confidence: row.confidence,
+      confidenceAt: row.confidence_at,
+      exposure: row.exposure,
+      observedExposure: row.observed_exposure === 1,
+      cue: row.cue,
+      outcome: row.outcome,
+      checkNotes: row.check_notes,
+    };
+  }
+
+  private latestPracticeCardRow(cardId: string): {
+    event_id: string;
+    card_id: string;
+    previous_event_id: string | null;
+    occurred_at: string;
+    recorded_at: string;
+    kind: 'detail' | 'comparison';
+    title: string;
+    prompt: string;
+    reference_answer: string;
+    reference_notes: string;
+    sources_json: string;
+    source_checked: number;
+    paused: number;
+  } | undefined {
+    return this.db.prepare(`SELECT event_id, card_id, previous_event_id, occurred_at, recorded_at,
+      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, paused
+      FROM practice_cards WHERE namespace = ? AND card_id = ?
+      ORDER BY rowid DESC LIMIT 1`).get(this.namespace, cardId) as {
+        event_id: string;
+        card_id: string;
+        previous_event_id: string | null;
+        occurred_at: string;
+        recorded_at: string;
+        kind: 'detail' | 'comparison';
+        title: string;
+        prompt: string;
+        reference_answer: string;
+        reference_notes: string;
+        sources_json: string;
+        source_checked: number;
+        paused: number;
+      } | undefined;
+  }
+
+  /** Return the latest append-only revision of one private practice card. */
+  getPracticeCard(cardId: string): PracticeCardEvent | null {
+    if (typeof cardId !== 'string' || !cardId.trim()) return null;
+    const row = this.latestPracticeCardRow(cardId.trim());
+    return row ? this.practiceCardFromRow(row) : null;
+  }
+
+  /** Return private practice history without projecting it into recall evidence. */
+  getPracticeData(): PracticeData {
+    const cardRows = this.db.prepare(`SELECT event_id, card_id, previous_event_id, occurred_at, recorded_at,
+      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, paused
+      FROM practice_cards WHERE namespace = ?
+      ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{
+        event_id: string;
+        card_id: string;
+        previous_event_id: string | null;
+        occurred_at: string;
+        recorded_at: string;
+        kind: 'detail' | 'comparison';
+        title: string;
+        prompt: string;
+        reference_answer: string;
+        reference_notes: string;
+        sources_json: string;
+        source_checked: number;
+        paused: number;
+      }>;
+    const attemptRows = this.db.prepare(`SELECT event_id, card_id, card_event_id, answered_at, recorded_at,
+      answer, confidence, confidence_at, exposure, observed_exposure, cue, outcome, check_notes
+      FROM practice_attempts WHERE namespace = ?
+      ORDER BY answered_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{
+        event_id: string;
+        card_id: string;
+        card_event_id: string;
+        answered_at: string;
+        recorded_at: string;
+        answer: string;
+        confidence: number | null;
+        confidence_at: string | null;
+        exposure: 'unexposed' | 'exposed' | 'unknown';
+        observed_exposure: number;
+        cue: 'independent' | 'hinted' | 'lookup' | 'unknown';
+        outcome: 'success' | 'partial' | 'failure' | 'unverified';
+        check_notes: string;
+      }>;
+    return {
+      cards: cardRows.map((row) => this.practiceCardFromRow(row)),
+      attempts: attemptRows.map((row) => this.practiceAttemptFromRow(row)),
+    };
+  }
+
+  addPracticeCard(input: PracticeCardRequest, concepts: Concept[]): StoreWriteResult {
+    const request = parsePracticeCardRequest(input);
+    this.ensureEventId(request.eventId);
+    const requestPayload = canonicalJson(request);
+    const existing = this.findEvent(request.eventId);
+    if (existing) {
+      if (existing.kind !== 'practice-card' || existing.payload !== requestPayload) {
+        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+      }
+      return { status: 'duplicate', eventId: request.eventId };
+    }
+    this.assertPracticeSourcesCurrent(request.sources, concepts);
+    const now = this.now();
+    if (parseDate(request.occurredAt) > now.getTime()) {
+      throw new StoreError('FUTURE_PRACTICE_CARD', '练习卡发生时间不能晚于服务当前时间。');
+    }
+    const recordedAt = iso(now);
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      const concurrent = this.findEvent(request.eventId);
+      if (concurrent) {
+        if (concurrent.kind !== 'practice-card' || concurrent.payload !== requestPayload) {
+          throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        }
+        this.db.exec('COMMIT');
+        return { status: 'duplicate', eventId: request.eventId };
+      }
+      const tail = this.latestPracticeCardRow(request.cardId);
+      if (request.previousEventId === null) {
+        if (tail) throw new StoreError('PRACTICE_CARD_CONFLICT', '练习卡已存在当前尾记录，不能从头创建分叉。', 409);
+      } else {
+        if (!tail || tail.event_id !== request.previousEventId) {
+          throw new StoreError('PRACTICE_CARD_CONFLICT', '练习卡版本已变化，请以当前尾记录为前置版本重试。', 409);
+        }
+        if (parseDate(request.occurredAt) < parseDate(tail.occurred_at)) {
+          throw new StoreError('PRACTICE_CARD_CONFLICT', '新练习卡时间不能早于当前尾记录。', 409);
+        }
+      }
+      const sourcesJson = canonicalJson(request.sources);
+      this.db.prepare(`INSERT INTO practice_cards(
+        namespace, event_id, card_id, previous_event_id, occurred_at, recorded_at,
+        kind, title, prompt, reference_answer, reference_notes, sources_json,
+        source_checked, paused, request_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        this.namespace,
+        request.eventId,
+        request.cardId,
+        request.previousEventId,
+        request.occurredAt,
+        recordedAt,
+        request.kind,
+        request.title,
+        request.prompt,
+        request.referenceAnswer,
+        request.referenceNotes,
+        sourcesJson,
+        1,
+        request.paused ? 1 : 0,
+        requestPayload,
+      );
+      for (const source of request.sources) {
+        this.db.prepare(`INSERT INTO practice_card_sources(
+          namespace, card_event_id, card_id, concept_id, source_revision
+        ) VALUES (?, ?, ?, ?, ?)`).run(
+          this.namespace, request.eventId, request.cardId, source.conceptId, source.sourceRevision,
+        );
+      }
+      this.db.exec('COMMIT');
+      return { status: 'accepted', eventId: request.eventId };
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (error instanceof StoreError) throw error;
+      throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
+    }
+  }
+
+  addPracticeAttempt(input: PracticeAttemptRequest, concepts: Concept[]): StoreWriteResult {
+    const request = parsePracticeAttemptRequest(input);
+    this.ensureEventId(request.eventId);
+    const requestPayload = canonicalJson(request);
+    const existing = this.findEvent(request.eventId);
+    if (existing) {
+      if (existing.kind !== 'practice-attempt' || existing.payload !== requestPayload) {
+        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+      }
+      return { status: 'duplicate', eventId: request.eventId };
+    }
+    const now = this.now();
+    if (parseDate(request.answeredAt) > now.getTime()) {
+      throw new StoreError('FUTURE_PRACTICE_ATTEMPT', '答题时间不能晚于服务当前时间。');
+    }
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      const concurrent = this.findEvent(request.eventId);
+      if (concurrent) {
+        if (concurrent.kind !== 'practice-attempt' || concurrent.payload !== requestPayload) {
+          throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        }
+        this.db.exec('COMMIT');
+        return { status: 'duplicate', eventId: request.eventId };
+      }
+      const tailRow = this.latestPracticeCardRow(request.cardId);
+      if (!tailRow) throw new StoreError('PRACTICE_CARD_NOT_FOUND', '找不到练习卡，请先读取当前练习卡。', 404);
+      if (tailRow.event_id !== request.cardEventId) {
+        throw new StoreError('PRACTICE_CARD_CONFLICT', '练习卡版本已变化，请重新读取当前卡片后作答。', 409);
+      }
+      const card = this.practiceCardFromRow(tailRow);
+      if (card.paused) throw new StoreError('PRACTICE_CARD_PAUSED', '练习卡已暂停，不能新增答题记录。', 409);
+      this.assertPracticeSourcesCurrent(card.sources, concepts);
+      if (parseDate(request.answeredAt) < parseDate(card.occurredAt)) {
+        throw new StoreError('PRACTICE_ATTEMPT_TIME', '答题时间不能早于引用练习卡的发生时间。');
+      }
+      this.db.prepare(`INSERT INTO practice_attempts(
+        namespace, event_id, card_id, card_event_id, answered_at, recorded_at,
+        answer, confidence, confidence_at, exposure, observed_exposure, cue, outcome,
+        check_notes, request_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        this.namespace,
+        request.eventId,
+        request.cardId,
+        request.cardEventId,
+        request.answeredAt,
+        iso(now),
+        request.answer,
+        request.confidence,
+        request.confidenceAt,
+        request.exposure,
+        request.observedExposure ? 1 : 0,
+        request.cue,
+        request.outcome,
+        request.checkNotes,
+        requestPayload,
+      );
+      this.db.exec('COMMIT');
+      return { status: 'accepted', eventId: request.eventId };
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (error instanceof StoreError) throw error;
+      throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
+    }
+  }
+
+  /**
+   * Restore one card revision inside the caller's existing import transaction.
+   * The helper deliberately does not open a nested transaction.
+   */
+  insertImportedPracticeCard(event: PracticeCardEvent): void {
+    const request = parsePracticeCardRequest(event);
+    this.ensureEventId(request.eventId);
+    const recordedAt = normalizeDate(event.recordedAt, 'IMPORT_INVALID_DATA');
+    if (parseDate(recordedAt) < parseDate(request.occurredAt)) {
+      throw new StoreError('IMPORT_INVALID_DATA', `practice card ${event.eventId} 的 recordedAt 早于 occurredAt。`);
+    }
+    const requestPayload = canonicalJson(request);
+    if (this.eventAlreadyImported(event.eventId, 'practice-card', requestPayload)) return;
+    const tail = this.latestPracticeCardRow(request.cardId);
+    if (request.previousEventId === null) {
+      if (tail) throw new StoreError('IMPORT_CONFLICT', `practice card ${event.eventId} 的 cardId 已有尾记录。`, 409);
+    } else if (!tail || tail.event_id !== request.previousEventId) {
+      throw new StoreError('IMPORT_CONFLICT', `practice card ${event.eventId} 的链式前置记录不匹配。`, 409);
+    } else if (parseDate(request.occurredAt) < parseDate(tail.occurred_at)) {
+      throw new StoreError('IMPORT_INVALID_DATA', `practice card ${event.eventId} 的 occurredAt 早于前置记录。`);
+    }
+    this.db.prepare(`INSERT INTO practice_cards(
+      namespace, event_id, card_id, previous_event_id, occurred_at, recorded_at,
+      kind, title, prompt, reference_answer, reference_notes, sources_json,
+      source_checked, paused, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      this.namespace,
+      request.eventId,
+      request.cardId,
+      request.previousEventId,
+      request.occurredAt,
+      recordedAt,
+      request.kind,
+      request.title,
+      request.prompt,
+      request.referenceAnswer,
+      request.referenceNotes,
+      canonicalJson(request.sources),
+      1,
+      request.paused ? 1 : 0,
+      requestPayload,
+    );
+    for (const source of request.sources) {
+      this.db.prepare(`INSERT INTO practice_card_sources(
+        namespace, card_event_id, card_id, concept_id, source_revision
+      ) VALUES (?, ?, ?, ?, ?)`).run(
+        this.namespace, request.eventId, request.cardId, source.conceptId, source.sourceRevision,
+      );
+    }
+  }
+
+  /** Restore an answer inside the caller's existing import transaction. */
+  insertImportedPracticeAttempt(event: PracticeAttempt): void {
+    const request = parsePracticeAttemptRequest(event);
+    this.ensureEventId(request.eventId);
+    const recordedAt = normalizeDate(event.recordedAt, 'IMPORT_INVALID_DATA');
+    if (parseDate(recordedAt) < parseDate(request.answeredAt)) {
+      throw new StoreError('IMPORT_INVALID_DATA', `practice attempt ${event.eventId} 的 recordedAt 早于 answeredAt。`);
+    }
+    const requestPayload = canonicalJson(request);
+    if (this.eventAlreadyImported(event.eventId, 'practice-attempt', requestPayload)) return;
+    const cardRow = this.db.prepare(`SELECT card_id, occurred_at
+      FROM practice_cards WHERE namespace = ? AND event_id = ?`).get(this.namespace, request.cardEventId) as {
+        card_id: string; occurred_at: string;
+      } | undefined;
+    if (!cardRow) throw new StoreError('IMPORT_CONFLICT', `practice attempt ${event.eventId} 引用的练习卡版本不存在。`, 409);
+    if (cardRow.card_id !== request.cardId) throw new StoreError('IMPORT_INVALID_DATA', `practice attempt ${event.eventId} 的 cardId 与卡片版本不一致。`);
+    if (parseDate(request.answeredAt) < parseDate(cardRow.occurred_at)) {
+      throw new StoreError('IMPORT_INVALID_DATA', `practice attempt ${event.eventId} 的 answeredAt 早于卡片发生时间。`);
+    }
+    this.db.prepare(`INSERT INTO practice_attempts(
+      namespace, event_id, card_id, card_event_id, answered_at, recorded_at,
+      answer, confidence, confidence_at, exposure, observed_exposure, cue, outcome,
+      check_notes, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      this.namespace,
+      request.eventId,
+      request.cardId,
+      request.cardEventId,
+      request.answeredAt,
+      recordedAt,
+      request.answer,
+      request.confidence,
+      request.confidenceAt,
+      request.exposure,
+      request.observedExposure ? 1 : 0,
+      request.cue,
+      request.outcome,
+      request.checkNotes,
+      requestPayload,
+    );
   }
 
   getAnchorById(eventId: string): StoredAnchor | null {
@@ -2060,13 +2559,23 @@ export class Store {
       }
     }
 
-    type IdentityCountRow = { concept_id: string; anchors: number; observations: number; retentions: number; applications: number };
+    type IdentityCountRow = {
+      concept_id: string;
+      anchors: number;
+      observations: number;
+      retentions: number;
+      applications: number;
+      practice_cards?: number;
+      practice_attempts?: number;
+    };
     const countRows = this.db.prepare(`
       SELECT concept_id,
         SUM(CASE WHEN event_kind = 'anchors' THEN event_count ELSE 0 END) AS anchors,
         SUM(CASE WHEN event_kind = 'observations' THEN event_count ELSE 0 END) AS observations,
         SUM(CASE WHEN event_kind = 'retentions' THEN event_count ELSE 0 END) AS retentions,
-        SUM(CASE WHEN event_kind = 'applications' THEN event_count ELSE 0 END) AS applications
+        SUM(CASE WHEN event_kind = 'applications' THEN event_count ELSE 0 END) AS applications,
+        SUM(CASE WHEN event_kind = 'practice_cards' THEN event_count ELSE 0 END) AS practice_cards,
+        SUM(CASE WHEN event_kind = 'practice_attempts' THEN event_count ELSE 0 END) AS practice_attempts
       FROM (
         SELECT concept_id, 'anchors' AS event_kind, COUNT(*) AS event_count
           FROM anchors WHERE namespace = ? GROUP BY concept_id
@@ -2079,8 +2588,25 @@ export class Store {
         UNION ALL
         SELECT concept_id, 'applications' AS event_kind, COUNT(*) AS event_count
           FROM applications WHERE namespace = ? GROUP BY concept_id
+        UNION ALL
+        SELECT concept_id, 'practice_cards' AS event_kind, COUNT(DISTINCT card_event_id) AS event_count
+          FROM practice_card_sources WHERE namespace = ? GROUP BY concept_id
+        UNION ALL
+        SELECT sources.concept_id, 'practice_attempts' AS event_kind, COUNT(DISTINCT attempts.event_id) AS event_count
+          FROM practice_card_sources AS sources
+          JOIN practice_attempts AS attempts
+            ON attempts.namespace = sources.namespace AND attempts.card_event_id = sources.card_event_id
+          WHERE sources.namespace = ?
+          GROUP BY sources.concept_id
       )
-      GROUP BY concept_id`).all(this.namespace, this.namespace, this.namespace, this.namespace) as IdentityCountRow[];
+      GROUP BY concept_id`).all(
+      this.namespace,
+      this.namespace,
+      this.namespace,
+      this.namespace,
+      this.namespace,
+      this.namespace,
+    ) as IdentityCountRow[];
     const counts = new Map<string, IdentityCountRow>();
     for (const row of countRows) counts.set(row.concept_id, row);
 
@@ -2100,17 +2626,20 @@ export class Store {
         ? { title: live.title, path: live.source.path, revision: live.source.revision }
         : metadata.get(id) ?? { title: '', path: null, revision: null };
       const preference = Object.prototype.hasOwnProperty.call(plan.concepts, id) ? plan.concepts[id] : null;
+      const identityCounts: IdentityConcept['counts'] = {
+        anchors: row?.anchors ?? 0,
+        observations: row?.observations ?? 0,
+        retentions: row?.retentions ?? 0,
+        applications: row?.applications ?? 0,
+      };
+      if ((row?.practice_cards ?? 0) > 0) identityCounts.practiceCards = row?.practice_cards;
+      if ((row?.practice_attempts ?? 0) > 0) identityCounts.practiceAttempts = row?.practice_attempts;
       return {
         conceptId: id,
         title: source.title,
         path: source.path,
         sourceRevision: source.revision,
-        counts: {
-          anchors: row?.anchors ?? 0,
-          observations: row?.observations ?? 0,
-          retentions: row?.retentions ?? 0,
-          applications: row?.applications ?? 0,
-        },
+        counts: identityCounts,
         hasLayout: Object.prototype.hasOwnProperty.call(layout, id),
         preference,
       };
@@ -2175,7 +2704,8 @@ export class Store {
     if (fromConceptId === toConceptId) error('IDENTITY_SAME_CONCEPT', '来源概念和目标概念必须不同。');
     if (bindingsByRaw.has(toConceptId)) error('IDENTITY_TARGET_RAW_ALIAS', `目标概念 ${toConceptId} 已是已登记路径别名。`);
     if (canonicalIds.has(toConceptId)) error('IDENTITY_TARGET_CANONICAL', `目标概念 ${toConceptId} 已是稳定身份，不能再次作为原始目标。`);
-    if (targetConcept && (to.counts.anchors + to.counts.observations + to.counts.retentions + to.counts.applications > 0)) {
+    if (targetConcept && (to.counts.anchors + to.counts.observations + to.counts.retentions + to.counts.applications
+      + (to.counts.practiceCards ?? 0) + (to.counts.practiceAttempts ?? 0) > 0)) {
       error('IDENTITY_TARGET_HAS_HISTORY', `目标概念 ${toConceptId} 已有学习历史，不能合并两套身份。`);
     }
     if (targetConcept && !isDefaultReviewPreference(to.preference)) {
@@ -2353,7 +2883,7 @@ export class Store {
     throw new StoreError('IMPORT_CONFLICT', `导入事件 ${eventId} 与当前知识空间中的记录不一致。`, 409);
   }
 
-  private eventAlreadyImported(eventId: string, kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction', requestPayload: string): boolean {
+  private eventAlreadyImported(eventId: string, kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | PracticeEventKind, requestPayload: string): boolean {
     const existing = this.findEvent(eventId);
     if (!existing) return false;
     if (existing.kind !== kind || existing.payload !== requestPayload) this.importEventConflict(eventId);
@@ -2703,6 +3233,10 @@ export class Store {
       for (const retention of prepared.newRetentions) this.insertImportedRetention(retention);
       for (const application of prepared.newApplications) this.insertImportedApplication(application);
       for (const correction of prepared.newCorrections) this.insertImportedCorrection(correction);
+      // Practice history is restored in the same transaction, but remains in
+      // its own tables so it cannot affect Observation-based aggregates.
+      for (const card of prepared.newPracticeCards) this.insertImportedPracticeCard(card);
+      for (const attempt of prepared.newPracticeAttempts) this.insertImportedPracticeAttempt(attempt);
       if (request.options?.restoreLayout && prepared.mergedLayout) this.writeImportedLayout(prepared.mergedLayout);
       if (request.options?.restoreReviewPlan && prepared.mergedReviewPlan) this.writeImportedReviewPlan(prepared.mergedReviewPlan);
 
@@ -2747,6 +3281,7 @@ export class Store {
     // The current knowledge index is authoritative when an imported orphan
     // has since become live again with the same stable concept ID.
     for (const concept of liveConcepts) mergedConcepts.set(concept.id, concept);
+    const practice = this.getPracticeData();
     return {
       schemaVersion: 1,
       exportedAt: iso(this.now()),
@@ -2760,6 +3295,7 @@ export class Store {
       retentions: this.getRetentions(),
       applications: this.getApplications(),
       corrections: this.getCorrections(),
+      ...(practice.cards.length || practice.attempts.length ? { practice } : {}),
       reviewPlan: this.getReviewPlan(),
       layout: this.getLayout(),
       restoreMetadata: {

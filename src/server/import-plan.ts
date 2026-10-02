@@ -12,6 +12,7 @@ import type {
   ReviewRequest,
 } from '../shared/types.js';
 import type { CorrectionEvent } from '../shared/corrections.js';
+import type { PracticeAttempt, PracticeCardEvent } from '../shared/practice.js';
 import {
   DEFAULT_DAILY_REVIEW_BUDGET,
   type ConceptReviewPreference,
@@ -36,6 +37,11 @@ import {
   parseRetentionRequest,
   StoreError,
 } from './store.js';
+import {
+  parsePracticeData,
+  validatePracticeAttempts,
+  validatePracticeCardChain,
+} from './practice-import.js';
 
 /** Input accepted by the pure import planner. */
 export interface ImportPlanInput {
@@ -61,6 +67,8 @@ export interface PreparedImport {
   newRetentions: RetentionEvent[];
   newApplications: ApplicationRecord[];
   newCorrections: CorrectionEvent[];
+  newPracticeCards: PracticeCardEvent[];
+  newPracticeAttempts: PracticeAttempt[];
   newConfigs: PreparedConfig[];
   mergedLayout: Layout;
   mergedReviewPlan: ReviewPlan;
@@ -75,11 +83,13 @@ const MAX_EVENTS = 50_000;
 const MAX_LAYOUT = 10_000;
 const MAX_ISSUE_OUTPUT = 100;
 const EVENT_KINDS = ['anchors', 'observations', 'retentions', 'applications', 'corrections'] as const;
+const ALL_EVENT_KINDS = [...EVENT_KINDS, 'practiceCards', 'practiceAttempts'] as const;
 const RECALL_RATINGS = ['clear', 'partial', 'blank'] as const;
 const EXPOSURES = ['unexposed', 'exposed', 'unknown'] as const;
 
 type EventKind = (typeof EVENT_KINDS)[number];
-type Event = AnchorEvent | Observation | RetentionEvent | ApplicationRecord | CorrectionEvent;
+type AnyEventKind = (typeof ALL_EVENT_KINDS)[number];
+type Event = AnchorEvent | Observation | RetentionEvent | ApplicationRecord | CorrectionEvent | PracticeCardEvent | PracticeAttempt;
 
 interface IssueState {
   all: ImportIssue[];
@@ -94,7 +104,7 @@ interface ConceptMapping {
 }
 
 interface EventIdentity {
-  kind: EventKind;
+  kind: AnyEventKind;
   event: Event;
 }
 
@@ -246,6 +256,11 @@ function validateExportEnvelope(data: unknown, now: string): Record<string, unkn
   if (record.retentions !== undefined) requireArray(record.retentions, 'retentions');
   if (record.applications !== undefined) requireArray(record.applications, 'applications');
   if (record.corrections !== undefined) requireArray(record.corrections, 'corrections');
+  if (record.practice !== undefined) {
+    const practice = requireRecord(record.practice, 'practice');
+    requireArray(practice.cards, 'practice.cards');
+    requireArray(practice.attempts, 'practice.attempts');
+  }
   requireRecord(record.layout, 'layout');
   if (record.reviewPlan !== undefined) requireRecord(record.reviewPlan, 'reviewPlan');
   if (record.restoreMetadata !== undefined) requireRecord(record.restoreMetadata, 'restoreMetadata');
@@ -388,6 +403,61 @@ function mappedId(mapping: ConceptMapping, id: string): string {
 
 function mappedConceptEvent<T extends { conceptId: string }>(event: T, mapping: ConceptMapping): T {
   return { ...event, conceptId: mappedId(mapping, event.conceptId) };
+}
+
+/**
+ * Practice source arrays are canonicalized by the request parser. Mapping can
+ * change the lexical order, so normalize again after mapping before event
+ * identity comparison. A path/revision mapping may also collapse two source
+ * IDs into one live concept; reject that before the store reaches its source
+ * row uniqueness constraint.
+ */
+function mappedPracticeCard(
+  card: PracticeCardEvent,
+  mapping: ConceptMapping,
+  state: IssueState,
+): PracticeCardEvent {
+  const sources = card.sources
+    .map((source) => ({ ...source, conceptId: mappedId(mapping, source.conceptId) }))
+    .sort((left, right) => left.conceptId.localeCompare(right.conceptId) || left.sourceRevision.localeCompare(right.sourceRevision));
+  const seenConcepts = new Set<string>();
+  for (const source of sources) {
+    if (seenConcepts.has(source.conceptId)) {
+      addIssue(state, 'PRACTICE_SOURCE_MAPPING_COLLISION', `练习卡 ${card.eventId} 的多个来源映射到了同一概念 ${source.conceptId}。`, {
+        severity: 'error', eventId: card.eventId, conceptId: source.conceptId,
+      });
+    }
+    seenConcepts.add(source.conceptId);
+  }
+  return { ...card, sources };
+}
+
+/**
+ * Keep duplicate concept sources as a preview issue. This check runs before
+ * the shared parser so malformed practice backups are blocked by preview even
+ * when the request parser rejects the same duplicate earlier.
+ */
+function hasRawPracticeSourceDuplicate(value: unknown, state: IssueState): boolean {
+  if (!isRecord(value) || !Array.isArray(value.cards)) return false;
+  let duplicate = false;
+  for (const rawCard of value.cards) {
+    if (!isRecord(rawCard) || !Array.isArray(rawCard.sources)) continue;
+    const seen = new Set<string>();
+    const rawEventId = typeof rawCard.eventId === 'string' ? rawCard.eventId.trim() : undefined;
+    for (const rawSource of rawCard.sources) {
+      if (!isRecord(rawSource) || typeof rawSource.conceptId !== 'string') continue;
+      const conceptId = rawSource.conceptId.trim();
+      if (!conceptId) continue;
+      if (seen.has(conceptId)) {
+        duplicate = true;
+        addIssue(state, 'PRACTICE_SOURCE_DUPLICATE_CONCEPT', `练习卡 ${rawEventId ?? '未知'} 重复引用概念 ${conceptId}；comparison 来源必须是不同概念。`, {
+          severity: 'error', ...(rawEventId ? { eventId: rawEventId } : {}), conceptId,
+        });
+      }
+      seen.add(conceptId);
+    }
+  }
+  return duplicate;
 }
 
 function validateEventId(value: unknown, label: string): string {
@@ -590,17 +660,27 @@ function collectReferences(events: Record<EventKind, unknown[]>, record: Record<
   if (isRecord(record.reviewPlan) && isRecord(record.reviewPlan.concepts)) {
     for (const id of Object.keys(record.reviewPlan.concepts)) references.add(id);
   }
+  if (isRecord(record.practice) && Array.isArray(record.practice.cards)) {
+    for (const rawCard of record.practice.cards) {
+      if (!isRecord(rawCard) || !Array.isArray(rawCard.sources)) continue;
+      for (const rawSource of rawCard.sources) {
+        if (isRecord(rawSource) && typeof rawSource.conceptId === 'string' && rawSource.conceptId.trim()) {
+          references.add(rawSource.conceptId.trim());
+        }
+      }
+    }
+  }
   return references;
 }
 
-function eventPayload(kind: EventKind, event: Event): unknown {
+function eventPayload(kind: AnyEventKind, event: Event): unknown {
   const { recordedAt: _recordedAt, ...withoutRecordedAt } = event as Event & { recordedAt: string };
   // Keep frozen elapsed/decay/config values in observation identity. A replay
   // must never turn a historical observation into a newly recomputed one.
   return { kind, ...withoutRecordedAt };
 }
 
-function eventKey(kind: EventKind, event: Event): string {
+function eventKey(kind: AnyEventKind, event: Event): string {
   return `${kind}:${event.eventId}`;
 }
 
@@ -615,19 +695,25 @@ function collectCurrentEvents(current: ExportData): Map<string, EventIdentity> {
   ] as const) {
     for (const event of events) map.set(eventKey(kind, event), { kind, event });
   }
+  for (const event of current.practice?.cards ?? []) {
+    map.set(eventKey('practiceCards', event), { kind: 'practiceCards', event });
+  }
+  for (const event of current.practice?.attempts ?? []) {
+    map.set(eventKey('practiceAttempts', event), { kind: 'practiceAttempts', event });
+  }
   return map;
 }
 
-function compareEventIdentity(left: Event, right: Event, kind: EventKind): boolean {
+function compareEventIdentity(left: Event, right: Event, kind: AnyEventKind): boolean {
   return canonical(eventPayload(kind, left)) === canonical(eventPayload(kind, right));
 }
 
 function classifyEventConflicts(
-  incoming: { anchors: AnchorEvent[]; observations: Observation[]; retentions: RetentionEvent[]; applications: ApplicationRecord[]; corrections: CorrectionEvent[] },
+  incoming: { anchors: AnchorEvent[]; observations: Observation[]; retentions: RetentionEvent[]; applications: ApplicationRecord[]; corrections: CorrectionEvent[]; practiceCards: PracticeCardEvent[]; practiceAttempts: PracticeAttempt[] },
   current: ExportData,
   mapping: ConceptMapping,
   state: IssueState,
-): { newAnchors: AnchorEvent[]; newObservations: Observation[]; newRetentions: RetentionEvent[]; newApplications: ApplicationRecord[]; newCorrections: CorrectionEvent[]; duplicates: number } {
+): { newAnchors: AnchorEvent[]; newObservations: Observation[]; newRetentions: RetentionEvent[]; newApplications: ApplicationRecord[]; newCorrections: CorrectionEvent[]; newPracticeCards: PracticeCardEvent[]; newPracticeAttempts: PracticeAttempt[]; duplicates: number } {
   const currentEvents = collectCurrentEvents(current);
   const currentByEventId = new Map<string, EventIdentity[]>();
   for (const identity of currentEvents.values()) {
@@ -642,6 +728,8 @@ function classifyEventConflicts(
     newRetentions: [] as RetentionEvent[],
     newApplications: [] as ApplicationRecord[],
     newCorrections: [] as CorrectionEvent[],
+    newPracticeCards: [] as PracticeCardEvent[],
+    newPracticeAttempts: [] as PracticeAttempt[],
     duplicates: 0,
   };
   for (const [kind, events] of [
@@ -650,19 +738,24 @@ function classifyEventConflicts(
     ['retentions', incoming.retentions],
     ['applications', incoming.applications],
     ['corrections', incoming.corrections],
+    ['practiceCards', incoming.practiceCards],
+    ['practiceAttempts', incoming.practiceAttempts],
   ] as const) {
     for (const original of events) {
-      const event = mappedConceptEvent(original, mapping) as Event;
+      const event = kind === 'practiceCards' || kind === 'practiceAttempts'
+        ? original as Event
+        : mappedConceptEvent(original as { conceptId: string }, mapping) as Event;
       const identity = { kind, event } as EventIdentity;
       if (seenByEventId.has(event.eventId)) {
-        addIssue(state, 'DUPLICATE_EVENT_ID', `导入文件内 eventId ${event.eventId} 重复。`, { eventId: event.eventId, conceptId: event.conceptId });
+        const previous = seenByEventId.get(event.eventId)!;
+        addIssue(state, previous.kind === kind ? 'DUPLICATE_EVENT_ID' : 'EVENT_CONFLICT', `导入文件内 eventId ${event.eventId} 重复或跨类型冲突。`, { eventId: event.eventId, conceptId: 'conceptId' in event ? event.conceptId : undefined });
         continue;
       }
       seenByEventId.set(event.eventId, identity);
       const currentSameId = currentByEventId.get(event.eventId) ?? [];
       if (currentSameId.length) {
         if (currentSameId.length !== 1 || currentSameId[0].kind !== kind || !compareEventIdentity(currentSameId[0].event, event, kind)) {
-          addIssue(state, 'EVENT_CONFLICT', `eventId ${event.eventId} 与当前记录的类型或内容冲突。`, { eventId: event.eventId, conceptId: event.conceptId });
+          addIssue(state, 'EVENT_CONFLICT', `eventId ${event.eventId} 与当前记录的类型或内容冲突。`, { eventId: event.eventId, conceptId: 'conceptId' in event ? event.conceptId : undefined });
         } else {
           result.duplicates += 1;
         }
@@ -672,7 +765,9 @@ function classifyEventConflicts(
       else if (kind === 'observations') result.newObservations.push(event as Observation);
       else if (kind === 'retentions') result.newRetentions.push(event as RetentionEvent);
       else if (kind === 'applications') result.newApplications.push(event as ApplicationRecord);
-      else result.newCorrections.push(event as CorrectionEvent);
+      else if (kind === 'corrections') result.newCorrections.push(event as CorrectionEvent);
+      else if (kind === 'practiceCards') result.newPracticeCards.push(event as PracticeCardEvent);
+      else result.newPracticeAttempts.push(event as PracticeAttempt);
     }
   }
   return result;
@@ -1221,6 +1316,10 @@ function sortTokenCollections(value: ExportData): ExportData {
   copy.retentions = [...(copy.retentions ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.applications = [...(copy.applications ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.corrections = [...(copy.corrections ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
+  if (copy.practice) {
+    copy.practice.cards = [...copy.practice.cards].sort((a, b) => a.eventId.localeCompare(b.eventId));
+    copy.practice.attempts = [...copy.practice.attempts].sort((a, b) => a.eventId.localeCompare(b.eventId));
+  }
   return copy;
 }
 
@@ -1252,6 +1351,12 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     applications: optionalArray(record, 'applications'),
     corrections: optionalArray(record, 'corrections'),
   };
+  const rawPractice = isRecord(record.practice)
+    ? {
+      cards: requireArray(record.practice.cards, 'practice.cards'),
+      attempts: requireArray(record.practice.attempts, 'practice.attempts'),
+    }
+    : null;
   const references = collectReferences(rawEvents, record);
   const state: IssueState = { all: [], errors: 0 };
   if (Array.isArray(record.identityBindings) && record.identityBindings.length > 0) {
@@ -1259,12 +1364,36 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   }
   const mapping = buildConceptMapping(backupConcepts, input.concepts, references, input.acceptedPaths, state);
   const parsedEvents = parseEventArrays(record, now.ms, state);
+  if (eventCount(rawEvents) + (rawPractice ? rawPractice.cards.length + rawPractice.attempts.length : 0) > MAX_EVENTS) {
+    invalid(`事件总数不能超过 ${MAX_EVENTS}。`, 'IMPORT_LIMIT');
+  }
+  const hasDuplicatePracticeSource = hasRawPracticeSourceDuplicate(record.practice, state);
+  const parsedPractice = hasDuplicatePracticeSource ? null : parsePracticeData(record.practice, now.ms, {
+    add: (code, message, options) => addIssue(state, code, message, {
+      severity: options?.severity,
+      eventId: options?.eventId,
+    }),
+  });
   const configMerge = mergeConfigs(record, input.current, exportedAt.raw, state);
   const mappedAnchors = parsedEvents.anchors.map((event) => mappedConceptEvent(event, mapping));
   const mappedObservations = parsedEvents.observations.map((event) => mappedConceptEvent(event, mapping));
   const mappedRetentions = parsedEvents.retentions.map((event) => mappedConceptEvent(event, mapping));
   const mappedApplications = parsedEvents.applications.map((event) => mappedConceptEvent(event, mapping));
   const mappedCorrections = parsedEvents.corrections.map((event) => mappedConceptEvent(event, mapping));
+  const mappedPracticeCards = (parsedPractice?.cards ?? []).map((card) => mappedPracticeCard(card, mapping, state));
+  const mappedPracticeAttempts = parsedPractice?.attempts ?? [];
+
+  for (const originalCard of parsedPractice?.cards ?? []) {
+    for (const source of originalCard.sources) {
+      const mappedSourceId = mappedId(mapping, source.conceptId);
+      const mappedConcept = input.concepts.find((concept) => concept.id === mappedSourceId);
+      if (mapping.byId.get(source.conceptId) === null || !mappedConcept) {
+        addIssue(state, 'PRACTICE_SOURCE_MISSING', `练习卡 ${originalCard.eventId} 的来源概念 ${source.conceptId} 当前无法关联；将保留历史卡片。`, { severity: 'warning', eventId: originalCard.eventId, conceptId: mappedSourceId });
+      } else if (mappedConcept.source.revision !== source.sourceRevision) {
+        addIssue(state, 'PRACTICE_SOURCE_REVISION_CHANGED', `练习卡 ${originalCard.eventId} 引用了概念 ${mappedSourceId} 的旧来源版本，将保留该历史版本。`, { severity: 'warning', eventId: originalCard.eventId, conceptId: mappedSourceId });
+      }
+    }
+  }
 
   for (const event of [...mappedAnchors, ...mappedObservations, ...mappedRetentions, ...mappedApplications, ...mappedCorrections]) {
     if (event.sourceRevision && event.conceptId && input.concepts.some((concept) => concept.id === event.conceptId && concept.source.revision !== event.sourceRevision)) {
@@ -1272,7 +1401,34 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     }
   }
   validateFrozenObservations(parsedEvents.observations, parsedEvents.anchors, input.current, [...configMerge.merged], mapping, state);
-  const classified = classifyEventConflicts(parsedEvents, input.current, mapping, state);
+  const classified = classifyEventConflicts({
+    ...parsedEvents,
+    practiceCards: mappedPracticeCards,
+    practiceAttempts: mappedPracticeAttempts,
+  }, input.current, mapping, state);
+  const orderedPracticeCards = validatePracticeCardChain(
+    mappedPracticeCards,
+    input.current.practice?.cards ?? [],
+    classified.newPracticeCards,
+    {
+      add: (code, message, options) => addIssue(state, code, message, {
+        severity: options?.severity,
+        eventId: options?.eventId,
+      }),
+    },
+  );
+  validatePracticeAttempts(
+    mappedPracticeAttempts,
+    classified.newPracticeAttempts,
+    input.current.practice?.cards ?? [],
+    mappedPracticeCards,
+    {
+      add: (code, message, options) => addIssue(state, code, message, {
+        severity: options?.severity,
+        eventId: options?.eventId,
+      }),
+    },
+  );
   const orderedRetentions = validateRetentionChain(parsedEvents.retentions, input.current, mapping, state);
   const orderedCorrections = validateCorrectionChains({
     incoming: mappedCorrections,
@@ -1300,6 +1456,9 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     retentions: mappedRetentions,
     applications: mappedApplications,
     corrections: mappedCorrections,
+    ...(record.practice !== undefined
+      ? { practice: { cards: mappedPracticeCards, attempts: mappedPracticeAttempts } }
+      : {}),
     ...(record.reviewPlan !== undefined ? { reviewPlan: mapReviewPlan(incomingPlan, mapping) } : {}),
     layout: mapLayout(incomingLayout, mapping),
   };
@@ -1326,6 +1485,10 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     matchedConcepts: mapping.matches.filter((match) => match.toId !== null).length,
     remappedConcepts: mapping.matches.filter((match) => match.match === 'path-revision').length,
     unresolvedConcepts: mapping.unresolved.size,
+    ...(record.practice !== undefined ? {
+      practiceCards: classified.newPracticeCards.length,
+      practiceAttempts: classified.newPracticeAttempts.length,
+    } : {}),
   };
   const preview: ImportPreview = {
     sourceId: input.sourceId,
@@ -1349,6 +1512,8 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     newRetentions: orderedRetentions.filter((event) => classified.newRetentions.some((candidate) => candidate.eventId === event.eventId)),
     newApplications: classified.newApplications,
     newCorrections: orderedCorrections,
+    newPracticeCards: orderedPracticeCards,
+    newPracticeAttempts: classified.newPracticeAttempts,
     newConfigs: configMerge.newConfigs,
     mergedLayout: layout.value,
     mergedReviewPlan: reviewPlan.value,

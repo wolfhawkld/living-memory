@@ -1,6 +1,14 @@
 import type { ConceptReviewPreference } from './review-plan';
 
-export interface IdentityCounts { anchors: number; observations: number; retentions: number; applications: number }
+export interface IdentityCounts {
+  anchors: number;
+  observations: number;
+  retentions: number;
+  applications: number;
+  /** Optional for backward-compatible status payloads with no private practice history. */
+  practiceCards?: number;
+  practiceAttempts?: number;
+}
 export interface IdentityConcept {
   conceptId: string;
   title: string;

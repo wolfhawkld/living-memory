@@ -41,7 +41,8 @@ function finiteCount(value: number | null | undefined): number {
 
 function countTotal(counts: IdentityCounts): number {
   return finiteCount(counts.anchors) + finiteCount(counts.observations)
-    + finiteCount(counts.retentions) + finiteCount(counts.applications);
+    + finiteCount(counts.retentions) + finiteCount(counts.applications)
+    + finiteCount(counts.practiceCards) + finiteCount(counts.practiceAttempts);
 }
 
 function compareText(left: string, right: string): number {
@@ -131,6 +132,8 @@ const COUNT_LABELS: ReadonlyArray<[keyof IdentityCounts, string]> = [
   ['observations', '回忆观察'],
   ['retentions', '长期保持'],
   ['applications', '应用 / 总结'],
+  ['practiceCards', '练习卡'],
+  ['practiceAttempts', '练习答题'],
 ];
 
 function CountGrid({ counts, compact = false }: { counts: IdentityCounts; compact?: boolean }): ReactElement {

@@ -15,6 +15,7 @@ import { inspectLayout } from '../shared/layout';
 import type { AccountUser } from '../shared/accounts';
 import type { LearningOverview } from '../shared/learning-overview';
 import type { ScenarioPrompts } from '../shared/scenario-prompts';
+import type { PracticeCardRequest, PracticeAttemptRequest, PracticeCardsResponse, PracticeHistoryResponse } from '../shared/practice';
 import type { CorrectionRequest } from '../shared/corrections';
 import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
@@ -518,6 +519,22 @@ export const api = {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
     });
   },
+  getPracticeCards: (sourceId: string, signal?: AbortSignal) => {
+    if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识空间。', { code: 'SOURCE_REQUIRED' }));
+    return requestJson<PracticeCardsResponse>('/practice-cards', {
+      headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal,
+    });
+  },
+  getPracticeHistory: (cardId: string, sourceId: string, signal?: AbortSignal) => {
+    if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识空间。', { code: 'SOURCE_REQUIRED' }));
+    return requestJson<PracticeHistoryResponse>(`/practice-cards/${encodeURIComponent(cardId)}/history`, {
+      headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal,
+    });
+  },
+  postPracticeCard: (payload: PracticeCardRequest, writeToken: string, sourceId: string) =>
+    writeJson<WriteReceipt>('/practice-cards', payload, writeToken, sourceId),
+  postPracticeAttempt: (payload: PracticeAttemptRequest, writeToken: string, sourceId: string) =>
+    writeJson<WriteReceipt>('/practice-attempts', payload, writeToken, sourceId),
   getConceptHistory: (conceptId: string, sourceId: string, options: { limit?: number; cursor?: string; applicationEventId?: string; signal?: AbortSignal } = {}) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
     const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
