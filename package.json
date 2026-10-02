@@ -23,6 +23,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.74.0",
     "3d-force-graph": "1.80.0",
     "express": "5.2.1",
     "gray-matter": "4.0.3",

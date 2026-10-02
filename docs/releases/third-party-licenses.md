@@ -1,8 +1,10 @@
 # 第三方依赖许可检查记录
 
-更新：2026-10-01。
+更新：2026-10-02（补充飞书 SDK）；其余统计保留 2026-10-01 审查快照。
 
 本文记录 Living Memory 当前依赖和构建产物的许可核对结果。基线是提交 `0abb3f9` 中的 [`package.json`](../../package.json) 与 [`package-lock.json`](../../package-lock.json)，并以当前已安装的 `node_modules` 中对应的 `package.json`、`LICENSE`、`NOTICE`、`OFL` 等文件作为本地证据。许可核对为只读操作，没有读取个人数据或修改应用、构建配置及依赖。
+
+2026-10-02 补充核对固定生产依赖 `@larksuiteoapi/node-sdk@1.74.0`：当前 package / lockfile 与已安装包版本一致，包声明及根 `LICENSE` 为 MIT（Lark Technologies Pte. Ltd.，2022）。下方传递依赖数量与闭包统计仍是原基线，不代表加入 SDK 后已重新审计整个闭包。
 
 本文是审查记录，不是已经完成的 `THIRD_PARTY_NOTICES`。没有为了填表复制全部传递依赖的许可证正文，也没有把缺少 lockfile 元数据的包无证据地归类。未来发行包应按实际随包的源代码、运行时、bundle 和字体重新生成 notice 清单。
 
@@ -14,10 +16,11 @@
 
 ## 直接生产依赖
 
-`package.json` 的 12 个直接生产依赖与 lockfile 版本一致，已安装包的声明许可证均为 MIT。表中的本地路径是当前安装快照中的证据；`node_modules` 不属于源码归档。
+原基线的 12 个直接生产依赖声明为 MIT；2026-10-02 新增固定飞书 SDK 后，当前共 13 个直接生产依赖，SDK 的 package / lockfile / 本地许可证亦核对为 MIT。表中的本地路径是当前安装快照中的证据；`node_modules` 不属于源码归档。
 
 | 包 | 锁定版本 | 声明许可证 | 本地许可证证据 |
 | --- | ---: | --- | --- |
+| `@larksuiteoapi/node-sdk` | `1.74.0` | MIT | `node_modules/@larksuiteoapi/node-sdk/LICENSE`；2026-10-02 补充核对 |
 | `3d-force-graph` | `1.80.0` | MIT | `node_modules/3d-force-graph/LICENSE` |
 | `express` | `5.2.1` | MIT | `node_modules/express/LICENSE` |
 | `gray-matter` | `4.0.3` | MIT | `node_modules/gray-matter/LICENSE` |
@@ -50,7 +53,7 @@ KaTeX 官方仓库声明 MIT，并说明使用时需要同时提供 CSS 和字�
 
 ## lockfile 许可证字段统计
 
-以下是 `package-lock.json` 中 470 个 `node_modules/*` package records 的 `license` 字段统计。它统计 lockfile 记录，不等同于当前机器实际安装的可选平台包数量。
+以下保留 2026-10-01 基线 `package-lock.json` 中 470 个 `node_modules/*` package records 的 `license` 字段统计。它统计 lockfile 记录，不等同于当前机器实际安装的可选平台包数量。
 
 | lockfile `license` 字段 | 记录数 |
 | --- | ---: |
@@ -70,7 +73,7 @@ KaTeX 官方仓库声明 MIT，并说明使用时需要同时提供 CSS 和字�
 
 ## 生产依赖闭包
 
-从 12 个直接生产依赖沿 `dependencies`、`optionalDependencies` 和 `peerDependencies` 解析，当前 lockfile 生产闭包共有 325 个 records。实际 Vite bundle 可能因 tree-shaking 少于这个闭包；发行时应以实际附带内容为准。
+以下保留 2026-10-01 的生产闭包快照，未包含新增飞书 SDK 的闭包复审。从当时 12 个直接生产依赖沿 `dependencies`、`optionalDependencies` 和 `peerDependencies` 解析，当时 lockfile 生产闭包共有 325 个 records。实际 Vite bundle 可能因 tree-shaking 少于这个闭包；发行时应以实际附带内容为准。
 
 | 许可证类别 | 生产闭包记录数 |
 | --- | ---: |
@@ -112,6 +115,7 @@ KaTeX 官方仓库声明 MIT，并说明使用时需要同时提供 CSS 和字�
 
 直接依赖的上游仓库由各自已安装 `package.json` 的 `repository` 字段给出：
 
+- [飞书官方 Node SDK](https://github.com/larksuite/node-sdk)（固定发布包 [1.74.0 npm tarball](https://registry.npmjs.org/@larksuiteoapi/node-sdk/-/node-sdk-1.74.0.tgz)；未用未核验 GitHub tag 代替 npm 版本证据）
 - [3d-force-graph](https://github.com/vasturiano/3d-force-graph)、[Express](https://github.com/expressjs/express)、[gray-matter](https://github.com/jonschlinkert/gray-matter)
 - [KaTeX](https://github.com/KaTeX/KaTeX)、[Mermaid](https://github.com/mermaid-js/mermaid)、[React](https://github.com/facebook/react)、[React DOM](https://github.com/facebook/react)
 - [react-markdown](https://github.com/remarkjs/react-markdown)、[remark-math](https://github.com/remarkjs/remark-math)、[remark-gfm](https://github.com/remarkjs/remark-gfm)、[three.js](https://github.com/mrdoob/three.js)
