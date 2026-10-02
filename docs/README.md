@@ -50,6 +50,7 @@
 - [关键细节与概念辨别批量 goal（2026-10-02）](planning/practice-cards-goal-2026-10-02.md)：下一批核心功能及集中验收边界。
 - [场景卡与分阶段提示 goal（2026-10-02）](planning/scenario-cards-goal-2026-10-02.md)：人工场景与案例族、阶段原答和两项核对，承接 LM-011 的下一批范围。
 - [练习卡方向调整（2026-10-02）](planning/automatic-practice-backlog-2026-10-02.md)：暂缓手工维护，后续自动设计、选题及来源变化维护，本人少量确认。
+- [飞书知识点查看与轻量复习 TODO（2026-10-02）](planning/feishu-review-channel-todo-2026-10-02.md)：参考既有聊天窗推送，设计排序列表、已有节点翻卡、少量自评与独立确认重温；投递 / 交互 / 身份先验证，无需图谱或人工题库。
 
 - [开源协作准备与 TODO（2026-09-27）](planning/open-source-readiness-2026-09-27.md)：开源任务、已完成的运行/CI/文档/内容检查与后续协作准备。
 - [本地 Web 预览发布清单](releases/local-web-preview.md)：本轮集成范围、验证边界、数据备份与已完成的发布清单。
