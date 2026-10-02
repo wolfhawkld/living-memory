@@ -1,4 +1,5 @@
 import type { FeishuBindingConfirmation, FeishuScope } from '../shared/feishu-binding.js';
+import type { FeishuReadMessage } from '../shared/feishu-reading.js';
 
 const MAX_ID_LENGTH = 256;
 const MAX_CONTENT_LENGTH = 4096;
@@ -19,9 +20,10 @@ function validId(value: unknown): value is string {
  * This structural parser does not authenticate anyone. It accepts SDK JSON data,
  * not executable getters/proxies, and never retains the original message body.
  */
-export function normalizeFeishuBindingMessage(
+function privateTextMessage(
   input: unknown, expected: FeishuScope,
-): FeishuBindingConfirmation | null {
+  maxTextLength: number, maxContentLength: number,
+): FeishuReadMessage | null {
   if (!record(expected) || !validId(own(expected, 'appId')) || !validId(own(expected, 'tenantKey'))) return null;
   if (!record(input) || Object.hasOwn(input, 'header') || Object.hasOwn(input, 'event')
     || (Object.hasOwn(input, 'schema') && own(input, 'schema') !== '2.0')
@@ -42,13 +44,29 @@ export function normalizeFeishuBindingMessage(
   const chatId = own(message, 'chat_id');
   const content = own(message, 'content');
   if (!validId(openId) || !validId(messageId) || !validId(chatId)
-    || typeof content !== 'string' || content.length > MAX_CONTENT_LENGTH) return null;
+    || typeof content !== 'string' || content.length > maxContentLength) return null;
   let decoded: unknown;
   try { decoded = JSON.parse(content); } catch { return null; }
   if (!record(decoded)) return null;
   const text = own(decoded, 'text');
-  if (typeof text !== 'string' || text.length > 256) return null;
-  const command = text.trim().match(BINDING_COMMAND);
+  if (typeof text !== 'string' || text.length > maxTextLength) return null;
+  return { appId: expected.appId, tenantKey: expected.tenantKey, openId, eventId, messageId, chatId, text: text.trim() };
+}
+
+/** Binding and reading share the same authenticated private-message boundary. */
+export function normalizeFeishuBindingMessage(
+  input: unknown, expected: FeishuScope,
+): FeishuBindingConfirmation | null {
+  const message = privateTextMessage(input, expected, 256, MAX_CONTENT_LENGTH);
+  if (!message || message.text.length > 256) return null;
+  const command = message.text.match(BINDING_COMMAND);
   if (!command) return null;
-  return { appId: expected.appId, tenantKey: expected.tenantKey, openId, eventId, messageId, chatId, code: command[1] };
+  const { text: _text, ...identity } = message;
+  return { ...identity, code: command[1] };
+}
+
+/** Unrelated messages are ignored; command parsing is not an authorization check. */
+export function normalizeFeishuReadMessage(input: unknown, expected: FeishuScope): FeishuReadMessage | null {
+  const message = privateTextMessage(input, expected, 4096, 16384);
+  return message && /^知识(?:\s|$)/u.test(message.text) ? message : null;
 }

@@ -5,6 +5,7 @@ import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'no
 import type { AccountUser } from '../shared/accounts.js';
 import type { FeishuActor, FeishuScope, FeishuBindingView, FeishuBindingRequestView, FeishuBindingIssued, FeishuBindingConfirmation, FeishuBindingConfirmationResult } from '../shared/feishu-binding.js';
 import { StoreError } from './store.js';
+import type { FeishuDeliveryResult, FeishuReadAuthorization } from '../shared/feishu-reading.js';
 
 const PASSWORD_MIN_LENGTH = 12;
 const PASSWORD_MAX_LENGTH = 256;
@@ -227,6 +228,12 @@ export class Accounts {
         created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('pending','confirmed','cancelled','expired','invalidated')),
         confirmed_at TEXT, open_id TEXT, event_id TEXT, message_id TEXT, chat_id TEXT
+      );
+      CREATE TABLE IF NOT EXISTS feishu_read_receipts (
+        operation_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES accounts(id),
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('attempted', 'platform-accepted', 'failed-or-unknown'))
       );
       CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id);
       CREATE INDEX IF NOT EXISTS sessions_by_expiry ON sessions(expires_at);
@@ -586,6 +593,52 @@ export class Accounts {
     const row = this.db.prepare(`SELECT a.id,a.username,a.role,a.enabled,a.access_revision,a.password_hash FROM feishu_bindings b JOIN accounts a ON a.id = b.user_id
       WHERE b.app_id = ? AND b.tenant_key = ? AND b.open_id = ? AND b.revoked_at IS NULL AND a.enabled = 1 AND a.access_revision = b.account_access_revision`).get(actor.appId,actor.tenantKey,actor.openId) as unknown as AccountRow | undefined;
     return row ? accountUser(row) : null;
+  }
+
+  /** Persist a metadata-only receipt before any external delivery attempt. */
+  claimFeishuRead(operationId: string, actor: FeishuActor, authorization: FeishuReadAuthorization): boolean {
+    this.validateFeishuReadOperation(operationId);
+    if (!actor || ![actor.appId, actor.tenantKey, actor.openId].every(validFeishuText)
+        || !authorization || !validFeishuText(authorization.userId) || !validFeishuText(authorization.bindingId)
+        || !Number.isSafeInteger(authorization.accessRevision) || authorization.accessRevision < 1) return false;
+    const now = iso(nowDate(this.now));
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      const result = this.db.prepare(`INSERT OR IGNORE INTO feishu_read_receipts(operation_id, user_id, created_at, status)
+        SELECT ?, a.id, ?, 'attempted' FROM accounts a JOIN feishu_bindings b ON b.user_id = a.id
+        WHERE a.id = ? AND a.enabled = 1 AND a.access_revision = ?
+          AND b.id = ? AND b.revoked_at IS NULL AND b.account_access_revision = a.access_revision
+          AND b.app_id = ? AND b.tenant_key = ? AND b.open_id = ?`).run(
+          operationId, now, authorization.userId, authorization.accessRevision, authorization.bindingId,
+          actor.appId, actor.tenantKey, actor.openId,
+        );
+      this.db.exec('COMMIT');
+      return result.changes === 1;
+    } catch {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve fixed receipt error */ }
+      throw accountError('WRITE_FAILED', '飞书读取回执暂时无法保存，请稍后重试。', 503);
+    }
+  }
+
+  /** Delivery outcome is final: unknown outcomes are never retried implicitly. */
+  finishFeishuRead(operationId: string, userId: string, result: FeishuDeliveryResult): void {
+    this.validateFeishuReadOperation(operationId);
+    if (result !== 'platform-accepted' && result !== 'failed-or-unknown') {
+      throw accountError('INVALID_FEISHU_DELIVERY_RESULT', '飞书发送结果无效。');
+    }
+    if (typeof userId !== 'string' || !userId) return;
+    try {
+      this.db.prepare(`UPDATE feishu_read_receipts SET status = ?
+        WHERE operation_id = ? AND user_id = ? AND status = 'attempted'`).run(result, operationId, userId);
+    } catch {
+      throw accountError('WRITE_FAILED', '飞书读取回执暂时无法保存，请稍后重试。', 503);
+    }
+  }
+
+  private validateFeishuReadOperation(operationId: unknown): void {
+    if (typeof operationId !== 'string' || !/^[a-f0-9]{32}$/.test(operationId)) {
+      throw accountError('INVALID_FEISHU_OPERATION', '飞书读取操作标识无效。');
+    }
   }
 
   listUsers(): AccountUser[] {

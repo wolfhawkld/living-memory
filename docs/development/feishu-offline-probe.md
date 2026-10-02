@@ -1,6 +1,6 @@
 # 飞书接入：官方协议核实与离线探针
 
-日期：2026-10-02。对应 NEXT-06 / FEISHU-01。本文记录 FEISHU-01 首轮合成离线协议验证。后续 FEISHU-01B 已实现[默认关闭的官方 SDK 连接器基础](feishu-connector.md)，FEISHU-01C 已实现[Web 发码与本人私聊确认的账号绑定](feishu-account-binding.md)；真实飞书应用与往返仍待验证，知识列表和复习写回尚未实现。
+日期：2026-10-02。对应 NEXT-06 / FEISHU-01。本文记录 FEISHU-01 首轮合成离线协议验证。后续 FEISHU-01B 已实现[默认关闭的官方 SDK 连接器基础](feishu-connector.md)，FEISHU-01C 已实现[Web 发码与本人私聊确认的账号绑定](feishu-account-binding.md)，FEISHU-02A 已补齐[私聊文本列表与阅读](feishu-knowledge-reading.md)。真实飞书应用与往返仍待验证，点击式浏览、待复习视图及复习写回尚未实现。
 
 ## 运行离线探针
 
@@ -71,4 +71,4 @@ npx --no-install tsx --test tests/feishu-protocol.test.ts tests/feishu-probe-off
 
 使用同一项目包边界、同一 `tsx --test` 入口的隔离合成失败样例，确认真实断言失败返回退出码 1 和命名的 `ERR_ASSERTION`，避免把仅文件级成功输出误当完整验证；样例执行后移除，未修改测试基础设施。
 
-最终架构审查通过，未发现必须修复的问题。通过范围仅为 FEISHU-01 首轮离线交付；该首轮之后，FEISHU-01B 已新增默认关闭的 SDK 连接器基础，FEISHU-01C 已实现一次性账号绑定软件链。应用权限 / 发布、真实消息或按钮往返与客户端体验待实际验证。FEISHU-02～04 未因此完成；提交后 CI 另行核对，不用软件检查替代真实飞书验收。
+最终架构审查通过，未发现必须修复的问题。通过范围仅为 FEISHU-01 首轮离线交付；后续 FEISHU-01B 已新增默认关闭的 SDK 连接器基础，FEISHU-01C 已实现一次性账号绑定，FEISHU-02A 已补齐[文本知识阅读的软件链](feishu-knowledge-reading.md)。应用权限 / 发布、真实消息或按钮往返与客户端体验待实际验证。FEISHU-02B / 03 / 04 仍待开发，不用软件检查替代真实飞书验收。

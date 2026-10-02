@@ -17,6 +17,7 @@ const server = createServer(app);
 connector = createFeishuConnector({
   env: process.env,
   confirmBinding: (input) => app.livingMemory.feishuBinding.confirm(input),
+  prepareReading: (input) => app.livingMemory.feishuReading.prepare(input),
   onStatus: ({ state, code }) => {
     process.stdout.write(`Living Memory Feishu: ${state}${code ? ` (${code})` : ''}\n`);
   },

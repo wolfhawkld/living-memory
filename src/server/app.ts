@@ -17,6 +17,10 @@ import { loadKnowledgeGraph, KnowledgeSourceError, type KnowledgeSource } from '
 import { createChangeFeed } from './changes.js';
 import { Accounts, type AccountSession } from './accounts.js';
 import type { FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuBindingStatus, FeishuChannelState, FeishuScope } from '../shared/feishu-binding.js';
+import type { FeishuReadMessage } from '../shared/feishu-reading.js';
+import { parseFeishuReadCommand } from '../integrations/feishu-read-commands.js';
+import { renderFeishuReadReply } from './feishu-read-view.js';
+import { feishuReadOperationId, type PreparedFeishuReadReply } from './feishu-reading.js';
 import { requestSessionToken, renewOwnerDevice, setSessionCookie, SESSION_COOKIE } from './account-session.js';
 import { validateStoragePaths } from './storage-paths.js';
 import {
@@ -58,6 +62,8 @@ export interface LivingMemoryApp extends Express {
     close: () => void;
     /** Internal authenticated transport capability; no raw-event HTTP receiver exists. */
     feishuBinding: { confirm: (input: FeishuBindingConfirmation) => FeishuBindingConfirmationResult };
+    /** Private knowledge is available only after resolving the current bound actor. */
+    feishuReading: { prepare: (input: FeishuReadMessage) => PreparedFeishuReadReply | null };
   };
 }
 
@@ -778,6 +784,58 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
           return { status: 'rejected' };
         }
         try { return accounts.confirmFeishuBinding(input); } catch { return { status: 'rejected' }; }
+      },
+    },
+    feishuReading: {
+      prepare: (input) => {
+        if (!accounts || !feishuScope || !input || input.appId !== feishuScope.appId || input.tenantKey !== feishuScope.tenantKey
+          || ![input.openId, input.eventId, input.messageId, input.chatId].every((value) => typeof value === 'string'
+            && value.length > 0 && value.length <= 256 && value.trim() === value)
+          || typeof input.text !== 'string' || input.text.length > 4096) return null;
+        const actor = { appId: input.appId, tenantKey: input.tenantKey, openId: input.openId };
+        let operationId: string | undefined;
+        let userId: string | undefined;
+        let claimed = false;
+        try {
+          const user = accounts.resolveFeishuAccount(actor);
+          if (!user) return null;
+          const binding = accounts.getFeishuBindingState(user.id).binding;
+          if (!binding) return null;
+          const command = parseFeishuReadCommand(input.text);
+          if (!command) return null;
+          const authorization = { userId: user.id, accessRevision: user.accessRevision, bindingId: binding.id };
+          operationId = feishuReadOperationId(actor, input.messageId);
+          userId = user.id;
+          if (!accounts.claimFeishuRead(operationId, actor, authorization)) return null;
+          claimed = true;
+          // Resolve before obtaining any knowledge context; there is no owner fallback.
+          const context = contextForUser(user.id);
+          const source = context.source;
+          const asOf = now().toISOString();
+          const text = renderFeishuReadReply(command, {
+            concepts: source.index.concepts,
+            states: context.store.getStates(source.index.concepts, asOf),
+            anchors: context.store.getAnchors(), asOf,
+          });
+          const receiptId = operationId;
+          return {
+            operationId: receiptId, actor, text,
+            stillAuthorized: () => {
+              try {
+                const current = accounts.resolveFeishuAccount(actor);
+                return current?.id === authorization.userId && current.accessRevision === authorization.accessRevision
+                  && accounts.getFeishuBindingState(current.id).binding?.id === authorization.bindingId
+                  && context.source === source && context.source.namespace === source.namespace;
+              } catch { return false; }
+            },
+            settle: (result) => { accounts.finishFeishuRead(receiptId, authorization.userId, result); },
+          };
+        } catch {
+          if (claimed && operationId && userId) {
+            try { accounts.finishFeishuRead(operationId, userId, 'failed-or-unknown'); } catch { /* Fixed metadata only. */ }
+          }
+          return null;
+        }
       },
     },
     close: () => {
