@@ -1,13 +1,22 @@
 import { createServer } from 'node:http';
 import { createApp } from './app.js';
-import { createFeishuConnector } from '../integrations/feishu-connector.js';
+import { createFeishuConnector, type FeishuConnector } from '../integrations/feishu-connector.js';
+import { parseFeishuConfig } from '../integrations/feishu-config.js';
 import { createServiceLifecycle } from './service-lifecycle.js';
 
 const port = Number(process.env.LM_PORT ?? 4317);
-const app = createApp({ port, accountsEnabled: process.env.LM_AUTH_MODE !== 'local' });
+const feishuConfiguration = parseFeishuConfig(process.env);
+let connector: FeishuConnector | undefined;
+const app = createApp({
+  port, accountsEnabled: process.env.LM_AUTH_MODE !== 'local',
+  feishuScope: feishuConfiguration.ok && feishuConfiguration.value.enabled
+    ? { appId: feishuConfiguration.value.appId, tenantKey: feishuConfiguration.value.tenantKey } : null,
+  getFeishuChannelState: () => connector?.getStatus().state ?? 'disabled',
+});
 const server = createServer(app);
-const connector = createFeishuConnector({
+connector = createFeishuConnector({
   env: process.env,
+  confirmBinding: (input) => app.livingMemory.feishuBinding.confirm(input),
   onStatus: ({ state, code }) => {
     process.stdout.write(`Living Memory Feishu: ${state}${code ? ` (${code})` : ''}\n`);
   },

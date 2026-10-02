@@ -61,10 +61,10 @@ test('SDK loader stays dormant until driver creation and constructing a driver n
   assert.equal(fake.captured.closes, 0);
 });
 
-test('dispatcher and client share all five silent logger methods and only the card action handler', async () => {
+test('dispatcher and client share five silent logger methods and only card and message handlers', async () => {
   const fake = fakeSdk();
   await createFeishuSdkDriverFactory(async () => fake.sdk)(config, callbacks());
-  assert.deepEqual(Object.keys(fake.captured.handlers!), ['card.action.trigger']);
+  assert.deepEqual(Object.keys(fake.captured.handlers!), ['card.action.trigger', 'im.message.receive_v1']);
   assert.equal(fake.captured.dispatcherOptions?.logger, FEISHU_SILENT_LOGGER);
   assert.equal(fake.captured.clientOptions?.logger, FEISHU_SILENT_LOGGER);
   assert.equal(Object.isFrozen(FEISHU_SILENT_LOGGER), true);
@@ -102,6 +102,7 @@ test('SDK lifecycle callbacks and card action response reach the injected callba
     onReconnecting() { seen.push('reconnecting'); },
     onReconnected() { seen.push('reconnected'); },
     onCardAction(input) { assert.equal(input, event); return response; },
+    onMessage(input) { assert.equal(input, event); seen.push('message'); },
   };
   await createFeishuSdkDriverFactory(async () => fake.sdk)(config, handlers);
   for (const key of ['onReady', 'onError', 'onReconnecting', 'onReconnected'] as const) {
@@ -111,6 +112,8 @@ test('SDK lifecycle callbacks and card action response reach the injected callba
   }
   assert.deepEqual(seen, ['ready', 'error', 'reconnecting', 'reconnected']);
   assert.equal(fake.captured.handlers!['card.action.trigger'](event), response);
+  assert.equal(fake.captured.handlers!['im.message.receive_v1'](event), undefined);
+  assert.deepEqual(seen, ['ready', 'error', 'reconnecting', 'reconnected', 'message']);
 });
 
 test('missing or malformed SDK exports fail with a fixed error without echoing SDK contents', async () => {
@@ -131,7 +134,7 @@ test('pinned official SDK exposes the adapter lifecycle contract without constru
   assert.equal(typeof sdk.EventDispatcher.prototype.register, 'function');
 });
 
-test('actual SDK dispatcher preserves flattened schema and reaches the unbound connector response offline', async () => {
+test('actual SDK dispatcher preserves flattened schema and reaches the unavailable-card response offline', async () => {
   const sdk = await import('@larksuiteoapi/node-sdk');
   let driverCallbacks: FeishuDriverCallbacks | undefined;
   const connector = createFeishuConnector({
@@ -177,7 +180,7 @@ test('actual SDK dispatcher preserves flattened schema and reaches the unbound c
     const result = await dispatcher.invoke(rawSyntheticEnvelope, { needCheck: false });
     assert.equal(handled, true);
     assert.deepEqual(result, {
-      toast: { type: 'info', content: '账号绑定尚未接入，请等待后续功能。' },
+      toast: { type: 'info', content: '知识卡片操作尚未接入，请等待后续功能。' },
     });
   } finally {
     await connector.stop();

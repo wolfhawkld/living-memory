@@ -1,6 +1,6 @@
 # 版本与兼容约定
 
-更新：2026-10-01。适用于本地 Web 预览与后续维护；现有实现入口见[开发导览](../development/codebase-guide.md)。本页区分已实现的兼容行为和今后改动应遵守的约定，不把文档约定当成自动迁移功能。
+更新：2026-10-02。适用于本地 Web 预览与后续维护；现有实现入口见[开发导览](../development/codebase-guide.md)。本页区分已实现的兼容行为和今后改动应遵守的约定，不把文档约定当成自动迁移功能。
 
 ## 四种版本分别维护
 
@@ -45,9 +45,11 @@ JSON 不包含知识正文、关系、附件、账号密码或浏览器草稿，
 
 ## SQLite：当前迁移范围
 
-[Store.initialize](../../src/server/store.ts)使用 `CREATE TABLE IF NOT EXISTS` 补缺失表，并为已知旧 `observations` 表增加可空 `learning_json` 列；已有观察保留，缺失学习证据保持缺失。[Accounts](../../src/server/accounts.ts)只创建账号/会话表和索引，没有账号库迁移版本。
+[Store.initialize](../../src/server/store.ts)使用 `CREATE TABLE IF NOT EXISTS` 补缺失表，并为已知旧 `observations` 表增加可空 `learning_json` 列；已有观察保留，缺失学习证据保持缺失。[Accounts](../../src/server/accounts.ts)创建账号、会话及飞书绑定相关表和索引，没有账号库迁移版本。
 
 2026-10-02 的场景卡更新为两张练习表增加可空 `scenario_json`。从之前只允许 `detail / comparison` 的已知练习卡表升级时，在单一事务中重建卡片及其来源引用表，保留各 namespace、原 rowid 顺序、版本链、来源及精确请求载荷；回答表增加列。失败回滚并恢复外键检查，原概念观察 / 重温 / 参数记录不因此改写。备份与回退仍按[完整恢复步骤](upgrade-and-recovery.md)执行；新 JSON 内的阶段提示与两项自评需要本轮或更新版本恢复，不用旧程序直接打开迁移后的数据库。
+
+同日的 FEISHU-01C 在 `accounts.sqlite` 以 `CREATE TABLE IF NOT EXISTS` 新增 `feishu_bindings`、`feishu_binding_requests` 和有效绑定的两个唯一索引。原账号 UUID、密码、会话和学习库不重建；绑定码只存哈希，发码 / 确认 / 撤销在账号库事务内处理。学习 JSON 仍为 v1，不包含飞书授权或绑定请求。已有未绑定的账号库由合成旧库测试验证升级及重复初始化；没有通用降级或旧程序管理新授权的保证。回退使用匹配版本的完整备份，见[绑定说明](../development/feishu-account-binding.md)。
 
 目前没有 `PRAGMA user_version`、迁移登记或全表结构核验，也没有自动降级。启动不会为任意旧列结构或模型记录提供统一拒绝/转换；JSON 导入中的版本校验不能替代数据库兼容检查。因此，不承诺任意旧版本数据库或新版数据库可由旧程序直接打开。
 

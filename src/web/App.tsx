@@ -37,6 +37,8 @@ import { ConceptReviewControls, ReviewPlanDialog } from './ReviewPlanControls';
 import { useReviewPlan } from './useReviewPlan';
 import { ImportDataDialog } from './ImportDataDialog';
 import { IdentityDialog } from './IdentityDialog';
+import { FeishuBindingDialog } from './FeishuBindingDialog';
+import './feishu-binding.css';
 import type { IdentityLinkRequest, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
 import './identity-dialog.css';
 import './import-data.css';
@@ -226,6 +228,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const [layout, setLayout] = useState<Layout>({});
   const [writeToken, setWriteToken] = useState('');
   const [sourceId, setSourceId] = useState('');
+  const [feishuBindingOpen, setFeishuBindingOpen] = useState(false);
   const [demoEnabled, setDemoEnabled] = useState(true);
   const [demoRecord, setDemoRecord] = useState<DemoRecord | null>(null);
   const [demoSaved, setDemoSaved] = useState(false);
@@ -1791,7 +1794,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           <span className="graph-count">{domains.length} 个知识域 · 全库 {snapshot.source.conceptCount} 个概念</span>
         </div>
         <div className="topbar-actions">
-          {account ? <><span className="account-name" title="当前私人知识空间">{account.username}</span>{account.role === 'admin' ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={onManageAccounts}>账号管理</button> : null}<button type="button" className="quiet-button" disabled={domainBusy} onClick={onLogout}>退出登录</button></> : null}
+          {account ? <><span className="account-name" title="当前私人知识空间">{account.username}</span><button type="button" className="quiet-button" disabled={domainBusy || !hasSession} onClick={() => setFeishuBindingOpen(true)}>飞书绑定</button>{account.role === 'admin' ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={onManageAccounts}>账号管理</button> : null}<button type="button" className="quiet-button" disabled={domainBusy} onClick={onLogout}>退出登录</button></> : null}
           <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => { setReaderRequest(null); setScenarioOpen(true); }}>场景调用练习</button>
           <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={domainBusy || writeLocked} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
           <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={writeLocked || domainBusy || !hasSession} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；可通过「导入恢复」恢复到当前账号。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
@@ -1994,6 +1997,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         {...briefReviewCounts(briefSession)} reviewStatus={briefSession.reviews[briefItem.conceptId] ?? 'idle'}
         busy={Boolean(busyAction) || refreshing} lockedReason={briefProgressLock ?? briefStorageError} reviewDisabledReason={briefReviewDisabledReason}
         onReview={() => void submitReview('review')} onNext={() => void nextBriefItem()} onEnd={endBriefReview} onPause={pauseBriefReview} /> : null}
+
+      {feishuBindingOpen && account ? <FeishuBindingDialog key={account.id} accountLabel={account.username}
+        sourceId={sourceId} writeToken={writeToken} onClose={() => setFeishuBindingOpen(false)} /> : null}
 
       {identityOpen ? <IdentityDialog key={sourceId} sourceId={sourceId} lockedReason={dataMaintenanceLockedReason}
         onLoad={loadIdentities} onPreview={previewIdentityLink} onCommit={commitIdentityLink}

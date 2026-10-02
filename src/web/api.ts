@@ -13,6 +13,7 @@ import type {
 import { createSessionRecovery, type LocalSession } from './session-recovery';
 import { inspectLayout } from '../shared/layout';
 import type { AccountUser } from '../shared/accounts';
+import type { FeishuBindingStatus, FeishuBindingIssued } from '../shared/feishu-binding';
 import type { LearningOverview } from '../shared/learning-overview';
 import type { ScenarioPrompts } from '../shared/scenario-prompts';
 import type { PracticeCardRequest, PracticeAttemptRequest, PracticeCardsResponse, PracticeHistoryResponse } from '../shared/practice';
@@ -483,6 +484,15 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 }
 
 export const api = {
+  getFeishuBindingStatus: (sourceId: string, signal?: AbortSignal) => requestJson<FeishuBindingStatus>('/feishu/binding', {
+    cache: 'no-store', headers: { 'x-lm-source-id': sourceId }, signal,
+  }),
+  issueFeishuBindingRequest: (writeToken: string, sourceId: string) =>
+    writeJson<FeishuBindingIssued>('/feishu/binding/request', {}, writeToken, sourceId),
+  cancelFeishuBindingRequest: (requestId: string, writeToken: string, sourceId: string) =>
+    writeJson<FeishuBindingStatus>('/feishu/binding/cancel', { requestId }, writeToken, sourceId),
+  revokeFeishuBinding: (bindingId: string, writeToken: string, sourceId: string) =>
+    writeJson<FeishuBindingStatus>('/feishu/binding/revoke', { bindingId }, writeToken, sourceId),
   getIdentityStatus: (sourceId: string) => requestJson<IdentityStatus>('/identities', {
     cache: 'no-store', headers: { 'x-lm-source-id': sourceId },
   }),

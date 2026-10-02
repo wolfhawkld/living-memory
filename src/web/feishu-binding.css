@@ -1,0 +1,14 @@
+.feishu-binding-dialog { width: min(540px, 92vw); max-height: 88dvh; box-sizing: border-box; overflow: auto; padding: 24px; border: 1px solid var(--ui-border, rgba(126, 155, 199, .3)); border-radius: 14px; background: var(--ui-bg, #0d1728); color: var(--ui-text, #e7f0ff); box-shadow: var(--ui-shadow, 0 34px 120px rgba(0, 0, 0, .68), 0 0 60px rgba(50, 113, 190, .12)); font-size: 13px; line-height: 1.65; }
+.feishu-binding-dialog::backdrop { background: var(--ui-backdrop, rgba(2, 6, 14, .84)); }
+.feishu-binding-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.feishu-binding-dialog h2 { margin: 0; font-size: 19px; }
+.feishu-binding-dialog button { padding: 7px 12px; border: 1px solid var(--ui-border, rgba(126, 155, 199, .3)); border-radius: 7px; color: var(--ui-text, #e7f0ff); background: var(--ui-panel, rgba(23, 38, 62, .7)); cursor: pointer; }
+.feishu-binding-dialog button:disabled { opacity: .5; cursor: default; }
+.feishu-binding-dialog button:focus-visible, .feishu-binding-dialog textarea:focus-visible { outline: 2px solid var(--ui-accent, #78aaff); outline-offset: 3px; }
+.feishu-binding-muted { color: var(--ui-text-muted, #b9cce5); }
+.feishu-binding-notice { padding: 10px 12px; border-radius: 8px; background: var(--ui-warning-soft, rgba(86, 59, 25, .2)); color: var(--ui-warning, #e2bd80); }
+.feishu-binding-error { color: var(--ui-error, #ffaaa6); }
+.feishu-binding-box { padding: 14px; margin: 16px 0; border: 1px solid var(--ui-border, rgba(126, 155, 199, .3)); border-radius: 10px; background: var(--ui-panel, rgba(23, 38, 62, .7)); }
+.feishu-binding-box button { margin-right: 8px; margin-top: 6px; }
+.feishu-binding-box textarea { display: block; width: 100%; box-sizing: border-box; resize: vertical; padding: 10px; border: 1px solid var(--ui-border, rgba(126, 155, 199, .3)); border-radius: 7px; color: var(--ui-text, #e7f0ff); background: var(--ui-input, #081221); font: inherit; overflow-wrap: anywhere; }
+.feishu-binding-dialog footer { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--ui-border, rgba(126, 155, 199, .3)); }

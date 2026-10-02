@@ -43,7 +43,8 @@
 - [概念改名与移动后的历史衔接](development/concept-identity.md)：人工预览确认路径对应，保留原学习时间与稳定身份，支持连续移动、冲突诊断和绑定前备份。
 - [待同步协调与超时恢复](development/pending-sync.md)：按知识空间协调多个页面的队列；参数请求可按历史版本重复确认；请求超时保留原记录并释放同步锁。更新后需刷新所有项目页面。
 - [CLI 与 KG 日常触发](development/cli-and-kg-triggers.md)：查询、明确确认重温、重试、Agent 收尾钩子与页面变化通知。
-- [飞书连接器基础](development/feishu-connector.md)：FEISHU-01B 官方 SDK 长连接默认关闭，配置、readiness、固定回执和停止边界已接入；下一项为一次性账号绑定，真实平台接入待验。
+- [飞书连接器基础](development/feishu-connector.md)：FEISHU-01B 官方 SDK 长连接默认关闭，配置、readiness、固定回执和停止边界已接入；已补齐一次性账号绑定，真实平台接入待验。
+- [飞书账号绑定](development/feishu-account-binding.md)：FEISHU-01C 浏览器发起、本人机器人私聊确认及账号存储已实现；默认关闭、真实往返待验，知识列表 / 复习仍待开发。
 - [飞书接入离线探针](development/feishu-offline-probe.md)：官方 V2 卡片 / 回调证据、合成身份范围及协议回执检查；无联网或私人记录操作，真实应用接入仍待验证。
 
 ## 路线、主题与验证进度

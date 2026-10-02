@@ -16,6 +16,7 @@ import { sendConceptAttachment } from './attachments.js';
 import { loadKnowledgeGraph, KnowledgeSourceError, type KnowledgeSource } from './kg.js';
 import { createChangeFeed } from './changes.js';
 import { Accounts, type AccountSession } from './accounts.js';
+import type { FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuBindingStatus, FeishuChannelState, FeishuScope } from '../shared/feishu-binding.js';
 import { requestSessionToken, renewOwnerDevice, setSessionCookie, SESSION_COOKIE } from './account-session.js';
 import { validateStoragePaths } from './storage-paths.js';
 import {
@@ -42,6 +43,8 @@ export interface AppOptions {
   token?: string;
   staticDir?: string;
   accountsEnabled?: boolean;
+  feishuScope?: FeishuScope | null;
+  getFeishuChannelState?: () => FeishuChannelState;
 }
 
 export interface LivingMemoryApp extends Express {
@@ -53,6 +56,8 @@ export interface LivingMemoryApp extends Express {
     token: string;
     port: number;
     close: () => void;
+    /** Internal authenticated transport capability; no raw-event HTTP receiver exists. */
+    feishuBinding: { confirm: (input: FeishuBindingConfirmation) => FeishuBindingConfirmationResult };
   };
 }
 
@@ -302,6 +307,8 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   store.rememberConcepts(initialSource.index.concepts);
   const token = options.token ?? randomBytes(32).toString('hex');
   const accounts = options.accountsEnabled ? new Accounts({ dataDir, now: options.now }) : null;
+  const feishuScope = options.feishuScope ? { ...options.feishuScope } : null;
+  const feishuChannelState = options.getFeishuChannelState ?? (() => 'disabled' as const);
   if (accounts) renewOwnerDevice(accounts, dataDir, port);
   type KnowledgeContext = { rawSource: KnowledgeSource; source: KnowledgeSource; store: Store; changes: ReturnType<typeof createChangeFeed>; root: string; includePrefix?: string };
   const initialContext: KnowledgeContext = { rawSource: initialRawSource, source: initialSource, store, changes: createChangeFeed(initialSource.namespace), root, includePrefix: sourceInclude(options) };
@@ -411,6 +418,51 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     }
     next();
   };
+
+  const requireBrowser = (req: Request, _res: Response, next: NextFunction): void => {
+    if (!accounts) { next(new StoreError('ACCOUNTS_DISABLED', '请启用账号登录后使用飞书绑定。', 404)); return; }
+    if (sessionOf(req)?.kind !== 'browser') { next(new StoreError('BROWSER_SESSION_REQUIRED', '请在已登录的网页中管理飞书绑定。', 403)); return; }
+    next();
+  };
+  const bindingStatus = (req: Request): FeishuBindingStatus => ({
+    scope: feishuScope ? { ...feishuScope } : null, channelState: feishuChannelState(),
+    ...accounts!.getFeishuBindingState(sessionOf(req)!.user.id),
+  });
+  function bindingBody(req: Request, keys: readonly string[]): Record<string, unknown> {
+    const body = req.body as unknown;
+    if (!req.is('application/json') || typeof body !== 'object' || body === null || Array.isArray(body)
+      || Object.keys(body).some((key) => !keys.includes(key))) {
+      throw new StoreError('INVALID_BINDING_REQUEST', '请提交有效的绑定操作。');
+    }
+    return body as Record<string, unknown>;
+  }
+  function bindingOperationId(value: unknown): string {
+    if (typeof value !== 'string' || !value.trim() || value.length > 256) {
+      throw new StoreError('INVALID_BINDING_REQUEST', '请选择有效的绑定操作。');
+    }
+    return value;
+  }
+  app.get('/api/feishu/binding', requireBrowser, asyncRoute((req, res) => res.json(bindingStatus(req))));
+  app.post('/api/feishu/binding/request', requireBrowser, requireWrite, asyncRoute((req, res) => {
+    bindingBody(req, []);
+    if (!feishuScope || feishuChannelState() !== 'connected') {
+      throw new StoreError('FEISHU_UNAVAILABLE', '飞书通道尚未连接，暂时无法生成绑定指令。', 409);
+    }
+    const session = sessionOf(req)!;
+    res.status(201).json(accounts!.issueFeishuBindingRequest(session.user.id, session.sessionId, feishuScope));
+  }));
+  app.post('/api/feishu/binding/cancel', requireBrowser, requireWrite, asyncRoute((req, res) => {
+    const body = bindingBody(req, ['requestId']);
+    const session = sessionOf(req)!;
+    accounts!.cancelFeishuBindingRequest(session.user.id, session.sessionId, bindingOperationId(body.requestId));
+    res.json(bindingStatus(req));
+  }));
+  app.post('/api/feishu/binding/revoke', requireBrowser, requireWrite, asyncRoute((req, res) => {
+    const body = bindingBody(req, ['bindingId']);
+    const session = sessionOf(req)!;
+    accounts!.revokeFeishuBinding(session.user.id, session.sessionId, bindingOperationId(body.bindingId));
+    res.json(bindingStatus(req));
+  }));
 
   const importBody = express.json({ limit: IMPORT_BODY_LIMIT });
   const requireSourceHeader = (req: Request, _res: Response, next: NextFunction) => {
@@ -720,6 +772,14 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     closeChanges: () => { initialContext.changes.close(); for (const context of userContexts.values()) context.changes.close(); },
     token,
     port,
+    feishuBinding: {
+      confirm: (input) => {
+        if (!accounts || !feishuScope || !input || input.appId !== feishuScope.appId || input.tenantKey !== feishuScope.tenantKey) {
+          return { status: 'rejected' };
+        }
+        try { return accounts.confirmFeishuBinding(input); } catch { return { status: 'rejected' }; }
+      },
+    },
     close: () => {
       initialContext.changes.close();
       store.close();

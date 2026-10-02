@@ -117,13 +117,13 @@ test('factory and start failures are redacted and do not reject local startup', 
   }
 });
 
-test('all valid cards return the same unbound toast regardless of payload claims', async () => {
+test('all valid cards return the same unavailable-card toast regardless of payload claims', async () => {
   const f = fixture();
   await f.connector.start();
   const event = action();
   Object.defineProperty(event.action, 'value', { get() { throw new Error('claims must not be read'); } });
   const response = f.callbacks().onCardAction(event);
-  assert.deepEqual(response, { toast: { type: 'info', content: '账号绑定尚未接入，请等待后续功能。' } });
+  assert.deepEqual(response, { toast: { type: 'info', content: '知识卡片操作尚未接入，请等待后续功能。' } });
   const other = action();
   other.operator.open_id = 'another-synthetic-actor';
   assert.deepEqual(f.callbacks().onCardAction(other), response);
@@ -237,5 +237,51 @@ test('status observers cannot mutate internal state or break connector lifecycle
   assert.deepEqual(connector.getStatus(), { state: 'starting' });
   callbacks.onReady();
   assert.deepEqual(connector.getStatus(), { state: 'connected' });
+  await connector.stop();
+});
+
+test('only parsed private user confirmation commands reach the narrow binding capability', async () => {
+  let callbacks!: FeishuDriverCallbacks;
+  const calls: unknown[] = [];
+  const connector = createFeishuConnector({
+    env: enabledEnv,
+    driverFactory: async (_config, hooks) => { callbacks = hooks; return { start() {}, close() {} }; },
+    confirmBinding: (input) => { calls.push(input); return { status: 'confirmed' }; },
+  });
+  await connector.start();
+  const message = {
+    schema: '2.0', event_type: 'im.message.receive_v1', event_id: 'synthetic-event',
+    app_id: enabledEnv.LM_FEISHU_APP_ID, tenant_key: enabledEnv.LM_FEISHU_TENANT_KEY,
+    sender: { sender_type: 'user', sender_id: { open_id: 'synthetic-actor' } },
+    message: { chat_type: 'p2p', message_type: 'text', message_id: 'synthetic-message', chat_id: 'synthetic-chat',
+      content: JSON.stringify({ text: `确认绑定 LM-${'a'.repeat(22)}` }) },
+  };
+  callbacks.onMessage!(null);
+  callbacks.onMessage!({ ...message, sender: { ...message.sender, sender_type: 'bot' } });
+  assert.equal(calls.length, 0);
+  callbacks.onMessage!(message);
+  assert.deepEqual(calls, [{ appId: enabledEnv.LM_FEISHU_APP_ID, tenantKey: enabledEnv.LM_FEISHU_TENANT_KEY,
+    openId: 'synthetic-actor', eventId: 'synthetic-event', messageId: 'synthetic-message', chatId: 'synthetic-chat', code: `LM-${'a'.repeat(22)}` }]);
+  await connector.stop();
+  callbacks.onMessage!(message);
+  assert.equal(calls.length, 1);
+});
+
+test('binding capability failure never escapes into SDK callbacks or status logs', async () => {
+  let callbacks!: FeishuDriverCallbacks;
+  const statuses: Readonly<FeishuConnectorStatus>[] = [];
+  const connector = createFeishuConnector({
+    env: enabledEnv, onStatus: (status) => statuses.push(status),
+    driverFactory: async (_config, hooks) => { callbacks = hooks; return { start() {}, close() {} }; },
+    confirmBinding: () => { throw new Error('synthetic-secret private-message-and-code'); },
+  });
+  await connector.start();
+  assert.doesNotThrow(() => callbacks.onMessage!({
+    event_type: 'im.message.receive_v1', event_id: 'event', app_id: enabledEnv.LM_FEISHU_APP_ID,
+    tenant_key: enabledEnv.LM_FEISHU_TENANT_KEY, sender: { sender_type: 'user', sender_id: { open_id: 'actor' } },
+    message: { chat_type: 'p2p', message_type: 'text', message_id: 'message', chat_id: 'chat',
+      content: JSON.stringify({ text: `确认绑定 LM-${'a'.repeat(22)}` }) },
+  }));
+  assert.deepEqual(statuses, [{ state: 'starting' }]);
   await connector.stop();
 });

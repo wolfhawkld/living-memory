@@ -1,5 +1,7 @@
 import { parseFeishuConfig, type FeishuConfigErrorCode } from './feishu-config.js';
 import { normalizeFeishuSdkCardAction } from './feishu-events.js';
+import { normalizeFeishuBindingMessage } from './feishu-messages.js';
+import type { FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuChannelState } from '../shared/feishu-binding.js';
 import {
   createFeishuSdkDriverFactory,
   type FeishuCardResponse,
@@ -8,7 +10,7 @@ import {
   type FeishuDriverFactory,
 } from './feishu-sdk-driver.js';
 
-export type FeishuConnectorState = 'disabled' | 'starting' | 'connected' | 'reconnecting' | 'error' | 'stopped';
+export type FeishuConnectorState = FeishuChannelState;
 export type FeishuConnectorErrorCode = FeishuConfigErrorCode
   | 'sdk-init-failed' | 'sdk-start-failed' | 'sdk-connection-error' | 'sdk-stop-failed';
 export interface FeishuConnectorStatus {
@@ -24,16 +26,17 @@ export interface FeishuConnectorOptions {
   env: Record<string, string | undefined>;
   driverFactory?: FeishuDriverFactory;
   onStatus?: (status: Readonly<FeishuConnectorStatus>) => void;
+  confirmBinding?: (input: FeishuBindingConfirmation) => FeishuBindingConfirmationResult;
 }
 
 function denied(): FeishuCardResponse {
   return { toast: { type: 'error', content: '当前无法处理此卡片操作。' } };
 }
 function bindingNotReady(): FeishuCardResponse {
-  return { toast: { type: 'info', content: '账号绑定尚未接入，请等待后续功能。' } };
+  return { toast: { type: 'info', content: '知识卡片操作尚未接入，请等待后续功能。' } };
 }
 
-/** No account/knowledge/learning service is available to this foundation connector. */
+/** Only a narrow binding confirmation capability is available; no knowledge or learning access. */
 export function createFeishuConnector(options: FeishuConnectorOptions): FeishuConnector {
   const configuration = parseFeishuConfig(options.env);
   const factory = options.driverFactory ?? createFeishuSdkDriverFactory();
@@ -68,6 +71,13 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
       // Only the authenticated SDK WS callback reaches this adapter. Parsing itself is not authentication.
       const parsed = normalizeFeishuSdkCardAction(event, configuration.value);
       return parsed.ok ? bindingNotReady() : denied();
+    },
+    onMessage: (event) => {
+      if (stopped || !driverStarted || !configuration.ok || !configuration.value.enabled) return;
+      const command = normalizeFeishuBindingMessage(event, configuration.value);
+      if (!command) return;
+      // Confirmation is an internal capability; never synthesize an HTTP request or owner session.
+      try { options.confirmBinding?.(command); } catch { /* No SDK error or message body is logged. */ }
     },
   };
 

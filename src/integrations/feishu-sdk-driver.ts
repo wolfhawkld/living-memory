@@ -10,6 +10,7 @@ export interface FeishuDriverCallbacks {
   onReconnecting: () => void;
   onReconnected: () => void;
   onCardAction: (event: unknown) => FeishuCardResponse;
+  onMessage?: (event: unknown) => void;
 }
 export interface FeishuDriver {
   start: () => Promise<void> | void;
@@ -28,7 +29,7 @@ export const FEISHU_SILENT_LOGGER = Object.freeze({
 
 interface SdkContract {
   EventDispatcher: new (options: { logger: typeof FEISHU_SILENT_LOGGER }) => {
-    register: (handlers: Record<string, (event: unknown) => FeishuCardResponse>) => unknown;
+    register: (handlers: Record<string, (event: unknown) => FeishuCardResponse | void>) => unknown;
   };
   WSClient: new (options: {
     appId: string;
@@ -61,6 +62,7 @@ export function createFeishuSdkDriverFactory(
     const sdk = loaded as SdkContract;
     const eventDispatcher = new sdk.EventDispatcher({ logger: FEISHU_SILENT_LOGGER }).register({
       'card.action.trigger': (event) => callbacks.onCardAction(event),
+      'im.message.receive_v1': (event) => callbacks.onMessage?.(event),
     });
     const client = new sdk.WSClient({
       appId: config.appId,

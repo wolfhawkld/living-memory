@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import type { AccountUser } from '../shared/accounts.js';
+import type { FeishuActor, FeishuScope, FeishuBindingView, FeishuBindingRequestView, FeishuBindingIssued, FeishuBindingConfirmation, FeishuBindingConfirmationResult } from '../shared/feishu-binding.js';
 import { StoreError } from './store.js';
 
 const PASSWORD_MIN_LENGTH = 12;
@@ -35,6 +36,7 @@ export interface AccountsOptions {
 }
 
 export interface AccountSession {
+  kind: 'browser' | 'device';
   user: AccountUser;
   csrfToken: string;
   expiresAt: string;
@@ -61,10 +63,22 @@ interface AccountRow {
 }
 
 interface SessionRow {
+  kind: 'browser' | 'device';
   session_id: string;
   user_id: string;
   csrf_token: string;
   expires_at: string;
+}
+
+export type { FeishuBindingConfirmation } from '../shared/feishu-binding.js';
+
+interface BindingRequestRow {
+  id: string; user_id: string; session_id: string; account_access_revision: number;
+  status: FeishuBindingRequestView['status']; expires_at: string; open_id: string | null;
+}
+
+function validFeishuText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256 && value.trim() === value;
 }
 
 interface LoginFailure {
@@ -197,6 +211,22 @@ export class Accounts {
       CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS feishu_bindings (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES accounts(id),
+        account_access_revision INTEGER NOT NULL, app_id TEXT NOT NULL,
+        tenant_key TEXT NOT NULL, open_id TEXT NOT NULL, bound_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS feishu_binding_user_active ON feishu_bindings(user_id) WHERE revoked_at IS NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS feishu_binding_actor_active ON feishu_bindings(app_id, tenant_key, open_id) WHERE revoked_at IS NULL;
+      CREATE TABLE IF NOT EXISTS feishu_binding_requests (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE REFERENCES accounts(id),
+        session_id TEXT NOT NULL, account_access_revision INTEGER NOT NULL,
+        app_id TEXT NOT NULL, tenant_key TEXT NOT NULL, code_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','confirmed','cancelled','expired','invalidated')),
+        confirmed_at TEXT, open_id TEXT, event_id TEXT, message_id TEXT, chat_id TEXT
       );
       CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id);
       CREATE INDEX IF NOT EXISTS sessions_by_expiry ON sessions(expires_at);
@@ -406,7 +436,7 @@ export class Accounts {
         session_id, user_id, token_hash, csrf_token, kind, expires_at, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(sessionId, account.id, tokenHash(token), csrfToken, kind, expiresAt, createdAt);
       this.db.exec('COMMIT');
-      return { token, user: accountUser(current), csrfToken, expiresAt, sessionId };
+      return { token, user: accountUser(current), csrfToken, expiresAt, sessionId, kind };
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
       if (error instanceof StoreError) throw error;
@@ -417,7 +447,7 @@ export class Accounts {
   authenticate(rawToken: unknown): AccountSession | null {
     if (typeof rawToken !== 'string' || !rawToken.trim()) return null;
     const now = nowDate(this.now);
-    const row = this.db.prepare(`SELECT s.session_id, s.user_id, s.csrf_token, s.expires_at,
+    const row = this.db.prepare(`SELECT s.session_id, s.user_id, s.csrf_token, s.expires_at, s.kind,
       u.id, u.username, u.role, u.enabled, u.access_revision, u.password_hash
       FROM sessions s JOIN accounts u ON u.id = s.user_id
       WHERE s.token_hash = ?`).get(tokenHash(rawToken.trim())) as (SessionRow & AccountRow) | undefined;
@@ -428,6 +458,7 @@ export class Accounts {
     }
     return {
       sessionId: row.session_id,
+      kind: row.kind,
       csrfToken: row.csrf_token,
       expiresAt: row.expires_at,
       user: accountUser(row),
@@ -437,6 +468,124 @@ export class Accounts {
   logout(rawToken: unknown): void {
     if (typeof rawToken !== 'string' || !rawToken.trim()) return;
     this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash(rawToken.trim()));
+  }
+
+  private bindingTransaction<T>(action: () => T): T {
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      const result = action();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (error instanceof StoreError) throw error;
+      throw accountError('WRITE_FAILED', '飞书绑定暂时无法保存，请稍后重试。', 503);
+    }
+  }
+
+  private requireBindingBrowser(userId: string, sessionId: string, now: string): AccountRow {
+    const account = this.getAccountById(userId);
+    const session = this.db.prepare('SELECT user_id, kind, expires_at FROM sessions WHERE session_id = ?').get(sessionId) as { user_id: string; kind: string; expires_at: string } | undefined;
+    if (!account?.enabled || !session || session.user_id !== userId || session.kind !== 'browser' || session.expires_at <= now) {
+      throw accountError('BROWSER_SESSION_REQUIRED', '请使用有效的浏览器会话管理飞书绑定。', 403);
+    }
+    return account;
+  }
+
+  private invalidateFeishuUser(userId: string, now: string): void {
+    this.db.prepare('UPDATE feishu_bindings SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL').run(now, userId);
+    this.db.prepare("UPDATE feishu_binding_requests SET status = 'invalidated' WHERE user_id = ? AND status IN ('pending','confirmed')").run(userId);
+  }
+
+  private refreshFeishuRequest(userId: string, now: string): void {
+    this.db.prepare(`UPDATE feishu_binding_requests SET status = CASE WHEN expires_at <= ? THEN 'expired' ELSE 'invalidated' END
+      WHERE user_id = ? AND status = 'pending' AND (expires_at <= ? OR NOT EXISTS (
+        SELECT 1 FROM sessions s JOIN accounts a ON a.id = s.user_id
+        WHERE s.session_id = feishu_binding_requests.session_id AND s.user_id = feishu_binding_requests.user_id
+          AND s.kind = 'browser' AND s.expires_at > ? AND a.enabled = 1
+          AND a.access_revision = feishu_binding_requests.account_access_revision
+      ))`).run(now, userId, now, now);
+  }
+
+  getFeishuBindingState(userId: string): { binding: FeishuBindingView | null; request: FeishuBindingRequestView | null } {
+    const now = iso(nowDate(this.now));
+    this.refreshFeishuRequest(userId, now);
+    const binding = this.db.prepare(`SELECT b.id, b.app_id AS appId, b.tenant_key AS tenantKey, b.open_id AS openId, b.bound_at AS boundAt
+      FROM feishu_bindings b JOIN accounts a ON a.id = b.user_id
+      WHERE b.user_id = ? AND b.revoked_at IS NULL AND a.enabled = 1 AND a.access_revision = b.account_access_revision`).get(userId) as unknown as FeishuBindingView | undefined;
+    const request = this.db.prepare(`SELECT id, status, expires_at AS expiresAt, confirmed_at AS confirmedAt FROM feishu_binding_requests WHERE user_id = ?`).get(userId) as unknown as FeishuBindingRequestView | undefined;
+    return { binding: binding ?? null, request: request ?? null };
+  }
+
+  issueFeishuBindingRequest(userId: string, sessionId: string, scope: FeishuScope): FeishuBindingIssued {
+    if (!validFeishuText(scope?.appId) || !validFeishuText(scope?.tenantKey)) throw accountError('INVALID_FEISHU_SCOPE', '飞书应用范围无效。');
+    const now = nowDate(this.now);
+    const createdAt = iso(now);
+    const code = `LM-${randomBytes(16).toString('base64url')}`;
+    return this.bindingTransaction(() => {
+      const account = this.requireBindingBrowser(userId, sessionId, createdAt);
+      if (this.db.prepare('SELECT 1 FROM feishu_bindings WHERE user_id = ? AND revoked_at IS NULL').get(userId)) {
+        throw accountError('FEISHU_ALREADY_BOUND', '请先解除已有飞书绑定。', 409);
+      }
+      const session = this.db.prepare('SELECT expires_at FROM sessions WHERE session_id = ?').get(sessionId) as { expires_at: string };
+      const expiresAt = iso(new Date(Math.min(now.getTime() + 10 * 60 * 1000, Date.parse(session.expires_at))));
+      const id = randomUUID();
+      this.db.prepare('DELETE FROM feishu_binding_requests WHERE user_id = ?').run(userId);
+      this.db.prepare(`INSERT INTO feishu_binding_requests(id,user_id,session_id,account_access_revision,app_id,tenant_key,code_hash,created_at,expires_at,status)
+        VALUES(?,?,?,?,?,?,?,?,?,'pending')`).run(id,userId,sessionId,account.access_revision,scope.appId,scope.tenantKey,tokenHash(code),createdAt,expiresAt);
+      return { request: { id, status: 'pending', expiresAt, confirmedAt: null }, command: `确认绑定 ${code}` };
+    });
+  }
+
+  cancelFeishuBindingRequest(userId: string, sessionId: string, requestId: unknown): void {
+    if (!validFeishuText(requestId)) throw accountError('INVALID_FEISHU_REQUEST', '绑定请求标识无效。');
+    this.bindingTransaction(() => {
+      this.requireBindingBrowser(userId, sessionId, iso(nowDate(this.now)));
+      this.db.prepare("UPDATE feishu_binding_requests SET status = 'cancelled' WHERE id = ? AND user_id = ? AND status = 'pending'").run(requestId, userId);
+    });
+  }
+
+  revokeFeishuBinding(userId: string, sessionId: string, bindingId: unknown): void {
+    if (!validFeishuText(bindingId)) throw accountError('INVALID_FEISHU_BINDING', '飞书绑定标识无效。');
+    const now = iso(nowDate(this.now));
+    this.bindingTransaction(() => {
+      this.requireBindingBrowser(userId, sessionId, now);
+      const existing = this.db.prepare('SELECT revoked_at FROM feishu_bindings WHERE id = ? AND user_id = ?').get(bindingId, userId) as { revoked_at: string | null } | undefined;
+      if (!existing) throw accountError('FEISHU_BINDING_NOT_FOUND', '飞书绑定不存在。', 404);
+      if (existing.revoked_at !== null) return;
+      this.db.prepare('UPDATE feishu_bindings SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL').run(now, bindingId, userId);
+      this.db.prepare("UPDATE feishu_binding_requests SET status = 'invalidated' WHERE user_id = ? AND status IN ('pending','confirmed')").run(userId);
+    });
+  }
+
+  confirmFeishuBinding(input: FeishuBindingConfirmation): FeishuBindingConfirmationResult {
+    if (!input || typeof input.code !== 'string' || !/^LM-[A-Za-z0-9_-]{22}$/.test(input.code) || ![input.appId,input.tenantKey,input.openId,input.eventId,input.messageId,input.chatId].every(validFeishuText)) return { status: 'rejected' };
+    const now = iso(nowDate(this.now));
+    return this.bindingTransaction(() => {
+      const row = this.db.prepare('SELECT * FROM feishu_binding_requests WHERE code_hash = ? AND app_id = ? AND tenant_key = ?').get(tokenHash(input.code), input.appId, input.tenantKey) as unknown as BindingRequestRow | undefined;
+      if (!row) return { status: 'rejected' };
+      this.refreshFeishuRequest(row.user_id, now);
+      const account = this.getAccountById(row.user_id);
+      if (!account?.enabled || account.access_revision !== row.account_access_revision) return { status: 'rejected' };
+      if (row.status === 'confirmed') {
+        const binding = this.resolveFeishuAccount(input);
+        const activeRequest = this.db.prepare('SELECT status FROM feishu_binding_requests WHERE id = ?').get(row.id) as {status: string};
+        return { status: activeRequest.status === 'confirmed' && row.open_id === input.openId && binding?.id === row.user_id ? 'duplicate' : 'rejected' };
+      }
+      if (row.status !== 'pending' || row.expires_at <= now) return { status: 'rejected' };
+      try { this.requireBindingBrowser(row.user_id, row.session_id, now); } catch (error) { if (error instanceof StoreError) return { status: 'rejected' }; throw error; }
+      if (this.db.prepare(`SELECT 1 FROM feishu_bindings WHERE revoked_at IS NULL AND (user_id = ? OR (app_id = ? AND tenant_key = ? AND open_id = ?))`).get(row.user_id,input.appId,input.tenantKey,input.openId)) return { status: 'rejected' };
+      this.db.prepare(`INSERT INTO feishu_bindings(id,user_id,account_access_revision,app_id,tenant_key,open_id,bound_at) VALUES(?,?,?,?,?,?,?)`).run(randomUUID(),row.user_id,account.access_revision,input.appId,input.tenantKey,input.openId,now);
+      this.db.prepare(`UPDATE feishu_binding_requests SET status = 'confirmed', confirmed_at = ?, open_id = ?, event_id = ?, message_id = ?, chat_id = ? WHERE id = ?`).run(now,input.openId,input.eventId,input.messageId,input.chatId,row.id);
+      return { status: 'confirmed' };
+    });
+  }
+
+  resolveFeishuAccount(actor: FeishuActor): AccountUser | null {
+    if (!actor || ![actor.appId,actor.tenantKey,actor.openId].every(validFeishuText)) return null;
+    const row = this.db.prepare(`SELECT a.id,a.username,a.role,a.enabled,a.access_revision,a.password_hash FROM feishu_bindings b JOIN accounts a ON a.id = b.user_id
+      WHERE b.app_id = ? AND b.tenant_key = ? AND b.open_id = ? AND b.revoked_at IS NULL AND a.enabled = 1 AND a.access_revision = b.account_access_revision`).get(actor.appId,actor.tenantKey,actor.openId) as unknown as AccountRow | undefined;
+    return row ? accountUser(row) : null;
   }
 
   listUsers(): AccountUser[] {
@@ -506,6 +655,7 @@ export class Accounts {
           fresh.id,
         );
         this.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(fresh.id);
+        this.invalidateFeishuUser(fresh.id, now);
       }
       this.db.exec('COMMIT');
     } catch (error) {
