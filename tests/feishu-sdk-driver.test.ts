@@ -7,7 +7,7 @@ import {
 } from '../src/integrations/feishu-sdk-driver.js';
 
 const config: EnabledFeishuConfig = {
-  enabled: true, appId: 'cli_0000000000000000', appSecret: 'synthetic-secret', tenantKey: 'synthetic-tenant',
+  enabled: true, appId: 'cli_0000000000000000', appSecret: 'synthetic-secret', tenantKey: 'synthetic-tenant', timeZone: 'UTC',
 };
 const response: FeishuCardResponse = { toast: { type: 'info', content: 'Synthetic response' } };
 

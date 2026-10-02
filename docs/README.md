@@ -45,7 +45,8 @@
 - [CLI 与 KG 日常触发](development/cli-and-kg-triggers.md)：查询、明确确认重温、重试、Agent 收尾钩子与页面变化通知。
 - [飞书连接器基础](development/feishu-connector.md)：FEISHU-01B 官方 SDK 长连接默认关闭，配置、readiness、固定回执和停止边界已接入；已补齐一次性账号绑定，真实平台接入待验。
 - [飞书账号绑定](development/feishu-account-binding.md)：FEISHU-01C 浏览器发起、本人机器人私聊确认及账号存储已实现；默认关闭、真实往返待验。
-- [飞书知识列表与正文阅读](development/feishu-knowledge-reading.md)：FEISHU-02A 本人私聊文本命令、领域 / 搜索 / 排序和纯文本分页已实现；读取不写学习记录，点击式卡片与复习仍待开发。
+- [飞书知识列表与正文阅读](development/feishu-knowledge-reading.md)：FEISHU-02A 本人私聊文本命令、领域 / 搜索 / 排序和纯文本分页已实现；读取不写学习记录；点击式浏览见 FEISHU-02B，复习写回仍待开发。
+- [飞书知识卡片与待复习查看](development/feishu-card-browsing.md)：FEISHU-02B 点击式浏览、正文分页和候选已实现；默认关闭、平台待验，只读不扣预算、不写学习记录。
 - [飞书接入离线探针](development/feishu-offline-probe.md)：官方 V2 卡片 / 回调证据、合成身份范围及协议回执检查；无联网或私人记录操作，真实应用接入仍待验证。
 
 ## 路线、主题与验证进度

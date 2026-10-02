@@ -4,7 +4,7 @@ import { setImmediate } from 'node:timers/promises';
 import { createFeishuSdkDriverFactory, FEISHU_HTTP_TIMEOUT_MS, FEISHU_SILENT_LOGGER,
   type FeishuDriverCallbacks } from '../src/integrations/feishu-sdk-driver.js';
 
-const config = { enabled: true as const, appId: 'cli_1111111111111111', appSecret: 'synthetic-secret', tenantKey: 'synthetic-tenant' };
+const config = { enabled: true as const, appId: 'cli_1111111111111111', appSecret: 'synthetic-secret', tenantKey: 'synthetic-tenant', timeZone: 'UTC' };
 const hooks: FeishuDriverCallbacks = { onReady() {}, onError() {}, onReconnecting() {}, onReconnected() {},
   onCardAction() { return { toast: { type: 'info', content: 'synthetic' } }; } };
 const input = { openId: 'synthetic-open-id', text: 'Synthetic knowledge. 数学 🧠', uuid: '1'.repeat(32), stillAuthorized: () => true };

@@ -18,7 +18,7 @@ test('binding dialog SSR is accessible, names current account, and makes the lim
   }));
   assert.match(html, /<dialog[^>]*aria-labelledby=/);
   assert.match(html, /synthetic-user/);
-  assert.match(html, /绑定并连接后可发送「知识」查看资料；卡片复习尚未接入/);
+  assert.match(html, /「知识 卡片」点击浏览，或「知识 待复习」查看候选；复习记录写回尚未接入/);
   assert.match(html, /读取绑定状态中/);
   assert.doesNotMatch(html, /secret-session-token|synthetic-space|textarea|LM-/);
 });

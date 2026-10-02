@@ -5,6 +5,7 @@ import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'no
 import type { AccountUser } from '../shared/accounts.js';
 import type { FeishuActor, FeishuScope, FeishuBindingView, FeishuBindingRequestView, FeishuBindingIssued, FeishuBindingConfirmation, FeishuBindingConfirmationResult } from '../shared/feishu-binding.js';
 import { StoreError } from './store.js';
+import type { FeishuCardDraftInput, FeishuCardStored, FeishuCardNavAction, FeishuCardView } from '../shared/feishu-cards.js';
 import type { FeishuDeliveryResult, FeishuReadAuthorization } from '../shared/feishu-reading.js';
 
 const PASSWORD_MIN_LENGTH = 12;
@@ -80,6 +81,46 @@ interface BindingRequestRow {
 
 function validFeishuText(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 256 && value.trim() === value;
+}
+
+function validCardId(value: unknown): value is string { return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value); }
+function validFingerprint(value: unknown): value is string { return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value); }
+function strictKeys(value: unknown, keys: string[]): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+function cardPage(value: unknown): boolean { return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= 100_000; }
+function cardDomain(value: unknown): boolean { return value === null || (typeof value === 'string' && value.length > 0 && value.length <= 512); }
+function validCardView(value: unknown, allowRead = true): value is FeishuCardView {
+  if (!value || typeof value !== 'object') return false;
+  const view = value as Record<string, unknown>;
+  if (view.kind === 'help') return strictKeys(view,['kind']);
+  if (view.kind === 'domains') return strictKeys(view,['kind','page']) && cardPage(view.page);
+  if (view.kind === 'list') return strictKeys(view,['kind','domainId','query','sort','page']) && cardDomain(view.domainId)
+    && typeof view.query === 'string' && view.query.length <= 120 && ['elapsed','title'].includes(view.sort as string) && cardPage(view.page);
+  if (view.kind === 'due') return strictKeys(view,['kind','domainId','limit']) && cardDomain(view.domainId) && [3,5].includes(view.limit as number);
+  if (view.kind === 'read' && allowRead) return strictKeys(view,['kind','reference','page','revision','back'])
+    && typeof view.reference === 'string' && /^[a-f0-9]{12,64}$/.test(view.reference) && cardPage(view.page)
+    && typeof view.revision === 'string' && /^[a-f0-9]{12}$/.test(view.revision)
+    && !!view.back && ['list','due'].includes((view.back as Record<string,unknown>).kind as string) && validCardView(view.back,false);
+  return false;
+}
+function validCardDraft(value: unknown): value is FeishuCardDraftInput {
+  if (!strictKeys(value,['namespace','sourceFingerprint','originChatId','view','actions'])
+      || !validFeishuText(value.namespace) || !validFingerprint(value.sourceFingerprint) || !validFeishuText(value.originChatId)
+      || !validCardView(value.view) || !Array.isArray(value.actions) || value.actions.length > 16) return false;
+  const ids = new Set<string>();
+  for (const action of value.actions) {
+    if (!strictKeys(action,['id','target']) || typeof action.id !== 'string' || !/^a(?:[0-9]|1[0-5])$/.test(action.id)
+        || ids.has(action.id) || !validCardView(action.target)) return false;
+    ids.add(action.id);
+  }
+  try { return Buffer.byteLength(JSON.stringify(value), 'utf8') <= 16 * 1024; }
+  catch { return false; }
+}
+function validCardAction(action: FeishuCardNavAction): boolean {
+  return !!action && validCardId(action.cardId) && typeof action.actionId === 'string' && /^a(?:[0-9]|1[0-5])$/.test(action.actionId)
+    && [action.appId,action.tenantKey,action.openId,action.eventId,action.messageId,action.chatId].every(validFeishuText);
 }
 
 interface LoginFailure {
@@ -235,6 +276,17 @@ export class Accounts {
         created_at TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('attempted', 'platform-accepted', 'failed-or-unknown'))
       );
+      CREATE TABLE IF NOT EXISTS feishu_card_views (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES accounts(id),
+        account_access_revision INTEGER NOT NULL, binding_id TEXT NOT NULL,
+        app_id TEXT NOT NULL, tenant_key TEXT NOT NULL, open_id TEXT NOT NULL,
+        namespace TEXT NOT NULL, source_fingerprint TEXT NOT NULL, origin_chat_id TEXT NOT NULL,
+        view_json TEXT NOT NULL, actions_json TEXT NOT NULL,
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+        message_id TEXT, chat_id TEXT,
+        status TEXT NOT NULL CHECK(status IN ('draft','active','consumed'))
+      );
+      CREATE INDEX IF NOT EXISTS feishu_cards_by_user ON feishu_card_views(user_id);
       CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id);
       CREATE INDEX IF NOT EXISTS sessions_by_expiry ON sessions(expires_at);
     `);
@@ -639,6 +691,127 @@ export class Accounts {
     if (typeof operationId !== 'string' || !/^[a-f0-9]{32}$/.test(operationId)) {
       throw accountError('INVALID_FEISHU_OPERATION', '飞书读取操作标识无效。');
     }
+  }
+
+  private cardTransaction<T>(action: () => T): T {
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      const result = action();
+      this.db.exec('COMMIT');
+      return result;
+    } catch {
+      try { this.db.exec('ROLLBACK'); } catch { /* fixed card error only */ }
+      throw accountError('WRITE_FAILED', '飞书卡片状态暂时无法保存，请稍后重试。', 503);
+    }
+  }
+
+  private cardAuthorization(actor: FeishuActor, auth: FeishuReadAuthorization): boolean {
+    if (!actor || !auth || ![actor.appId, actor.tenantKey, actor.openId, auth.userId, auth.bindingId].every(validFeishuText)
+        || !Number.isSafeInteger(auth.accessRevision)) return false;
+    return !!this.db.prepare(`SELECT 1 FROM feishu_bindings b JOIN accounts a ON a.id = b.user_id
+      WHERE b.id = ? AND a.id = ? AND a.enabled = 1 AND a.access_revision = ?
+        AND b.account_access_revision = a.access_revision AND b.revoked_at IS NULL
+        AND b.app_id = ? AND b.tenant_key = ? AND b.open_id = ?`).get(
+          auth.bindingId, auth.userId, auth.accessRevision, actor.appId, actor.tenantKey, actor.openId);
+  }
+
+  private cardById(id: string): FeishuCardStored | null {
+    const row = this.db.prepare('SELECT * FROM feishu_card_views WHERE id = ?').get(id);
+    if (!row) return null;
+    return {
+      id: row.id as string, actor: { appId: row.app_id as string, tenantKey: row.tenant_key as string, openId: row.open_id as string },
+      authorization: { userId: row.user_id as string, bindingId: row.binding_id as string, accessRevision: row.account_access_revision as number },
+      namespace: row.namespace as string, sourceFingerprint: row.source_fingerprint as string, originChatId: row.origin_chat_id as string,
+      view: JSON.parse(row.view_json as string) as FeishuCardView, actions: JSON.parse(row.actions_json as string) as FeishuCardStored['actions'],
+      createdAt: row.created_at as string, expiresAt: row.expires_at as string, messageId: row.message_id as string | null,
+      chatId: row.chat_id as string | null, status: row.status as FeishuCardStored['status'],
+    };
+  }
+
+  private sameCardOwner(card: FeishuCardStored, actor: FeishuActor, auth: FeishuReadAuthorization): boolean {
+    return !!actor && !!auth && card.actor.appId === actor.appId && card.actor.tenantKey === actor.tenantKey
+      && card.actor.openId === actor.openId && card.authorization.userId === auth.userId
+      && card.authorization.bindingId === auth.bindingId && card.authorization.accessRevision === auth.accessRevision;
+  }
+
+  createFeishuCardDraft(actor: FeishuActor, auth: FeishuReadAuthorization, input: FeishuCardDraftInput): FeishuCardStored | null {
+    if (!validCardDraft(input)) return null;
+    const now = nowDate(this.now);
+    const createdAt = iso(now);
+    return this.cardTransaction(() => {
+      if (!this.cardAuthorization(actor, auth)) return null;
+      this.db.prepare("DELETE FROM feishu_card_views WHERE expires_at <= ? OR (user_id = ? AND status = 'consumed')").run(createdAt, auth.userId);
+      const count = this.db.prepare('SELECT COUNT(*) AS count FROM feishu_card_views WHERE user_id = ?').get(auth.userId) as { count: number };
+      if (count.count >= 32) return null;
+      const id = randomUUID().replaceAll('-', '');
+      const expiresAt = iso(new Date(now.getTime() + 30 * 60 * 1000));
+      this.db.prepare(`INSERT INTO feishu_card_views(id,user_id,account_access_revision,binding_id,app_id,tenant_key,open_id,
+        namespace,source_fingerprint,origin_chat_id,view_json,actions_json,created_at,expires_at,status)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')`).run(id,auth.userId,auth.accessRevision,auth.bindingId,
+          actor.appId,actor.tenantKey,actor.openId,input.namespace,input.sourceFingerprint,input.originChatId,
+          JSON.stringify(input.view),JSON.stringify(input.actions),createdAt,expiresAt);
+      return this.cardById(id);
+    });
+  }
+
+  isFeishuCardDraftAuthorized(cardId: string, actor: FeishuActor, auth: FeishuReadAuthorization): boolean {
+    if (!validCardId(cardId)) return false;
+    try {
+      const card = this.cardById(cardId);
+      return !!card && card.status === 'draft' && card.expiresAt > iso(nowDate(this.now))
+        && this.sameCardOwner(card,actor,auth) && this.cardAuthorization(actor,auth);
+    } catch { throw accountError('WRITE_FAILED', '飞书卡片状态暂时无法读取，请稍后重试。', 503); }
+  }
+
+  discardFeishuCard(cardId: string, actor: FeishuActor, auth: FeishuReadAuthorization): void {
+    if (!validCardId(cardId)) return;
+    this.cardTransaction(() => {
+      const card = this.cardById(cardId);
+      if (card?.status === 'draft' && this.sameCardOwner(card,actor,auth)) {
+        this.db.prepare("DELETE FROM feishu_card_views WHERE id = ? AND status = 'draft'").run(cardId);
+      }
+    });
+  }
+
+  activateFeishuCard(cardId: string, actor: FeishuActor, auth: FeishuReadAuthorization, delivery: { messageId: string; chatId: string }): boolean {
+    if (!validCardId(cardId) || !delivery || ![delivery.messageId,delivery.chatId].every(validFeishuText)) return false;
+    return this.cardTransaction(() => {
+      const card = this.cardById(cardId);
+      if (!card || card.status !== 'draft' || card.expiresAt <= iso(nowDate(this.now)) || delivery.chatId !== card.originChatId
+          || !this.sameCardOwner(card,actor,auth) || !this.cardAuthorization(actor,auth)) return false;
+      this.db.prepare("UPDATE feishu_card_views SET status = 'consumed' WHERE binding_id = ? AND status = 'active'").run(auth.bindingId);
+      this.db.prepare("UPDATE feishu_card_views SET status = 'active', message_id = ?, chat_id = ? WHERE id = ?").run(delivery.messageId,delivery.chatId,cardId);
+      return true;
+    });
+  }
+
+  getFeishuCardForAction(action: FeishuCardNavAction): FeishuCardStored | null {
+    if (!validCardAction(action)) return null;
+    try {
+      const card = this.cardById(action.cardId);
+      return card && card.status === 'active' && card.expiresAt > iso(nowDate(this.now))
+        && this.sameCardOwner(card,action,card.authorization) && this.cardAuthorization(action,card.authorization)
+        && card.messageId === action.messageId && card.chatId === action.chatId && card.originChatId === action.chatId
+        && card.actions.some(entry => entry.id === action.actionId) ? card : null;
+    } catch { throw accountError('WRITE_FAILED', '飞书卡片状态暂时无法读取，请稍后重试。', 503); }
+  }
+
+  claimFeishuCardAction(action: FeishuCardNavAction, auth: FeishuReadAuthorization,
+    expected: { cardId: string; namespace: string; sourceFingerprint: string }): { card: FeishuCardStored; target: FeishuCardView; operationId: string } | null {
+    if (!validCardAction(action) || !expected || expected.cardId !== action.cardId
+        || !validFeishuText(expected.namespace) || !validFingerprint(expected.sourceFingerprint)) return null;
+    return this.cardTransaction(() => {
+      const card = this.getFeishuCardForAction(action);
+      if (!card || !this.sameCardOwner(card,action,auth) || card.namespace !== expected.namespace
+          || card.sourceFingerprint !== expected.sourceFingerprint) return null;
+      const target = card.actions.find(entry => entry.id === action.actionId)!.target;
+      const operationId = tokenHash(JSON.stringify(['feishu-card-click-v1',card.id,action.actionId])).slice(0,32);
+      const receipt = this.db.prepare("INSERT OR IGNORE INTO feishu_read_receipts(operation_id,user_id,created_at,status) VALUES(?,?,?,'attempted')")
+        .run(operationId,auth.userId,iso(nowDate(this.now)));
+      if (!receipt.changes) return null;
+      this.db.prepare("UPDATE feishu_card_views SET status = 'consumed' WHERE id = ?").run(card.id);
+      return { card, target, operationId };
+    });
   }
 
   listUsers(): AccountUser[] {

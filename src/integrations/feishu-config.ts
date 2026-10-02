@@ -8,10 +8,12 @@ export interface EnabledFeishuConfig {
   /** Credential for the transport only. Do not log or serialize this configuration. */
   appSecret: string;
   tenantKey: string;
+  /** Explicit calendar zone for persisted daily review counts. */
+  timeZone: string;
 }
 export type FeishuConfig = { enabled: false } | EnabledFeishuConfig;
 export type FeishuConfigErrorCode =
-  | 'invalid-enabled' | 'invalid-app-id' | 'invalid-app-secret' | 'invalid-tenant-key';
+  | 'invalid-enabled' | 'invalid-app-id' | 'invalid-app-secret' | 'invalid-tenant-key' | 'invalid-time-zone';
 export type FeishuConfigResult =
   | { ok: true; value: FeishuConfig }
   | { ok: false; code: FeishuConfigErrorCode };
@@ -35,5 +37,11 @@ export function parseFeishuConfig(env: Record<string, string | undefined>): Feis
   if (!validString(appSecret, FEISHU_SECRET_MAX_LENGTH)) return { ok: false, code: 'invalid-app-secret' };
   const tenantKey = own(env, 'LM_FEISHU_TENANT_KEY');
   if (!validString(tenantKey, FEISHU_ID_MAX_LENGTH)) return { ok: false, code: 'invalid-tenant-key' };
-  return { ok: true, value: { enabled: true, appId: appId.trim(), appSecret, tenantKey: tenantKey.trim() } };
+  const configuredZone = own(env, 'LM_FEISHU_TIME_ZONE');
+  const zone = configuredZone === undefined ? 'UTC' : configuredZone;
+  if (!validString(zone, 128)) return { ok: false, code: 'invalid-time-zone' };
+  const timeZone = zone.trim();
+  try { new Intl.DateTimeFormat('en-CA', { timeZone }).format(new Date(0)); }
+  catch { return { ok: false, code: 'invalid-time-zone' }; }
+  return { ok: true, value: { enabled: true, appId: appId.trim(), appSecret, tenantKey: tenantKey.trim(), timeZone } };
 }

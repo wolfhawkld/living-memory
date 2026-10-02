@@ -22,9 +22,21 @@ test('missing or zero flag disables transport and ignores all other configuratio
 test('enabled configuration trims identifiers and preserves secret bytes', () => {
   const input = { ...env(), LM_FEISHU_APP_ID: ' cli_0000000000000000 \t', LM_FEISHU_APP_SECRET: ' synthetic-secret \n', LM_FEISHU_TENANT_KEY: '\n synthetic-tenant ' };
   assert.deepEqual(parseFeishuConfig(input), { ok: true, value: {
-    enabled: true, appId: 'cli_0000000000000000', appSecret: input.LM_FEISHU_APP_SECRET, tenantKey: 'synthetic-tenant',
+    enabled: true, appId: 'cli_0000000000000000', appSecret: input.LM_FEISHU_APP_SECRET, tenantKey: 'synthetic-tenant', timeZone: 'UTC',
   } });
   assert.equal(input.LM_FEISHU_APP_ID, ' cli_0000000000000000 \t');
+});
+
+test('enabled review calendar defaults to UTC and validates an explicit IANA zone without exposing input', () => {
+  const result = parseFeishuConfig({ ...env(), LM_FEISHU_TIME_ZONE: ' Asia/Hong_Kong ' });
+  assert.equal(result.ok && result.value.enabled && result.value.timeZone, 'Asia/Hong_Kong');
+  for (const value of ['', '   ', 'Invalid/Synthetic', 'x'.repeat(129), null, 42, [], {}]) {
+    assert.deepEqual(parseFeishuConfig({ ...env(), LM_FEISHU_TIME_ZONE: value } as unknown as Record<string, string | undefined>),
+      { ok: false, code: 'invalid-time-zone' });
+  }
+  const disabled = { LM_FEISHU_ENABLED: '0' };
+  Object.defineProperty(disabled, 'LM_FEISHU_TIME_ZONE', { get() { throw new Error('Disabled config must not read zone'); } });
+  assert.deepEqual(parseFeishuConfig(disabled), { ok: true, value: { enabled: false } });
 });
 
 test('noncanonical and malicious enable flags return one fixed error without values', () => {

@@ -17,7 +17,7 @@
 
 参数值可用不含空格的裸字串，或 JSON 双引号字符串；未知参数、重复参数和错误语法显示帮助。命令最多 4096 字符，领域参数最多 512，查询最多 120，页码为 1～100000。阅读引用由当前账号概念 ID 的 SHA-256 前缀生成；发生短前缀冲突时使用完整摘要，不选择第一个匹配节点。
 
-列表每页 5 个概念，领域每页最多 10 个，较长领域按消息大小自动减少当页条数。每条显示名称、目录域、时间状态、距起点时间和最近真实确认重温时间。无有效起点的节点放到时间排序末尾，估算起点明确标为估算，长期保持仍可查看。这是全部知识的排序，**尚未提供待复习推荐、重点 / 暂缓筛选或预算消费**。
+列表每页 5 个概念，领域每页最多 10 个，较长领域按消息大小自动减少当页条数。每条显示名称、目录域、时间状态、距起点时间和最近真实确认重温时间。无有效起点的节点放到时间排序末尾，估算起点明确标为估算，长期保持仍可查看。这是文本入口的全部知识排序，不把它称为待复习推荐；后续[FEISHU-02B 卡片入口](feishu-card-browsing.md)已增加候选 / 重点 / 暂缓 / 每日预算筛选，两个入口的只读浏览都不消费预算。
 
 每项附完整阅读指令，页尾附完整下一页指令。正文第二页起带资料版本摘要；若服务中资料已刷新且版本变化，要求重开第一页，不把旧分页套到新正文。该校验针对服务当前缓存，未刷新的磁盘变化不在检测范围内。
 
@@ -39,7 +39,7 @@ SDK 可能先获取 tenant token 再发送正文，因此实际消息请求发�
 
 `accounts.sqlite` 加法创建 `feishu_read_receipts`，仅保存操作摘要、用户 UUID、时间和状态，不保存命令、正文、凭据或原始错误。操作摘要按应用、租户、身份和**原消息 ID**生成；事件 ID 改变的重投递仍命中同一记录。首次发送前事务占位并再次核验当前绑定；已有任何状态均不再次发送，重启后仍有效。
 
-`platform-accepted` 仅表示 API 的业务码为 0 且返回有效消息 ID，不表示用户已经查看。业务失败、网络失败或结果未知记为 `failed-or-unknown`；崩溃或结果无法落库可能保留 `attempted`，也不自动补发。需要再查看时，由本人主动发送一条新的指令。该表不是 outbox，无后台重试或当前自动清理；保留策略在 FEISHU-04 继续设计，也不包含在学习 JSON 导出内。
+`platform-accepted` 仅表示 API 的业务码为 0 且返回有效消息 ID，不表示用户已经查看。业务失败、网络失败或结果未知记为 `failed-or-unknown`；崩溃或结果无法落库可能保留 `attempted`，也不自动补发。需要再查看时，由本人主动发送一条新的指令。该表不是 outbox，无后台重试或当前自动清理；后续卡片 metadata 的清理也不会删除本表，保留策略在 FEISHU-04 继续设计，也不包含在学习 JSON 导出内。
 
 进程最多处理 4 个知识请求，每个身份最多 1 个在途请求、接纳间隔至少 1 秒，身份节流槽最多 256。超出限制不排队且可能无回复；本人可稍后发新命令。固定错误与静默 SDK logger 避免输出正文或凭据，发送失败不被误报为 WebSocket 断开。
 
@@ -55,4 +55,4 @@ SDK 可能先获取 tenant token 再发送正文，因此实际消息请求发�
 
 当前固定 Node SDK 1.74.0 的 `Client.im.message.create` 契约见[发布包](https://registry.npmjs.org/@larksuiteoapi/node-sdk/-/node-sdk-1.74.0.tgz)。官方[发送消息文档](https://open.feishu.cn/document/server-docs/im-v1/message/create)和[Java create UUID 说明](https://larksuite.github.io/oapi-sdk-java/com/lark/oapi/service/im/v1/model/CreateMessageReqBody.Builder.html)提供平台入口；一小时 UUID 去重不替代本项目持久占位。[官方 Go 消息模型](https://raw.githubusercontent.com/larksuite/oapi-sdk-go/v3_main/service/im/v1/model.go)给出文本请求体限制，本实现采用更小的消息预算。
 
-FEISHU-02B 保留点击式列表、阅读排版和待复习视图；FEISHU-03 再实现卡片复习与共用学习记录，FEISHU-04 完成失败恢复和真实客户端集中验收。完整拆分见[飞书 TODO](../planning/feishu-review-channel-todo-2026-10-02.md)。
+[FEISHU-02B](feishu-card-browsing.md) 已实现点击式列表、正文分页和待复习查看，默认关闭且平台往返待验；FEISHU-03 再实现卡片复习与共用学习记录，FEISHU-04 完成失败恢复和真实客户端集中验收。完整拆分见[飞书 TODO](../planning/feishu-review-channel-todo-2026-10-02.md)。

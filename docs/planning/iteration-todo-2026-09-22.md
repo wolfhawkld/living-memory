@@ -14,7 +14,7 @@
 
 2026-10-02，用户提出增加飞书知识点查看 / 复习通道：按列表排序节点，用类似背单词应用的卡片完成必要的核心功能，无需图谱可视化。已登记为 NEXT-06，并拆分为入口 / 身份 / 连接验证、列表阅读、卡片与共用记录、失败恢复与集中验收四项；见[飞书通道设计](feishu-review-channel-todo-2026-10-02.md)。
 
-卡片直接使用已有节点与正文，不要求本人维护新题库；复用现有时间候选、预算、排除规则、自评及独立确认重温。用户补充参考本机 OpenClaw / Hermes 的学术英文定时推送飞书聊天窗流程。随后要求继续，FEISHU-01 首轮官方协议核实与合成离线探针已完成，FEISHU-01B 默认关闭的官方 SDK 长连接基础已实现；首选机器人私聊 / V2 卡片，网页应用保留为备选。FEISHU-01C 已实现现有 Web 账号发起、本人与机器人私聊指令确认的一次性身份绑定及取消 / 解除；默认关闭，真实应用配置、发布和本人确认仍待验。FEISHU-02A 已补齐[私聊文本列表与阅读](../development/feishu-knowledge-reading.md)，读取不写学习记录、持久消息去重、发送前复核当前绑定和资料；下一项 FEISHU-02B 为点击式浏览与待复习视图；本轮未启用或重启个人服务，详见[账号绑定](../development/feishu-account-binding.md)、[连接器边界](../development/feishu-connector.md)和[离线探针](../development/feishu-offline-probe.md)。本项不恢复已暂缓的人工练习卡扩展，也不自动启动新的实现 goal。
+卡片直接使用已有节点与正文，不要求本人维护新题库；复用现有时间候选、预算、排除规则、自评及独立确认重温。用户补充参考本机 OpenClaw / Hermes 的学术英文定时推送飞书聊天窗流程。随后要求继续，FEISHU-01 首轮官方协议核实与合成离线探针已完成，FEISHU-01B 默认关闭的官方 SDK 长连接基础已实现；首选机器人私聊 / V2 卡片，网页应用保留为备选。FEISHU-01C 已实现现有 Web 账号发起、本人与机器人私聊指令确认的一次性身份绑定及取消 / 解除；默认关闭，真实应用配置、发布和本人确认仍待验。FEISHU-02A 已补齐[私聊文本列表与阅读](../development/feishu-knowledge-reading.md)，读取不写学习记录、持久消息去重、发送前复核当前绑定和资料；FEISHU-02B 已实现[点击式知识卡片与待复习查看](../development/feishu-card-browsing.md)，默认关闭且真实平台待验。下一项 FEISHU-03 为卡片复习与学习记录写回；本轮未启用或重启个人服务，详见[账号绑定](../development/feishu-account-binding.md)、[连接器边界](../development/feishu-connector.md)和[离线探针](../development/feishu-offline-probe.md)。本项不恢复已暂缓的人工练习卡扩展，也不自动启动新的实现 goal。
 
 ## 已交付，使用暂缓：场景卡与分阶段提示 goal
 

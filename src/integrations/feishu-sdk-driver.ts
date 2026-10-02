@@ -1,5 +1,6 @@
 import type { FeishuConfigResult } from './feishu-config.js';
 import type { FeishuDeliveryResult } from '../shared/feishu-reading.js';
+import type { FeishuCardDelivery, FeishuCardPayload } from '../shared/feishu-cards.js';
 
 export const FEISHU_HTTP_TIMEOUT_MS = 10_000;
 const MAX_SEND_BODY_BYTES = 12 * 1024;
@@ -8,6 +9,13 @@ export interface FeishuSendText {
   openId: string;
   text: string;
   uuid: string;
+  stillAuthorized: () => boolean;
+}
+export interface FeishuSendCard {
+  openId: string;
+  card: FeishuCardPayload;
+  uuid: string;
+  expectedChatId: string;
   stillAuthorized: () => boolean;
 }
 
@@ -27,6 +35,7 @@ export interface FeishuDriver {
   start: () => Promise<void> | void;
   close: () => Promise<void> | void;
   sendText?: (input: FeishuSendText) => Promise<FeishuDeliveryResult>;
+  sendCard?: (input: FeishuSendCard) => Promise<FeishuCardDelivery>;
 }
 export type FeishuDriverFactory = (config: EnabledFeishuConfig, callbacks: FeishuDriverCallbacks) => Promise<FeishuDriver>;
 
@@ -136,38 +145,55 @@ export function createFeishuSdkDriverFactory(
     });
     let closed = false;
     let sender: InstanceType<NonNullable<SdkContract['Client']>> | undefined;
-    const active = new Map<string, { openId: string; content: string; guard: () => boolean }>();
+    const active = new Map<string, { openId: string; msgType: 'text' | 'interactive'; content: string; guard: () => boolean }>();
     function authorizeDispatch(options: Record<string, unknown>): boolean {
       if (closed || options.url !== 'https://open.feishu.cn/open-apis/im/v1/messages' || options.method !== 'POST'
         || !record(options.params) || options.params.receive_id_type !== 'open_id' || !record(options.data)
-        || options.data.msg_type !== 'text' || typeof options.data.uuid !== 'string') return false;
+        || typeof options.data.uuid !== 'string') return false;
       const request = active.get(options.data.uuid);
-      return !!request && options.data.receive_id === request.openId && options.data.content === request.content && request.guard();
+      return !!request && options.data.msg_type === request.msgType && options.data.receive_id === request.openId
+        && options.data.content === request.content && request.guard();
+    }
+    async function send(input: Pick<FeishuSendText, 'openId' | 'uuid' | 'stillAuthorized'>,
+      msgType: 'text' | 'interactive', content: string, budget: number): Promise<Record<string, unknown> | null> {
+      if (closed || !input || !validId(input.openId)
+        || typeof input.uuid !== 'string' || !/^[a-f0-9]{32}$/.test(input.uuid)
+        || typeof input.stillAuthorized !== 'function' || active.has(input.uuid) || active.size >= 4) return null;
+      const data = { receive_id: input.openId, msg_type: msgType, content, uuid: input.uuid };
+      if (Buffer.byteLength(JSON.stringify(data), 'utf8') > budget) return null;
+      try {
+        if (!input.stillAuthorized()) return null;
+        active.set(input.uuid, { openId: input.openId, msgType, content, guard: input.stillAuthorized });
+        if (!sender) {
+          if (typeof sdk.Client !== 'function' || !sdk.defaultHttpInstance) return null;
+          sender = new sdk.Client({ appId: config.appId, appSecret: config.appSecret,
+            logger: FEISHU_SILENT_LOGGER, httpInstance: boundedHttp(sdk.defaultHttpInstance, authorizeDispatch) });
+        }
+        const response = await sender.im.message.create({ params: { receive_id_type: 'open_id' }, data });
+        return record(response) && response.code === 0 && record(response.data) && validId(response.data.message_id)
+          ? response.data : null;
+      } catch { return null; }
+      finally { active.delete(input.uuid); }
     }
     return {
       // start() only schedules connection; readiness comes from SDK callbacks.
       start: () => client.start({ eventDispatcher }),
       close: () => { closed = true; return client.close({ force: true }); },
       sendText: async (input) => {
-        if (closed || !input || !validId(input.openId)
-          || typeof input.uuid !== 'string' || !/^[a-f0-9]{32}$/.test(input.uuid)
-          || typeof input.text !== 'string' || !input.text.trim() || typeof input.stillAuthorized !== 'function'
-          || active.has(input.uuid) || active.size >= 4) return 'failed-or-unknown';
-        const data = { receive_id: input.openId, msg_type: 'text', content: JSON.stringify({ text: input.text }), uuid: input.uuid };
-        if (Buffer.byteLength(JSON.stringify(data), 'utf8') > MAX_SEND_BODY_BYTES) return 'failed-or-unknown';
+        if (!input || typeof input.text !== 'string' || !input.text.trim()) return 'failed-or-unknown';
+        return await send(input, 'text', JSON.stringify({ text: input.text }), MAX_SEND_BODY_BYTES)
+          ? 'platform-accepted' : 'failed-or-unknown';
+      },
+      sendCard: async (input) => {
+        const failed: FeishuCardDelivery = { status: 'failed-or-unknown' };
+        if (!input || !record(input.card) || input.card.schema !== '2.0' || !validId(input.expectedChatId)) return failed;
         try {
-          if (!input.stillAuthorized()) return 'failed-or-unknown';
-          active.set(input.uuid, { openId: input.openId, content: data.content, guard: input.stillAuthorized });
-          if (!sender) {
-            if (typeof sdk.Client !== 'function' || !sdk.defaultHttpInstance) return 'failed-or-unknown';
-            sender = new sdk.Client({ appId: config.appId, appSecret: config.appSecret,
-              logger: FEISHU_SILENT_LOGGER, httpInstance: boundedHttp(sdk.defaultHttpInstance, authorizeDispatch) });
-          }
-          const response = await sender.im.message.create({ params: { receive_id_type: 'open_id' }, data });
-          return record(response) && response.code === 0 && record(response.data) && validId(response.data.message_id)
-            ? 'platform-accepted' : 'failed-or-unknown';
-        } catch { return 'failed-or-unknown'; }
-        finally { active.delete(input.uuid); }
+          const content = JSON.stringify(input.card);
+          if (Buffer.byteLength(content, 'utf8') > 20 * 1024) return failed;
+          const response = await send(input, 'interactive', content, 24 * 1024);
+          return response && validId(response.message_id) && validId(response.chat_id) && response.chat_id === input.expectedChatId
+            ? { status: 'platform-accepted', messageId: response.message_id, chatId: response.chat_id } : failed;
+        } catch { return failed; }
       },
     };
   };

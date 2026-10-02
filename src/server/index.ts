@@ -12,12 +12,15 @@ const app = createApp({
   feishuScope: feishuConfiguration.ok && feishuConfiguration.value.enabled
     ? { appId: feishuConfiguration.value.appId, tenantKey: feishuConfiguration.value.tenantKey } : null,
   getFeishuChannelState: () => connector?.getStatus().state ?? 'disabled',
+  feishuTimeZone: feishuConfiguration.ok && feishuConfiguration.value.enabled ? feishuConfiguration.value.timeZone : 'UTC',
 });
 const server = createServer(app);
 connector = createFeishuConnector({
   env: process.env,
   confirmBinding: (input) => app.livingMemory.feishuBinding.confirm(input),
   prepareReading: (input) => app.livingMemory.feishuReading.prepare(input),
+  prepareCardMessage: (input) => app.livingMemory.feishuCards.prepareMessage(input),
+  prepareCardAction: (input) => app.livingMemory.feishuCards.prepareAction(input),
   onStatus: ({ state, code }) => {
     process.stdout.write(`Living Memory Feishu: ${state}${code ? ` (${code})` : ''}\n`);
   },

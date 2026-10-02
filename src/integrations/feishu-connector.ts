@@ -1,9 +1,14 @@
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { parseFeishuConfig, type FeishuConfigErrorCode } from './feishu-config.js';
 import { normalizeFeishuSdkCardAction } from './feishu-events.js';
+import { normalizeFeishuCardNavigation } from './feishu-card-actions.js';
+import { parseFeishuCardCommand } from './feishu-card-commands.js';
 import { normalizeFeishuBindingMessage, normalizeFeishuReadMessage } from './feishu-messages.js';
-import type { FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuChannelState } from '../shared/feishu-binding.js';
+import type { FeishuActor, FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuChannelState } from '../shared/feishu-binding.js';
 import type { FeishuDeliveryResult, FeishuReadMessage } from '../shared/feishu-reading.js';
+import type { FeishuCardDelivery, FeishuCardNavAction } from '../shared/feishu-cards.js';
 import type { PreparedFeishuReadReply } from '../server/feishu-reading.js';
+import type { PreparedFeishuCardReply } from '../server/feishu-cards.js';
 import {
   createFeishuSdkDriverFactory,
   type FeishuCardResponse,
@@ -30,6 +35,8 @@ export interface FeishuConnectorOptions {
   onStatus?: (status: Readonly<FeishuConnectorStatus>) => void;
   confirmBinding?: (input: FeishuBindingConfirmation) => FeishuBindingConfirmationResult;
   prepareReading?: (input: FeishuReadMessage) => PreparedFeishuReadReply | null;
+  prepareCardMessage?: (input: FeishuReadMessage) => PreparedFeishuCardReply | null;
+  prepareCardAction?: (input: FeishuCardNavAction) => PreparedFeishuCardReply | null;
   /** Monotonic clock for the process-local admission limiter. */
   now?: () => number;
 }
@@ -56,7 +63,7 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
   const actors = new Map<string, { acceptedAt: number; inFlight: boolean }>();
   const clock = options.now ?? (() => performance.now());
 
-  function admit(input: FeishuReadMessage): { acceptedAt: number; inFlight: boolean } | null {
+  function admit(input: FeishuActor): { acceptedAt: number; inFlight: boolean } | null {
     if (processing.size >= 4) return null;
     let instant: number;
     try { instant = clock(); } catch { return null; }
@@ -72,6 +79,31 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
     const entry = { acceptedAt: instant, inFlight: true };
     actors.set(key, entry);
     return entry;
+  }
+
+  function track(entry: { inFlight: boolean }, handle: () => Promise<void>): void {
+    // Let the SDK finish its callback/ACK continuation before synchronous
+    // database reads and source pagination begin in the next event-loop turn.
+    const work = nextTurn().then(handle);
+    processing.add(work);
+    void work.finally(() => { entry.inFlight = false; processing.delete(work); }).catch(() => {});
+  }
+
+  async function sendCard(input: FeishuActor, prepare: () => PreparedFeishuCardReply | null): Promise<void> {
+    if (stopped || !driverStarted) return;
+    let prepared: PreparedFeishuCardReply | null = null;
+    let delivery: FeishuCardDelivery = { status: 'failed-or-unknown' };
+    try {
+      prepared = prepare();
+      if (!prepared || stopped || !driverStarted || !driver?.sendCard
+        || prepared.actor.appId !== input.appId || prepared.actor.tenantKey !== input.tenantKey || prepared.actor.openId !== input.openId
+        || !prepared.stillAuthorized()) return;
+      const reply = prepared;
+      delivery = await driver.sendCard({ openId: reply.actor.openId, card: reply.card,
+        uuid: reply.operationId, expectedChatId: reply.expectedChatId,
+        stillAuthorized: () => !stopped && driverStarted && reply.stillAuthorized() });
+    } catch { /* No original card content or SDK errors enter logs. */ }
+    finally { if (prepared) { try { prepared.settle(delivery); } catch { /* Attempted receipt prevents implicit retry. */ } } }
   }
 
   async function readMessage(input: FeishuReadMessage): Promise<void> {
@@ -119,7 +151,14 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
       if (stopped || !driverStarted || !configuration.ok || !configuration.value.enabled) return denied();
       // Only the authenticated SDK WS callback reaches this adapter. Parsing itself is not authentication.
       const parsed = normalizeFeishuSdkCardAction(event, configuration.value);
-      return parsed.ok ? bindingNotReady() : denied();
+      if (!parsed.ok) return denied();
+      if (!options.prepareCardAction) return bindingNotReady();
+      const action = normalizeFeishuCardNavigation(event, configuration.value);
+      if (!action) return denied();
+      const entry = admit(action);
+      if (!entry) return denied();
+      track(entry, () => sendCard(action, () => options.prepareCardAction!(action)));
+      return { toast: { type: 'info', content: '已收到操作；无新卡时请发送「知识 卡片」。' } };
     },
     onMessage: (event) => {
       if (stopped || !driverStarted || !configuration.ok || !configuration.value.enabled) return;
@@ -130,13 +169,13 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
         return;
       }
       const input = normalizeFeishuReadMessage(event, configuration.value);
-      if (!input || !options.prepareReading) return;
+      if (!input) return;
+      const isCard = options.prepareCardMessage && parseFeishuCardCommand(input.text) !== null;
+      if (!isCard && !options.prepareReading) return;
       const entry = admit(input);
       if (!entry) return;
       // Track work separately so the SDK can acknowledge the incoming event promptly.
-      const work = Promise.resolve().then(() => readMessage(input));
-      processing.add(work);
-      void work.finally(() => { entry.inFlight = false; processing.delete(work); }).catch(() => {});
+      track(entry, isCard ? () => sendCard(input, () => options.prepareCardMessage!(input)) : () => readMessage(input));
     },
   };
 

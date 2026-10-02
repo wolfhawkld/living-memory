@@ -187,7 +187,7 @@ function BindingDialogSession({ accountLabel, sourceId, writeToken, onClose }: F
   return <dialog ref={dialog} className="feishu-binding-dialog" aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); close(); }}>
     <header><h2 id={titleId}>飞书账号绑定</h2><button type="button" onClick={close} autoFocus aria-label="关闭飞书账号绑定">关闭</button></header>
     <p>当前网页账号：<strong>{accountLabel}</strong></p>
-    <p className="feishu-binding-muted">在飞书机器人的私聊中发送确认指令，关联你自己的账号。绑定并连接后可发送「知识」查看资料；卡片复习尚未接入。</p>
+    <p className="feishu-binding-muted">在飞书机器人的私聊中发送确认指令，关联你自己的账号。绑定并连接后可发送「知识」查看资料、「知识 卡片」点击浏览，或「知识 待复习」查看候选；复习记录写回尚未接入。</p>
     {loading ? <p role="status">读取绑定状态中…</p> : null}
     {error ? <p className="feishu-binding-error" role="alert">{error}</p> : null}
     {status && status.channelState !== 'connected' ? <p className="feishu-binding-notice">{status.channelState === 'disabled'

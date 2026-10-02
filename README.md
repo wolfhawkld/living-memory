@@ -40,7 +40,7 @@ npm start
 | 保存与衔接 | 本机管理员/成员各有私人知识与学习记录；JSON 导出及预览恢复、概念改名/移动后的人工历史衔接、待同步重试 |
 | 融入日常通道 | CLI 查询与明确确认重温，可选 progressive-kg 的成功收尾刷新钩子，Web 接收变化通知 |
 
-`develop` 另有默认关闭的[飞书绑定与知识阅读通道](docs/development/feishu-knowledge-reading.md)：本人私聊指令查看领域、搜索、排序和分页正文，读取不会更新记忆。文本浏览软件链已实现；真实飞书往返、点击式卡片与复习写回仍待验收或开发，尚未包含在上述固定预览 tag 中。
+`develop` 另有默认关闭的[飞书绑定与知识阅读通道](docs/development/feishu-knowledge-reading.md)：本人私聊指令查看领域、搜索、排序和分页正文，读取不会更新记忆。文本浏览及[点击式知识卡片 / 待复习查看](docs/development/feishu-card-browsing.md)的软件链已实现；真实飞书往返尚待验收，复习写回仍待开发，尚未包含在上述固定预览 tag 中。
 
 ## 典型用法与记忆规则
 

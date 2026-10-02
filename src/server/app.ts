@@ -21,6 +21,7 @@ import type { FeishuReadMessage } from '../shared/feishu-reading.js';
 import { parseFeishuReadCommand } from '../integrations/feishu-read-commands.js';
 import { renderFeishuReadReply } from './feishu-read-view.js';
 import { feishuReadOperationId, type PreparedFeishuReadReply } from './feishu-reading.js';
+import { createFeishuCardCapabilities } from './feishu-cards.js';
 import { requestSessionToken, renewOwnerDevice, setSessionCookie, SESSION_COOKIE } from './account-session.js';
 import { validateStoragePaths } from './storage-paths.js';
 import {
@@ -49,6 +50,7 @@ export interface AppOptions {
   accountsEnabled?: boolean;
   feishuScope?: FeishuScope | null;
   getFeishuChannelState?: () => FeishuChannelState;
+  feishuTimeZone?: string;
 }
 
 export interface LivingMemoryApp extends Express {
@@ -64,6 +66,7 @@ export interface LivingMemoryApp extends Express {
     feishuBinding: { confirm: (input: FeishuBindingConfirmation) => FeishuBindingConfirmationResult };
     /** Private knowledge is available only after resolving the current bound actor. */
     feishuReading: { prepare: (input: FeishuReadMessage) => PreparedFeishuReadReply | null };
+    feishuCards: ReturnType<typeof createFeishuCardCapabilities>;
   };
 }
 
@@ -838,6 +841,8 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
         }
       },
     },
+    feishuCards: createFeishuCardCapabilities({ accounts, scope: feishuScope, now,
+      timeZone: options.feishuTimeZone ?? 'UTC', contextForUser }),
     close: () => {
       initialContext.changes.close();
       store.close();

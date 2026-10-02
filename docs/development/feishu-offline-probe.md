@@ -1,6 +1,6 @@
 # 飞书接入：官方协议核实与离线探针
 
-日期：2026-10-02。对应 NEXT-06 / FEISHU-01。本文记录 FEISHU-01 首轮合成离线协议验证。后续 FEISHU-01B 已实现[默认关闭的官方 SDK 连接器基础](feishu-connector.md)，FEISHU-01C 已实现[Web 发码与本人私聊确认的账号绑定](feishu-account-binding.md)，FEISHU-02A 已补齐[私聊文本列表与阅读](feishu-knowledge-reading.md)。真实飞书应用与往返仍待验证，点击式浏览、待复习视图及复习写回尚未实现。
+日期：2026-10-02。对应 NEXT-06 / FEISHU-01。本文记录 FEISHU-01 首轮合成离线协议验证。后续 FEISHU-01B 已实现[默认关闭的官方 SDK 连接器基础](feishu-connector.md)，FEISHU-01C 已实现[Web 发码与本人私聊确认的账号绑定](feishu-account-binding.md)，FEISHU-02A 已补齐[私聊文本列表与阅读](feishu-knowledge-reading.md)。FEISHU-02B 已实现[点击式知识卡片与待复习查看](feishu-card-browsing.md)。真实飞书应用 / 按钮往返仍待验证，复习写回尚未实现。
 
 ## 运行离线探针
 
@@ -41,7 +41,7 @@ npx --no-install tsx --test tests/feishu-protocol.test.ts tests/feishu-probe-off
 
 结构校验不是鉴权。这个模块不能直接接到公开 HTTP 请求上；未来必须由经过认证的官方 transport 提供事件。官方 SDK handler 会平铺 `header` 与 `event`，离线模块仅接受原始 schema envelope；FEISHU-01B 另设适配器接收 SDK 平铺输入，两者不能混用。不能直接注册这个纯函数并宣称已经安全接入。
 
-重复回调示例只是进程内协议回执复用：没有生产持久会话、投递 outbox 或学习事件写入。正式生产的回执 / 幂等 / 并发边界仍待设计实施。本轮只产生 toast 确认形状；重工作与卡片更新的异步处理留给真实连接器。
+重复回调示例只是进程内协议回执复用：没有生产持久会话、投递 outbox 或学习事件写入。上述仅为首轮探针边界；后续文本 / 卡片软件链已增加 metadata-only 持久回执与卡片状态，见[卡片存储与恢复](feishu-card-browsing.md#授权存储与恢复)。本轮只产生 toast 确认形状；重工作与卡片更新的异步处理留给真实连接器。
 
 ## 官方证据与文档差异
 
@@ -61,7 +61,8 @@ npx --no-install tsx --test tests/feishu-protocol.test.ts tests/feishu-probe-off
 - [ ] 开启所需机器人消息与卡片交互能力，核对真实应用权限、订阅、发布及应用可用范围。
 - [x] FEISHU-01C 实现账号的一次性绑定软件链；未绑定 / 停用 / 撤销后不能解析为有效账号，不能复用 owner 身份跨账号读取。真实私聊确认仍待验，见[说明](feishu-account-binding.md)。
 - [ ] 使用明确授权的合成内容，真实点击后在平台要求的时限内收到回执；记录断线、重复与错误上下文行为。未完成此项，不标为真实飞书接入可用。
-- [ ] 继续 FEISHU-02 的排序列表 / 阅读，再做 FEISHU-03 的卡片回忆、独立确认重温、会话持久化及失败恢复。
+- [x] FEISHU-02A / 02B 的排序列表、正文分页、点击式卡片及待复习查看软件链已实现并默认关闭；真实往返尚未验收。
+- [ ] 继续 FEISHU-03 的卡片回忆、独立确认重温与学习会话，再做 FEISHU-04 的失败恢复及集中验收。
 
 本机需在线才能处理聊天卡片交互。复杂阅读页在 HTTPS 可达性落实前，不承诺手机可打开桌面本机 Web 地址。真实客户端视觉、手机体验与记忆效果由本人验证；本轮不运行本地浏览器或向真实聊天窗发测试消息。
 
@@ -71,4 +72,4 @@ npx --no-install tsx --test tests/feishu-protocol.test.ts tests/feishu-probe-off
 
 使用同一项目包边界、同一 `tsx --test` 入口的隔离合成失败样例，确认真实断言失败返回退出码 1 和命名的 `ERR_ASSERTION`，避免把仅文件级成功输出误当完整验证；样例执行后移除，未修改测试基础设施。
 
-最终架构审查通过，未发现必须修复的问题。通过范围仅为 FEISHU-01 首轮离线交付；后续 FEISHU-01B 已新增默认关闭的 SDK 连接器基础，FEISHU-01C 已实现一次性账号绑定，FEISHU-02A 已补齐[文本知识阅读的软件链](feishu-knowledge-reading.md)。应用权限 / 发布、真实消息或按钮往返与客户端体验待实际验证。FEISHU-02B / 03 / 04 仍待开发，不用软件检查替代真实飞书验收。
+最终架构审查通过，未发现必须修复的问题。通过范围仅为 FEISHU-01 首轮离线交付；后续 FEISHU-01B 已新增默认关闭的 SDK 连接器基础，FEISHU-01C 已实现一次性账号绑定，FEISHU-02A 已补齐[文本知识阅读的软件链](feishu-knowledge-reading.md)。应用权限 / 发布、真实消息或按钮往返与客户端体验待实际验证。FEISHU-02B 已补齐点击式浏览软件链，FEISHU-03 / 04 仍待开发，不用软件检查替代真实飞书验收。
