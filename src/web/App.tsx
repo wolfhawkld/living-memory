@@ -1431,7 +1431,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   practiceWriteRef.current = async (path, payload) => {
     const practiceSource = sourceId;
-    const label = path === '/practice-cards' ? '练习卡修订' : '关键细节 / 概念辨别练习';
+    const label = path === '/practice-cards' ? '练习卡修订' : '私人练习卡作答';
     if (learningWriteRef.current || busyAction) return false;
     learningWriteRef.current = true;
     setBusyAction('practice');
@@ -1842,7 +1842,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => {
           if (!confirmCorrectionNavigation()) return;
           setReaderRequest(null); setPracticeOpen(true);
-        }}>细节与辨别练习</button>
+        }}>私人练习卡</button>
       </div>
       <main className={`workspace${learningOverlayOpen ? ' workspace-recall-hidden' : ''}`} aria-hidden={learningOverlayOpen ? true : undefined}
         aria-busy={busyAction === 'brief-review'} inert={learningOverlayOpen || busyAction === 'brief-review' ? true : undefined}>

@@ -1,7 +1,31 @@
 import type { Concept, Exposure, WriteReceipt } from './types.js';
 
-export type PracticeKind = 'detail' | 'comparison';
+export type PracticeKind = 'detail' | 'comparison' | 'scenario';
 export interface PracticeSource { conceptId: string; sourceRevision: string }
+
+export type PracticeOutcome = 'success' | 'partial' | 'failure' | 'unverified';
+export type ScenarioHintStage = 'independent' | 'structure' | 'name';
+/** Authored hints are only shown after freezing the preceding answer. */
+export interface PracticeScenarioCard {
+  caseFamily: string;
+  structureHint: string;
+  nameHint: string;
+}
+export interface PracticeScenarioStage {
+  stage: ScenarioHintStage;
+  answer: string;
+  answeredAt: string;
+  /** null for the original blind answer. */
+  hintShownAt: string | null;
+  recallOutcome: PracticeOutcome;
+  applicabilityOutcome: PracticeOutcome;
+}
+export interface PracticeScenarioAttempt {
+  stages: PracticeScenarioStage[];
+  caseExposure: 'seen' | 'unseen' | 'unknown';
+  /** Frozen UI knowledge of earlier attempts of this card/family, never an assertion of novelty. */
+  observedCaseExposure: boolean;
+}
 
 /** An append-only, manually authored and source-checked question revision. */
 export interface PracticeCardRequest {
@@ -17,6 +41,8 @@ export interface PracticeCardRequest {
   sources: PracticeSource[];
   sourceChecked: true;
   paused: boolean;
+  /** Required only for kind=scenario; absent for older cards. */
+  scenario?: PracticeScenarioCard;
 }
 export interface PracticeCardEvent extends PracticeCardRequest { recordedAt: string }
 
@@ -32,8 +58,10 @@ export interface PracticeAttemptRequest {
   exposure: Exposure;
   observedExposure: boolean;
   cue: 'independent' | 'hinted' | 'lookup' | 'unknown';
-  outcome: 'success' | 'partial' | 'failure' | 'unverified';
+  outcome: PracticeOutcome;
   checkNotes: string;
+  /** Scenario ratings are per stage; top-level outcome stays unverified. */
+  scenario?: PracticeScenarioAttempt;
 }
 export interface PracticeAttempt extends PracticeAttemptRequest { recordedAt: string }
 export interface PracticeData { cards: PracticeCardEvent[]; attempts: PracticeAttempt[] }
@@ -46,6 +74,8 @@ export interface PracticeCardView {
   currentAttempts: number;
   totalAttempts: number;
   latest: PracticeAttempt | null;
+  /** All prior versions/cards sharing the exact manually chosen family label. */
+  scenarioHistory?: { sameCardAttempts: number; sameFamilyAttempts: number };
 }
 export interface PracticeCardsResponse {
   sourceId: string;

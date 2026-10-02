@@ -42,6 +42,8 @@ import type {
   PracticeCardEvent,
   PracticeCardRequest,
   PracticeData,
+  PracticeScenarioAttempt,
+  PracticeScenarioCard,
   PracticeSource,
 } from '../shared/practice.js';
 import {
@@ -381,6 +383,19 @@ function parseStoredPracticeSources(value: string): PracticeSource[] {
   });
 }
 
+function parseStoredPracticeScenario<T extends PracticeScenarioCard | PracticeScenarioAttempt>(value: string | null): T | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    return parsed as T;
+  } catch {
+    // Scenario metadata is optional for old rows. Keep a damaged optional
+    // blob from making the rest of a private practice history unreadable.
+    return undefined;
+  }
+}
+
 function safeSqliteMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
   if (/UNIQUE|constraint/i.test(message)) return '数据已存在或与已有事件冲突。';
@@ -666,13 +681,14 @@ export class Store {
         previous_event_id TEXT,
         occurred_at TEXT NOT NULL,
         recorded_at TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('detail', 'comparison')),
+        kind TEXT NOT NULL CHECK(kind IN ('detail', 'comparison', 'scenario')),
         title TEXT NOT NULL,
         prompt TEXT NOT NULL,
         reference_answer TEXT NOT NULL,
         reference_notes TEXT NOT NULL,
         sources_json TEXT NOT NULL,
         source_checked INTEGER NOT NULL CHECK(source_checked = 1),
+        scenario_json TEXT,
         paused INTEGER NOT NULL CHECK(paused IN (0, 1)),
         request_payload TEXT NOT NULL,
         PRIMARY KEY(namespace, event_id)
@@ -692,6 +708,7 @@ export class Store {
         cue TEXT NOT NULL CHECK(cue IN ('independent', 'hinted', 'lookup', 'unknown')),
         outcome TEXT NOT NULL CHECK(outcome IN ('success', 'partial', 'failure', 'unverified')),
         check_notes TEXT NOT NULL,
+        scenario_json TEXT,
         request_payload TEXT NOT NULL,
         PRIMARY KEY(namespace, event_id)
       );
@@ -779,6 +796,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS identity_bindings_by_concept
         ON identity_bindings(namespace, concept_id, confirmed_at, operation_id);
     `);
+    this.migratePracticeSchema();
     // CREATE TABLE IF NOT EXISTS does not update an existing SQLite table.
     // Keep the evidence column additive so databases created by older builds
     // remain readable without rewriting historical observations.
@@ -792,6 +810,107 @@ export class Store {
     if (!existing) {
       this.db.prepare('INSERT INTO config_history(namespace, revision, model_version, half_life_days, recorded_at) VALUES (?, 1, ?, ?, ?)').run(this.namespace, MODEL_VERSION, DEFAULT_HALF_LIFE_DAYS, createdAt);
     }
+  }
+
+  /**
+   * Upgrade the pre-scenario practice tables without losing the child source
+   * rows that carry the foreign key. SQLite cannot alter a CHECK constraint,
+   * so the old parent and child are copied in one transaction. Parent rows are
+   * inserted with their original rowid and order, preserving the tail lookup
+   * used by append-only card revisions.
+   */
+  private migratePracticeSchema(): void {
+    const schemaSql = (): string => {
+      const table = this.db.prepare(`SELECT sql FROM sqlite_master
+        WHERE type = 'table' AND name = 'practice_cards'`).get() as { sql?: string } | undefined;
+      return table?.sql ?? '';
+    };
+    const initiallyNeedsRebuild = !schemaSql().toLowerCase().includes("'scenario'");
+    let inTransaction = false;
+    if (initiallyNeedsRebuild) this.db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      inTransaction = true;
+      // Re-read after taking the write lock. Another Store may have completed
+      // this migration while this connection was waiting for the lock.
+      const needsCardRebuild = !schemaSql().toLowerCase().includes("'scenario'");
+      if (needsCardRebuild) {
+        this.db.exec(`
+          DROP INDEX IF EXISTS practice_cards_by_card;
+          DROP INDEX IF EXISTS practice_attempts_by_card;
+          DROP INDEX IF EXISTS practice_sources_by_concept;
+          ALTER TABLE practice_card_sources RENAME TO practice_card_sources_legacy;
+          ALTER TABLE practice_cards RENAME TO practice_cards_legacy;
+          CREATE TABLE practice_cards (
+            namespace TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            card_id TEXT NOT NULL,
+            previous_event_id TEXT,
+            occurred_at TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('detail', 'comparison', 'scenario')),
+            title TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            reference_answer TEXT NOT NULL,
+            reference_notes TEXT NOT NULL,
+            sources_json TEXT NOT NULL,
+            source_checked INTEGER NOT NULL CHECK(source_checked = 1),
+            scenario_json TEXT,
+            paused INTEGER NOT NULL CHECK(paused IN (0, 1)),
+            request_payload TEXT NOT NULL,
+            PRIMARY KEY(namespace, event_id)
+          );
+          INSERT INTO practice_cards(
+            rowid, namespace, event_id, card_id, previous_event_id, occurred_at, recorded_at,
+            kind, title, prompt, reference_answer, reference_notes, sources_json,
+            source_checked, scenario_json, paused, request_payload
+          ) SELECT
+            rowid, namespace, event_id, card_id, previous_event_id, occurred_at, recorded_at,
+            kind, title, prompt, reference_answer, reference_notes, sources_json,
+            source_checked, NULL, paused, request_payload
+          FROM practice_cards_legacy ORDER BY rowid;
+          CREATE TABLE practice_card_sources (
+            namespace TEXT NOT NULL,
+            card_event_id TEXT NOT NULL,
+            card_id TEXT NOT NULL,
+            concept_id TEXT NOT NULL,
+            source_revision TEXT NOT NULL,
+            PRIMARY KEY(namespace, card_event_id, concept_id),
+            FOREIGN KEY(namespace, card_event_id) REFERENCES practice_cards(namespace, event_id) ON DELETE CASCADE
+          );
+          INSERT INTO practice_card_sources(rowid, namespace, card_event_id, card_id, concept_id, source_revision)
+            SELECT rowid, namespace, card_event_id, card_id, concept_id, source_revision
+            FROM practice_card_sources_legacy ORDER BY rowid;
+          DROP TABLE practice_card_sources_legacy;
+          DROP TABLE practice_cards_legacy;
+        `);
+      }
+      const cardColumns = this.db.prepare('PRAGMA table_info(practice_cards)').all() as Array<{ name: string }>;
+      const attemptColumns = this.db.prepare('PRAGMA table_info(practice_attempts)').all() as Array<{ name: string }>;
+      if (!cardColumns.some((column) => column.name === 'scenario_json')) {
+        this.db.exec('ALTER TABLE practice_cards ADD COLUMN scenario_json TEXT');
+      }
+      if (!attemptColumns.some((column) => column.name === 'scenario_json')) {
+        this.db.exec('ALTER TABLE practice_attempts ADD COLUMN scenario_json TEXT');
+      }
+      this.db.exec('COMMIT');
+      inTransaction = false;
+    } catch (error) {
+      if (inTransaction) {
+        try { this.db.exec('ROLLBACK'); } catch { /* preserve migration error */ }
+      }
+      throw error;
+    } finally {
+      if (initiallyNeedsRebuild) this.db.exec('PRAGMA foreign_keys = ON');
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS practice_cards_by_card
+        ON practice_cards(namespace, card_id, occurred_at, recorded_at, event_id);
+      CREATE INDEX IF NOT EXISTS practice_attempts_by_card
+        ON practice_attempts(namespace, card_id, answered_at, recorded_at, event_id);
+      CREATE INDEX IF NOT EXISTS practice_sources_by_concept
+        ON practice_card_sources(namespace, concept_id, card_event_id);
+    `);
   }
 
   getConfig(): ModelConfig {
@@ -1121,21 +1240,57 @@ export class Store {
     }
   }
 
+  private assertPracticeScenarioContract(
+    card: PracticeCardEvent,
+    attempt: PracticeAttemptRequest,
+    recordedAt: string,
+  ): void {
+    if (card.kind !== 'scenario') {
+      if (attempt.scenario !== undefined) {
+        throw new StoreError('PRACTICE_SCENARIO_MISMATCH', '非 scenario 练习卡不能保存 scenario 分阶段回答。');
+      }
+      return;
+    }
+    if (!card.scenario) {
+      throw new StoreError('PRACTICE_SCENARIO_INVALID', 'scenario 练习卡缺少场景卡片信息。', 500);
+    }
+    if (!attempt.scenario) {
+      throw new StoreError('PRACTICE_SCENARIO_MISSING', 'scenario 练习卡必须保存 scenario 分阶段回答。');
+    }
+    const upperBound = parseDate(recordedAt, 'PRACTICE_SCENARIO_TIME');
+    for (const stage of attempt.scenario.stages) {
+      if (parseDate(stage.answeredAt, 'PRACTICE_SCENARIO_TIME') > upperBound
+          || (stage.hintShownAt !== null && parseDate(stage.hintShownAt, 'PRACTICE_SCENARIO_TIME') > upperBound)) {
+        throw new StoreError('PRACTICE_SCENARIO_TIME', '场景阶段时间不能晚于记录时间。');
+      }
+      if (stage.stage === 'structure' && !card.scenario.structureHint.trim()) {
+        throw new StoreError('PRACTICE_SCENARIO_HINT_MISSING', '场景卡没有可供 structure 阶段显示的提示。');
+      }
+      if (stage.stage === 'name' && !card.scenario.nameHint.trim()) {
+        throw new StoreError('PRACTICE_SCENARIO_HINT_MISSING', '场景卡没有可供 name 阶段显示的提示。');
+      }
+    }
+  }
+
   private practiceCardFromRow(row: {
     event_id: string;
     card_id: string;
     previous_event_id: string | null;
     occurred_at: string;
     recorded_at: string;
-    kind: 'detail' | 'comparison';
+    kind: 'detail' | 'comparison' | 'scenario';
     title: string;
     prompt: string;
     reference_answer: string;
     reference_notes: string;
     sources_json: string;
     source_checked: number;
+    scenario_json: string | null;
     paused: number;
   }): PracticeCardEvent {
+    const scenario = row.scenario_json
+      ? parseStoredPracticeScenario<PracticeScenarioCard>(row.scenario_json)
+      : undefined;
     return {
       eventId: row.event_id,
       cardId: row.card_id,
@@ -1150,6 +1305,7 @@ export class Store {
       sources: parseStoredPracticeSources(row.sources_json),
       sourceChecked: true,
       paused: row.paused === 1,
+      ...(scenario ? { scenario } : {}),
     };
   }
 
@@ -1167,7 +1323,11 @@ export class Store {
     cue: 'independent' | 'hinted' | 'lookup' | 'unknown';
     outcome: 'success' | 'partial' | 'failure' | 'unverified';
     check_notes: string;
+    scenario_json: string | null;
   }): PracticeAttempt {
+    const scenario = row.scenario_json
+      ? parseStoredPracticeScenario<PracticeScenarioAttempt>(row.scenario_json)
+      : undefined;
     return {
       eventId: row.event_id,
       cardId: row.card_id,
@@ -1182,6 +1342,7 @@ export class Store {
       cue: row.cue,
       outcome: row.outcome,
       checkNotes: row.check_notes,
+      ...(scenario ? { scenario } : {}),
     };
   }
 
@@ -1191,17 +1352,18 @@ export class Store {
     previous_event_id: string | null;
     occurred_at: string;
     recorded_at: string;
-    kind: 'detail' | 'comparison';
+    kind: 'detail' | 'comparison' | 'scenario';
     title: string;
     prompt: string;
     reference_answer: string;
     reference_notes: string;
     sources_json: string;
     source_checked: number;
+    scenario_json: string | null;
     paused: number;
   } | undefined {
     return this.db.prepare(`SELECT event_id, card_id, previous_event_id, occurred_at, recorded_at,
-      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, paused
+      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, scenario_json, paused
       FROM practice_cards WHERE namespace = ? AND card_id = ?
       ORDER BY rowid DESC LIMIT 1`).get(this.namespace, cardId) as {
         event_id: string;
@@ -1209,13 +1371,14 @@ export class Store {
         previous_event_id: string | null;
         occurred_at: string;
         recorded_at: string;
-        kind: 'detail' | 'comparison';
+        kind: 'detail' | 'comparison' | 'scenario';
         title: string;
         prompt: string;
         reference_answer: string;
         reference_notes: string;
         sources_json: string;
         source_checked: number;
+        scenario_json: string | null;
         paused: number;
       } | undefined;
   }
@@ -1230,7 +1393,7 @@ export class Store {
   /** Return private practice history without projecting it into recall evidence. */
   getPracticeData(): PracticeData {
     const cardRows = this.db.prepare(`SELECT event_id, card_id, previous_event_id, occurred_at, recorded_at,
-      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, paused
+      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, scenario_json, paused
       FROM practice_cards WHERE namespace = ?
       ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{
         event_id: string;
@@ -1238,17 +1401,18 @@ export class Store {
         previous_event_id: string | null;
         occurred_at: string;
         recorded_at: string;
-        kind: 'detail' | 'comparison';
+        kind: 'detail' | 'comparison' | 'scenario';
         title: string;
         prompt: string;
         reference_answer: string;
         reference_notes: string;
         sources_json: string;
         source_checked: number;
+        scenario_json: string | null;
         paused: number;
       }>;
     const attemptRows = this.db.prepare(`SELECT event_id, card_id, card_event_id, answered_at, recorded_at,
-      answer, confidence, confidence_at, exposure, observed_exposure, cue, outcome, check_notes
+      answer, confidence, confidence_at, exposure, observed_exposure, cue, outcome, check_notes, scenario_json
       FROM practice_attempts WHERE namespace = ?
       ORDER BY answered_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{
         event_id: string;
@@ -1264,6 +1428,7 @@ export class Store {
         cue: 'independent' | 'hinted' | 'lookup' | 'unknown';
         outcome: 'success' | 'partial' | 'failure' | 'unverified';
         check_notes: string;
+        scenario_json: string | null;
       }>;
     return {
       cards: cardRows.map((row) => this.practiceCardFromRow(row)),
@@ -1313,8 +1478,8 @@ export class Store {
       this.db.prepare(`INSERT INTO practice_cards(
         namespace, event_id, card_id, previous_event_id, occurred_at, recorded_at,
         kind, title, prompt, reference_answer, reference_notes, sources_json,
-        source_checked, paused, request_payload
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        source_checked, scenario_json, paused, request_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         this.namespace,
         request.eventId,
         request.cardId,
@@ -1328,6 +1493,7 @@ export class Store {
         request.referenceNotes,
         sourcesJson,
         1,
+        request.scenario ? canonicalJson(request.scenario) : null,
         request.paused ? 1 : 0,
         requestPayload,
       );
@@ -1362,6 +1528,7 @@ export class Store {
     if (parseDate(request.answeredAt) > now.getTime()) {
       throw new StoreError('FUTURE_PRACTICE_ATTEMPT', '答题时间不能晚于服务当前时间。');
     }
+    const recordedAt = iso(now);
     try {
       this.db.exec('BEGIN IMMEDIATE');
       const concurrent = this.findEvent(request.eventId);
@@ -1383,17 +1550,18 @@ export class Store {
       if (parseDate(request.answeredAt) < parseDate(card.occurredAt)) {
         throw new StoreError('PRACTICE_ATTEMPT_TIME', '答题时间不能早于引用练习卡的发生时间。');
       }
+      this.assertPracticeScenarioContract(card, request, recordedAt);
       this.db.prepare(`INSERT INTO practice_attempts(
         namespace, event_id, card_id, card_event_id, answered_at, recorded_at,
         answer, confidence, confidence_at, exposure, observed_exposure, cue, outcome,
-        check_notes, request_payload
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        check_notes, scenario_json, request_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         this.namespace,
         request.eventId,
         request.cardId,
         request.cardEventId,
         request.answeredAt,
-        iso(now),
+        recordedAt,
         request.answer,
         request.confidence,
         request.confidenceAt,
@@ -1402,6 +1570,7 @@ export class Store {
         request.cue,
         request.outcome,
         request.checkNotes,
+        request.scenario ? canonicalJson(request.scenario) : null,
         requestPayload,
       );
       this.db.exec('COMMIT');
@@ -1437,8 +1606,8 @@ export class Store {
     this.db.prepare(`INSERT INTO practice_cards(
       namespace, event_id, card_id, previous_event_id, occurred_at, recorded_at,
       kind, title, prompt, reference_answer, reference_notes, sources_json,
-      source_checked, paused, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      source_checked, scenario_json, paused, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       this.namespace,
       request.eventId,
       request.cardId,
@@ -1452,6 +1621,7 @@ export class Store {
       request.referenceNotes,
       canonicalJson(request.sources),
       1,
+      request.scenario ? canonicalJson(request.scenario) : null,
       request.paused ? 1 : 0,
       requestPayload,
     );
@@ -1474,20 +1644,36 @@ export class Store {
     }
     const requestPayload = canonicalJson(request);
     if (this.eventAlreadyImported(event.eventId, 'practice-attempt', requestPayload)) return;
-    const cardRow = this.db.prepare(`SELECT card_id, occurred_at
+    const cardRow = this.db.prepare(`SELECT event_id, card_id, previous_event_id, occurred_at, recorded_at,
+      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, scenario_json, paused
       FROM practice_cards WHERE namespace = ? AND event_id = ?`).get(this.namespace, request.cardEventId) as {
-        card_id: string; occurred_at: string;
+        event_id: string;
+        card_id: string;
+        previous_event_id: string | null;
+        occurred_at: string;
+        recorded_at: string;
+        kind: 'detail' | 'comparison' | 'scenario';
+        title: string;
+        prompt: string;
+        reference_answer: string;
+        reference_notes: string;
+        sources_json: string;
+        source_checked: number;
+        scenario_json: string | null;
+        paused: number;
       } | undefined;
     if (!cardRow) throw new StoreError('IMPORT_CONFLICT', `practice attempt ${event.eventId} 引用的练习卡版本不存在。`, 409);
     if (cardRow.card_id !== request.cardId) throw new StoreError('IMPORT_INVALID_DATA', `practice attempt ${event.eventId} 的 cardId 与卡片版本不一致。`);
     if (parseDate(request.answeredAt) < parseDate(cardRow.occurred_at)) {
       throw new StoreError('IMPORT_INVALID_DATA', `practice attempt ${event.eventId} 的 answeredAt 早于卡片发生时间。`);
     }
+    const card = this.practiceCardFromRow(cardRow);
+    this.assertPracticeScenarioContract(card, request, recordedAt);
     this.db.prepare(`INSERT INTO practice_attempts(
       namespace, event_id, card_id, card_event_id, answered_at, recorded_at,
       answer, confidence, confidence_at, exposure, observed_exposure, cue, outcome,
-      check_notes, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      check_notes, scenario_json, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       this.namespace,
       request.eventId,
       request.cardId,
@@ -1502,6 +1688,7 @@ export class Store {
       request.cue,
       request.outcome,
       request.checkNotes,
+      request.scenario ? canonicalJson(request.scenario) : null,
       requestPayload,
     );
   }

@@ -116,6 +116,18 @@ function parseAttempt(value: unknown, index: number, nowMs: number, sink: Practi
     recordedAt: recordedAt.value,
   };
   issueDateBounds({ eventId: result.eventId, occurredAt: result.answeredAt, recordedAt: result.recordedAt }, nowMs, sink);
+  if (result.scenario) {
+    const recordedMs = recordedAt.ms;
+    for (const stage of result.scenario.stages) {
+      const stageTimes = [stage.answeredAt, ...(stage.hintShownAt ? [stage.hintShownAt] : [])];
+      if (stageTimes.some((time) => Date.parse(time) > nowMs)) {
+        sink.add('FUTURE_EVENT_DATE', `${result.eventId} 含有晚于当前时间的场景阶段日期。`, { eventId: result.eventId, cardId: result.cardId });
+      }
+      if (stageTimes.some((time) => Date.parse(time) > recordedMs)) {
+        sink.add('PRACTICE_SCENARIO_STAGE_AFTER_RECORDED', `${result.eventId} 的场景阶段日期晚于 recordedAt。`, { eventId: result.eventId, cardId: result.cardId });
+      }
+    }
+  }
   if (result.confidenceAt !== null && Date.parse(result.confidenceAt) > Date.parse(result.answeredAt)) {
     sink.add('CONFIDENCE_AFTER_ANSWER', `${result.eventId} 的 confidenceAt 晚于 answeredAt。`, { eventId: result.eventId, cardId: result.cardId });
   }
@@ -314,6 +326,25 @@ export function validatePracticeAttempts(
     }
     if (Date.parse(attempt.answeredAt) < Date.parse(card.occurredAt)) {
       sink.add('PRACTICE_ATTEMPT_BEFORE_CARD', `练习回答 ${attempt.eventId} 早于所引用卡版本 ${attempt.cardEventId}。`, { eventId: attempt.eventId, cardId: attempt.cardId });
+    }
+    if (card.kind === 'scenario') {
+      if (!card.scenario) {
+        sink.add('PRACTICE_SCENARIO_INVALID', `练习卡 ${card.eventId} 缺少场景卡片信息。`, { eventId: attempt.eventId, cardId: attempt.cardId });
+      }
+      if (!attempt.scenario) {
+        sink.add('PRACTICE_SCENARIO_MISSING', `scenario 练习回答 ${attempt.eventId} 缺少分阶段回答。`, { eventId: attempt.eventId, cardId: attempt.cardId });
+      } else if (card.scenario) {
+        for (const stage of attempt.scenario.stages) {
+          if (stage.stage === 'structure' && !card.scenario.structureHint.trim()) {
+            sink.add('PRACTICE_SCENARIO_HINT_MISSING', `练习回答 ${attempt.eventId} 请求了不存在的 structure 提示。`, { eventId: attempt.eventId, cardId: attempt.cardId });
+          }
+          if (stage.stage === 'name' && !card.scenario.nameHint.trim()) {
+            sink.add('PRACTICE_SCENARIO_HINT_MISSING', `练习回答 ${attempt.eventId} 请求了不存在的 name 提示。`, { eventId: attempt.eventId, cardId: attempt.cardId });
+          }
+        }
+      }
+    } else if (attempt.scenario) {
+      sink.add('PRACTICE_SCENARIO_UNEXPECTED', `非 scenario 练习卡不能携带 scenario 分阶段回答。`, { eventId: attempt.eventId, cardId: attempt.cardId });
     }
     if (newIds.has(attempt.eventId) && card.paused) {
       sink.add('PRACTICE_ATTEMPT_PAUSED_CARD', `练习回答 ${attempt.eventId} 不能新增在当时已暂停的卡版本上。`, { eventId: attempt.eventId, cardId: attempt.cardId });

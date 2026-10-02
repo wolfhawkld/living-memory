@@ -14,10 +14,17 @@ export function latestPracticeCards(cards: PracticeCardEvent[]): PracticeCardEve
 export function buildPracticeCards(data: PracticeData, concepts: Concept[]): PracticeCardView[] {
   const byId = new Map(concepts.map((concept) => [concept.id, concept]));
   const attemptsByCard = new Map<string, PracticeData['attempts']>();
+  const cardsByEvent = new Map(data.cards.map((card) => [card.eventId, card]));
+  const familyAttempts = new Map<string, number>();
   for (const attempt of data.attempts) {
     const attempts = attemptsByCard.get(attempt.cardId) ?? [];
     attempts.push(attempt);
     attemptsByCard.set(attempt.cardId, attempts);
+    const version = cardsByEvent.get(attempt.cardEventId);
+    if (version?.kind === 'scenario' && version.scenario) {
+      const family = version.scenario.caseFamily;
+      familyAttempts.set(family, (familyAttempts.get(family) ?? 0) + 1);
+    }
   }
   return latestPracticeCards(data.cards).map((card) => {
     const currentSources = card.sources.map((source) => {
@@ -37,6 +44,10 @@ export function buildPracticeCards(data: PracticeData, concepts: Concept[]): Pra
       currentAttempts: current.length,
       totalAttempts: attempts.length,
       latest: current[0] ?? null,
+      ...(card.kind === 'scenario' && card.scenario ? { scenarioHistory: {
+        sameCardAttempts: attempts.length,
+        sameFamilyAttempts: familyAttempts.get(card.scenario.caseFamily) ?? 0,
+      } } : {}),
     };
   });
 }

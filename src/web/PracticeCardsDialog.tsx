@@ -28,6 +28,7 @@ import {
   createPracticeCardDraft,
   createPracticeCardDraftFromEvent,
   createPracticeSessionState,
+  PRACTICE_CASE_FAMILY_MAX_LENGTH,
   hasUnsavedPracticeCardDraft,
   hasUnsavedPracticeDraft,
   newPracticeEventId,
@@ -35,8 +36,15 @@ import {
   PRACTICE_NOTES_MAX_LENGTH,
   PRACTICE_PROMPT_MAX_LENGTH,
   PRACTICE_REFERENCE_MAX_LENGTH,
+  PRACTICE_SCENARIO_HINT_MAX_LENGTH,
+  PRACTICE_SCENARIO_SOURCE_MAX,
+  PRACTICE_SCENARIO_SOURCE_MIN,
   PRACTICE_TITLE_MAX_LENGTH,
+  revealPracticeReference,
+  setPracticeCaseExposure,
   setPracticeConfidence,
+  setPracticeScenarioRating,
+  showPracticeScenarioHint,
   startPracticeSession,
   submitPracticeAnswer,
   validatePracticeCardDraft,
@@ -60,7 +68,7 @@ export interface PracticeCardsDialogProps {
   onClose: () => void;
 }
 
-type CardFilter = 'all' | 'detail' | 'comparison' | 'paused' | 'source-review';
+type CardFilter = 'all' | 'detail' | 'comparison' | 'scenario' | 'paused' | 'source-review';
 type EditorMode = 'create' | 'revise';
 
 interface EditorState {
@@ -87,6 +95,7 @@ const FILTER_LABELS: Record<CardFilter, string> = {
   all: '全部',
   detail: '关键细节',
   comparison: '概念比较',
+  scenario: '场景卡',
   paused: '已暂停',
   'source-review': '来源待复核',
 };
@@ -94,6 +103,13 @@ const FILTER_LABELS: Record<CardFilter, string> = {
 const KIND_LABELS: Record<PracticeKind, string> = {
   detail: '关键细节',
   comparison: '概念比较',
+  scenario: '场景卡',
+};
+
+const KIND_SOURCE_LIMITS: Record<PracticeKind, { min: number; max: number }> = {
+  detail: { min: 1, max: 1 },
+  comparison: { min: 2, max: 4 },
+  scenario: { min: PRACTICE_SCENARIO_SOURCE_MIN, max: PRACTICE_SCENARIO_SOURCE_MAX },
 };
 
 const STATUS_LABELS: Record<PracticeCardView['status'], string> = {
@@ -122,6 +138,18 @@ const EXPOSURE_LABELS: Record<PracticeAttemptRequest['exposure'], string> = {
   exposed: '提交前看过资料',
   unknown: '不确定',
 };
+
+const CASE_EXPOSURE_LABELS: Record<NonNullable<PracticeAttemptRequest['scenario']>['caseExposure'], string> = {
+  seen: '以前见过这个案例或案例族',
+  unseen: '以前没有见过这个案例或案例族',
+  unknown: '不确定',
+};
+
+const SCENARIO_STAGE_LABELS = {
+  independent: '原答（未显示系统提示）',
+  structure: '结构提示后原答',
+  name: '名称提示后原答',
+} as const;
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
@@ -177,6 +205,11 @@ function cardHasSourceReview(view: PracticeCardView): boolean {
 }
 
 function cardSearchText(view: PracticeCardView, concepts: readonly Concept[]): string {
+  const family = view.card.scenario?.caseFamily ?? '';
+  // Scenario search intentionally excludes reference notes, source/concept titles and hints:
+  // entering a concept name must not reveal a target during the recall flow. Preserve the
+  // established detail/comparison search fields for legacy cards.
+  if (view.card.kind === 'scenario') return [view.card.title, view.card.prompt, family].join(' ').toLocaleLowerCase();
   const titles = view.card.sources.map((source) => concepts.find((concept) => concept.id === source.conceptId)?.title ?? source.conceptId);
   return [view.card.title, view.card.prompt, view.card.referenceNotes, ...titles].join(' ').toLocaleLowerCase();
 }
@@ -185,18 +218,23 @@ function cardSearchText(view: PracticeCardView, concepts: readonly Concept[]): s
 export function PracticeBlindAnswer({
   prompt,
   answer,
+  hint,
+  hintLabel,
   disabled = false,
   onAnswer,
   onSubmit,
 }: {
   prompt: string;
   answer: string;
+  hint?: string;
+  hintLabel?: string;
   disabled?: boolean;
   onAnswer: (value: string) => void;
   onSubmit: () => void;
 }): ReactElement {
   return <section className="practice-cards-blind" aria-label="练习回答">
     <div className="practice-cards-prompt" aria-label="题干">{prompt}</div>
+    {hint ? <div className="practice-cards-scenario-hint" aria-label={hintLabel ?? '阶段提示'}><span>{hintLabel ?? '阶段提示'}</span><p>{hint}</p></div> : null}
     <label className="practice-cards-field" htmlFor="practice-blind-answer">
       <span>你的回答</span>
       <textarea id="practice-blind-answer" maxLength={PRACTICE_ANSWER_MAX_LENGTH} value={answer} disabled={disabled} onChange={(event) => onAnswer(event.target.value)} placeholder="先用自己的话回答，再提交核对。" />
@@ -273,10 +311,20 @@ function PracticeCardHistory({
         </div>
         {attempts.length ? <div className="practice-cards-history-attempts">
           {attempts.map((attempt) => <div className="practice-cards-history-attempt" key={attempt.eventId}>
-            <div className="practice-cards-history-meta"><span>自评：{OUTCOME_LABELS[attempt.outcome]}</span><span>提示：{CUE_LABELS[attempt.cue]}</span><time dateTime={attempt.answeredAt}>{formatDate(attempt.answeredAt)}</time></div>
+            <div className="practice-cards-history-meta"><span>{attempt.scenario ? '逐阶段人工自评' : `自评：${OUTCOME_LABELS[attempt.outcome]}`}</span><span>提示：{CUE_LABELS[attempt.cue]}</span><time dateTime={attempt.answeredAt}>{formatDate(attempt.answeredAt)}</time></div>
             <div className="practice-cards-history-meta"><span>事前信心：{attempt.confidence === null ? '未填写' : `${attempt.confidence}%`}</span>
               <span>答题前查阅：{EXPOSURE_LABELS[attempt.exposure]}{attempt.observedExposure ? '（系统已知曝光）' : ''}</span></div>
             <p><strong>自己的回答</strong><br />{attempt.answer || '（空白回答）'}</p>
+            {attempt.scenario ? <div className="practice-cards-history-stages">
+              <strong>场景分阶段回答</strong>
+              {attempt.scenario.stages.map((stage) => <div className="practice-cards-history-stage" key={`${attempt.eventId}:${stage.stage}`}>
+                <div className="practice-cards-history-meta"><span>{stage.stage === 'independent' ? '原答（未显示系统提示）' : stage.stage === 'structure' ? '结构提示后' : '名称提示后'}</span><time dateTime={stage.answeredAt}>{formatDate(stage.answeredAt)}</time></div>
+                {stage.hintShownAt && card.scenario ? <small>实际提示：{stage.stage === 'structure' ? card.scenario.structureHint : card.scenario.nameHint}</small> : null}
+                <p>{stage.answer || '（空白回答）'}</p>
+                <div className="practice-cards-history-meta"><span>候选召回：{OUTCOME_LABELS[stage.recallOutcome]}</span><span>适用理由：{OUTCOME_LABELS[stage.applicabilityOutcome]}</span></div>
+              </div>)}
+              <small>案例接触：{CASE_EXPOSURE_LABELS[attempt.scenario.caseExposure]}{attempt.scenario.observedCaseExposure ? '（系统已知有既往记录）' : ''}</small>
+            </div> : null}
             {attempt.checkNotes ? <small>核对笔记：{attempt.checkNotes}</small> : null}
           </div>)}
         </div> : <p className="practice-cards-muted">这个版本还没有练习记录。</p>}
@@ -295,6 +343,7 @@ function CardEditor({
   canWrite,
   saving,
   onChange,
+  onScenarioChange,
   onKindChange,
   onSourceChange,
   onAddSource,
@@ -312,6 +361,7 @@ function CardEditor({
   canWrite: boolean;
   saving: boolean;
   onChange: <K extends keyof PracticeCardDraft>(key: K, value: PracticeCardDraft[K]) => void;
+  onScenarioChange: (key: 'caseFamily' | 'structureHint' | 'nameHint', value: string) => void;
   onKindChange: (kind: PracticeKind) => void;
   onSourceChange: (index: number, conceptId: string) => void;
   onAddSource: () => void;
@@ -328,6 +378,8 @@ function CardEditor({
   const answerId = useId();
   const notesId = useId();
   const currentMaterialChecked = draft.sourceChecked && sourceRows.every((row) => row.current);
+  const sourceLimits = KIND_SOURCE_LIMITS[draft.kind];
+  const scenario = draft.scenario ?? { caseFamily: '', structureHint: '', nameHint: '' };
   return <section className="practice-cards-editor" aria-labelledby={titleId}>
     <div className="practice-cards-section-heading">
       <div><span className="practice-cards-kicker">{editor.mode === 'create' ? '新建卡片' : '修订卡片'}</span><h3 id={titleId}>{editor.mode === 'create' ? '写一张私人练习卡' : '修订当前卡片'}</h3></div>
@@ -335,15 +387,22 @@ function CardEditor({
     </div>
     {draft.previousEventId ? <p className="practice-cards-notice">每次修订都会追加一个新版本；旧版本和它引用的来源版本会保留在历史中。</p> : null}
     <div className="practice-cards-kind" role="group" aria-label="卡片类型">
-      {(['detail', 'comparison'] as const).map((kind) => <button key={kind} type="button" aria-pressed={draft.kind === kind} disabled={fieldDisabled} onClick={() => onKindChange(kind)}>{KIND_LABELS[kind]}</button>)}
+      {(Object.keys(KIND_LABELS) as PracticeKind[]).map((kind) => <button key={kind} type="button" aria-pressed={draft.kind === kind} disabled={fieldDisabled} onClick={() => onKindChange(kind)}>{KIND_LABELS[kind]}</button>)}
     </div>
     <label className="practice-cards-field" htmlFor={titleId}><span>卡片标题</span><input id={titleId} maxLength={PRACTICE_TITLE_MAX_LENGTH} value={draft.title} disabled={fieldDisabled} onChange={(event) => onChange('title', event.target.value)} placeholder="例如：解释一个关键机制" /></label>
     <label className="practice-cards-field" htmlFor={promptId}><span>题干</span><textarea id={promptId} maxLength={PRACTICE_PROMPT_MAX_LENGTH} value={draft.prompt} disabled={fieldDisabled} onChange={(event) => onChange('prompt', event.target.value)} placeholder="写下练习时只给自己的问题。不要把答案写进题干。" /></label>
     <label className="practice-cards-field" htmlFor={answerId}><span>核对答案</span><textarea id={answerId} maxLength={PRACTICE_REFERENCE_MAX_LENGTH} value={draft.referenceAnswer} disabled={fieldDisabled} onChange={(event) => onChange('referenceAnswer', event.target.value)} placeholder="提交回答后显示的手工核对依据。" /></label>
     <label className="practice-cards-field" htmlFor={notesId}><span>出处 / 理由</span><textarea id={notesId} maxLength={PRACTICE_NOTES_MAX_LENGTH} value={draft.referenceNotes} disabled={fieldDisabled} onChange={(event) => onChange('referenceNotes', event.target.value)} placeholder="说明这条核对依据来自哪里，以及为什么足以支持答案。" /></label>
 
+    {draft.kind === 'scenario' ? <fieldset className="practice-cards-scenario-fields" disabled={fieldDisabled}>
+      <legend>场景卡元数据</legend>
+      <label className="practice-cards-field"><span>案例族名称</span><input maxLength={PRACTICE_CASE_FAMILY_MAX_LENGTH} value={scenario.caseFamily} onChange={(event) => onScenarioChange('caseFamily', event.target.value)} placeholder="例如：首次接手遗留系统" /></label>
+      <label className="practice-cards-field"><span>结构提示（可选）</span><textarea maxLength={PRACTICE_SCENARIO_HINT_MAX_LENGTH} value={scenario.structureHint} onChange={(event) => onScenarioChange('structureHint', event.target.value)} placeholder="帮助回忆分析结构，不直接给出名称。" /></label>
+      <label className="practice-cards-field"><span>名称提示（可选）</span><textarea maxLength={PRACTICE_SCENARIO_HINT_MAX_LENGTH} value={scenario.nameHint} onChange={(event) => onScenarioChange('nameHint', event.target.value)} placeholder="最后才可显示的概念或方法名称线索。" /></label>
+    </fieldset> : null}
+
     <fieldset className="practice-cards-sources" disabled={fieldDisabled}>
-      <legend>关联来源（{draft.kind === 'detail' ? '1 个' : '2–4 个不同来源'}）</legend>
+      <legend>关联来源（{sourceLimits.min === sourceLimits.max ? `${sourceLimits.min} 个` : `${sourceLimits.min}–${sourceLimits.max} 个不同来源`}）</legend>
       {sourceRows.map(({ source, concept, current }, index) => <div className="practice-cards-source-row" key={`${index}:${source.conceptId}:${source.sourceRevision}`}>
         <select aria-label={`来源 ${index + 1}`} value={source.conceptId} onChange={(event) => onSourceChange(index, event.target.value)}>
           <option value="">请选择当前概念</option>
@@ -352,13 +411,13 @@ function CardEditor({
         </select>
         {concept ? <span className={current ? 'practice-cards-source-current' : 'practice-cards-source-old'}>{current ? `当前 ${sourceRevisionLabel(concept.source.revision)}` : `原 ${sourceRevisionLabel(source.sourceRevision)}，当前 ${sourceRevisionLabel(concept.source.revision)}`}</span> : <span className="practice-cards-source-old">来源已删除，请重新选择</span>}
         {concept ? <button type="button" className="practice-cards-link-button" onClick={() => onReadSource(concept.id)}>阅读当前资料</button> : null}
-        {draft.kind === 'comparison' && draft.sources.length > 2 ? <button type="button" className="practice-cards-link-button" onClick={() => onRemoveSource(index)} aria-label={`移除来源 ${index + 1}`}>移除</button> : null}
+        {draft.sources.length > sourceLimits.min ? <button type="button" className="practice-cards-link-button" onClick={() => onRemoveSource(index)} aria-label={`移除来源 ${index + 1}`}>移除</button> : null}
         {concept && readConcepts[concept.id] ? <div className="practice-cards-editor-material"><strong>{readingConceptId === concept.id ? '正在读取…' : `当前资料：${readConcepts[concept.id].title} · ${sourceRevisionLabel(readConcepts[concept.id].source.revision)}`}</strong>
           <MarkdownView content={readConcepts[concept.id].body} compact source={{ sourceId: editor.originSourceId,
             conceptId: concept.id, sourceRevision: readConcepts[concept.id].source.revision }} /></div> : null}
       </div>)}
-      {draft.kind === 'comparison' && draft.sources.length < 4 ? <button type="button" className="practice-cards-button secondary" onClick={onAddSource}>添加来源</button> : null}
-      {draft.kind === 'comparison' && draft.sources.length === 2 ? <p className="practice-cards-muted">至少保留两个不同来源。</p> : null}
+      {draft.sources.length < sourceLimits.max ? <button type="button" className="practice-cards-button secondary" onClick={onAddSource}>添加来源</button> : null}
+      {draft.sources.length === sourceLimits.min && sourceLimits.min > 1 ? <p className="practice-cards-muted">至少保留 {sourceLimits.min} 个不同来源。</p> : null}
     </fieldset>
     {readError ? <p className="practice-cards-error" role="alert">{readError.message} <button type="button" className="practice-cards-link-button" onClick={() => onReadSource(readError.conceptId)}>重试读取资料</button></p> : null}
     <label className="practice-cards-confirm"><input type="checkbox" checked={currentMaterialChecked} disabled={fieldDisabled || !canWrite} onChange={(event) => onChange('sourceChecked', event.currentTarget.checked)} /><span>我已经核对当前资料，并确认上面的题干、答案和出处仍然准确。</span></label>
@@ -499,6 +558,7 @@ export function PracticeCardsDialog({
     return (cards?.items ?? []).filter((view) => {
       if (filter === 'detail' && view.card.kind !== 'detail') return false;
       if (filter === 'comparison' && view.card.kind !== 'comparison') return false;
+      if (filter === 'scenario' && view.card.kind !== 'scenario') return false;
       if (filter === 'paused' && !view.card.paused) return false;
       if (filter === 'source-review' && !cardHasSourceReview(view)) return false;
       return !query || cardSearchText(view, concepts).includes(query);
@@ -521,12 +581,25 @@ export function PracticeCardsDialog({
   }, [editor, notify]);
 
   useEffect(() => {
-    if (!practice || practice.stage !== 'feedback') {
+    if (!practice) {
       exposedAttemptRef.current = null;
       return;
     }
-    if (exposedAttemptRef.current === practice.card.eventId) return;
-    exposedAttemptRef.current = practice.card.eventId;
+    const scenarioWaitingForCheck = practice.card.kind === 'scenario'
+      && practice.stage === 'feedback'
+      && !practice.scenarioReferenceVisible
+      && !practice.scenarioHintShownAt;
+    if (scenarioWaitingForCheck) {
+      exposedAttemptRef.current = null;
+      return;
+    }
+    if (practice.stage !== 'feedback' && !practice.scenarioHintShownAt) {
+      exposedAttemptRef.current = null;
+      return;
+    }
+    const key = `${practice.card.eventId}:${practice.scenarioHintShownAt ?? 'feedback'}`;
+    if (exposedAttemptRef.current === key) return;
+    exposedAttemptRef.current = key;
     notify(practice.card.sources);
   }, [practice, notify]);
 
@@ -566,7 +639,7 @@ export function PracticeCardsDialog({
     if (view.status !== 'ready' || view.card.paused) return;
     invalidateReadRequests();
     const sourceViewed = capturePracticeSourceExposure(view.card, concepts, wasSourceViewed);
-    setPractice(createPracticeSessionState(view.card, sourceViewed));
+    setPractice(createPracticeSessionState(view, sourceViewed));
     setPracticeOriginSourceId(sourceId);
     setEditor(null);
     setHistory(null);
@@ -583,10 +656,13 @@ export function PracticeCardsDialog({
   const updateEditorKind = (kind: PracticeKind) => {
     setEditor((current) => {
       if (!current || current.draft.submittedRequest || current.draft.saved || current.draft.kind === kind) return current;
-      let sources = current.draft.sources;
-      if (kind === 'detail') sources = sources.slice(0, 1);
-      if (kind === 'comparison' && sources.length < 2) sources = [...sources, { conceptId: '', sourceRevision: '' }];
-      return { ...current, draft: { ...current.draft, kind, sources, sourceChecked: false, validationError: null, saveError: null } };
+      const limits = KIND_SOURCE_LIMITS[kind];
+      let sources = current.draft.sources.slice(0, limits.max);
+      while (sources.length < limits.min) sources = [...sources, { conceptId: '', sourceRevision: '' }];
+      const scenario = kind === 'scenario'
+        ? (current.draft.scenario ?? { caseFamily: '', structureHint: '', nameHint: '' })
+        : current.draft.scenario;
+      return { ...current, draft: { ...current.draft, kind, sources, scenario, sourceChecked: false, validationError: null, saveError: null } };
     });
   };
 
@@ -603,15 +679,23 @@ export function PracticeCardsDialog({
 
   const addEditorSource = () => {
     setEditor((current) => {
-      if (!current || current.draft.submittedRequest || current.draft.saved || current.draft.kind !== 'comparison' || current.draft.sources.length >= 4) return current;
+      if (!current || current.draft.submittedRequest || current.draft.saved || current.draft.sources.length >= KIND_SOURCE_LIMITS[current.draft.kind].max) return current;
       return { ...current, draft: { ...current.draft, sources: [...current.draft.sources, { conceptId: '', sourceRevision: '' }], sourceChecked: false, validationError: null, saveError: null } };
     });
   };
 
   const removeEditorSource = (index: number) => {
     setEditor((current) => {
-      if (!current || current.draft.submittedRequest || current.draft.saved || current.draft.sources.length <= 2) return current;
+      if (!current || current.draft.submittedRequest || current.draft.saved || current.draft.sources.length <= KIND_SOURCE_LIMITS[current.draft.kind].min) return current;
       return { ...current, draft: { ...current.draft, sources: current.draft.sources.filter((_, sourceIndex) => sourceIndex !== index), sourceChecked: false, validationError: null, saveError: null } };
+    });
+  };
+
+  const updateEditorScenario = (key: 'caseFamily' | 'structureHint' | 'nameHint', value: string) => {
+    setEditor((current) => {
+      if (!current || current.draft.submittedRequest || current.draft.saved || current.draft.kind !== 'scenario') return current;
+      const scenario = current.draft.scenario ?? { caseFamily: '', structureHint: '', nameHint: '' };
+      return { ...current, draft: { ...current.draft, scenario: { ...scenario, [key]: value }, sourceChecked: false, validationError: null, saveError: null } };
     });
   };
 
@@ -799,8 +883,78 @@ export function PracticeCardsDialog({
     });
   };
 
+  const renderScenarioPractice = () => {
+    if (!practice || practice.card.kind !== 'scenario' || !practice.card.scenario) return null;
+    const scenario = practice.card.scenario;
+    const activeHint = practice.scenarioStage === 'structure' ? scenario.structureHint : practice.scenarioStage === 'name' ? scenario.nameHint : '';
+    const lastStage = practice.scenarioStages[practice.scenarioStages.length - 1]?.stage;
+    const hinted = practice.scenarioStages.some((stage) => stage.hintShownAt !== null) || practice.scenarioHintShownAt !== null;
+    const canShowStructure = !practice.scenarioReferenceVisible && lastStage === 'independent' && Boolean(scenario.structureHint.trim());
+    const canShowName = !practice.scenarioReferenceVisible
+      && (lastStage === 'independent' || lastStage === 'structure')
+      && Boolean(scenario.nameHint.trim());
+    const observedExposure = practice.submittedCore?.observedExposure === true;
+    const effectiveExposure = observedExposure ? 'exposed' : practice.exposure;
+    if (practice.stage === 'predict') return <section className="practice-cards-practice" aria-labelledby={titleId}>
+      <div className="practice-cards-section-heading"><div><span className="practice-cards-kicker">私人回忆</span><h3 id={titleId}>开始前先做一个预测</h3></div><button type="button" className="practice-cards-close-small" onClick={close} aria-label="退出练习">×</button></div>
+      <p className="practice-cards-intro">开始后只会看到题干和自己的回答；案例族、来源、提示和历史会继续隐藏。</p>
+      <PracticeConfidence value={practice.confidence} onChange={(value) => setPractice((current) => current ? setPracticeConfidence(current, value) : current)} />
+      <fieldset className="practice-cards-case-exposure" disabled={practice.observedCaseExposure}>
+        <legend>开始前是否见过这个案例</legend>
+        {(Object.entries(CASE_EXPOSURE_LABELS) as Array<[PracticeSessionState['caseExposure'], string]>).map(([value, label]) => <label key={value}><input type="radio" name={`practice-case-exposure-${practice.card.eventId}`} value={value} checked={practice.caseExposure === value} onChange={() => setPractice((current) => current ? setPracticeCaseExposure(current, value) : current)} /><span>{label}</span></label>)}
+        {practice.observedCaseExposure ? <small>已有同题或同案例族记录，因此会保留为“以前见过”。这只是接触记录，不代表迁移能力。</small> : <small>这是本人的接触声明，与关联资料的曝光记录分开保存。</small>}
+      </fieldset>
+      <div className="practice-cards-actions"><button type="button" className="practice-cards-button secondary" onClick={close}>取消</button><button type="button" className="practice-cards-button primary" onClick={() => setPractice((current) => current ? startPracticeSession(current, current.confidence === null ? null : new Date().toISOString()) : current)}>开始无提示回忆</button></div>
+    </section>;
+    if (practice.stage === 'answer') return <section className="practice-cards-practice" aria-labelledby={titleId}>
+      <div className="practice-cards-section-heading"><div><span className="practice-cards-kicker">私人回忆 · {practice.scenarioStage === 'independent' ? '原答' : practice.scenarioStage === 'structure' ? '结构提示' : '名称提示'}</span><h3 id={titleId}>{practice.scenarioStage === 'independent' ? '先写下无系统提示原答' : '看到提示后再写一份回答'}</h3></div><button type="button" className="practice-cards-close-small" onClick={close} aria-label="退出练习">×</button></div>
+      <PracticeBlindAnswer prompt={practice.card.prompt} answer={practice.answer} hint={activeHint || undefined} hintLabel={practice.scenarioStage === 'structure' ? '结构提示' : practice.scenarioStage === 'name' ? '名称提示' : undefined} disabled={false} onAnswer={(answer) => setPractice((current) => current && !current.submittedRequest ? { ...current, answer, validationError: null } : current)} onSubmit={submitPractice} />
+    </section>;
+
+    const feedbackStages = practice.scenarioStages;
+    return <section className="practice-cards-practice" aria-labelledby={titleId}>
+      <div className="practice-cards-section-heading"><div><span className="practice-cards-kicker">私人回忆 · 核对</span><h3 id={titleId}>逐阶段核对回答</h3></div><button type="button" className="practice-cards-close-small" onClick={close} disabled={attemptSaving} aria-label="退出练习">×</button></div>
+      <p className="practice-cards-scenario-notice">这里只显示这次会话的原答和实际提示；案例族、来源、概念搜索和旧历史不会进入回答阶段。自评由你分别填写，系统不会自动评分。</p>
+      <div className="practice-cards-scenario-stages">
+        {feedbackStages.map((stage) => <article className="practice-cards-scenario-stage" key={stage.stage}>
+          <div className="practice-cards-history-meta"><strong>{SCENARIO_STAGE_LABELS[stage.stage]}</strong><time dateTime={stage.answeredAt}>{formatDate(stage.answeredAt)}</time></div>
+          {stage.hintShownAt ? <p className="practice-cards-scenario-used-hint"><span>实际提示</span>{stage.stage === 'structure' ? scenario.structureHint : scenario.nameHint}</p> : null}
+          <p className="practice-cards-scenario-answer">{stage.answer || '（空白回答）'}</p>
+        </article>)}
+      </div>
+      {!practice.scenarioReferenceVisible ? <div className="practice-cards-scenario-next">
+        <p>你可以直接核对，也可以先冻结当前原答并继续显示下一层提示。提示阶段只能向前推进。</p>
+        <div className="practice-cards-actions">
+          <button type="button" className="practice-cards-button primary" onClick={() => setPractice((current) => current ? revealPracticeReference(current) : current)}>直接核对</button>
+          {canShowStructure ? <button type="button" className="practice-cards-button secondary" onClick={() => setPractice((current) => current ? showPracticeScenarioHint(current, 'structure', new Date().toISOString()) : current)}>显示结构提示</button> : null}
+          {canShowName ? <button type="button" className="practice-cards-button secondary" onClick={() => setPractice((current) => current ? showPracticeScenarioHint(current, 'name', new Date().toISOString()) : current)}>直接显示名称提示</button> : null}
+        </div>
+      </div> : null}
+      {practice.scenarioReferenceVisible ? <>
+        <div className="practice-cards-reference"><h4>核对依据</h4><MarkdownView content={practice.card.referenceAnswer} /><p className="practice-cards-reference-notes">{practice.card.referenceNotes}</p><div className="practice-cards-reference-sources"><span>关联资料</span>{practice.card.sources.map((source) => { const concept = concepts.find((candidate) => candidate.id === source.conceptId); return <button type="button" key={source.conceptId} disabled={!concept || readingConceptId === source.conceptId} onClick={() => void readConcept(source.conceptId)}>{readingConceptId === source.conceptId ? '读取中…' : concept ? `阅读 ${concept.title}` : `来源已删除：${source.conceptId}`}</button>; })}</div>{readError ? <p className="practice-cards-error" role="alert">{readError.message} <button type="button" className="practice-cards-link-button" onClick={() => void readConcept(readError.conceptId)}>重试读取资料</button></p> : null}</div>
+        {Object.keys(readConcepts).length ? <div className="practice-cards-read-materials"><h4>已打开的资料</h4>{Object.values(readConcepts).map((concept) => <article key={concept.id}><h5>{concept.title}</h5><MarkdownView content={concept.body} source={{ sourceId, conceptId: concept.id, sourceRevision: concept.source.revision }} /></article>)}</div> : null}
+        <fieldset className="practice-cards-feedback" disabled={Boolean(practice.submittedRequest) || attemptSaving}>
+          <legend>逐阶段人工自评</legend>
+          {feedbackStages.map((stage) => <div className="practice-cards-scenario-rating" key={`rating-${stage.stage}`}>
+            <strong>{SCENARIO_STAGE_LABELS[stage.stage]}</strong>
+            <label className="practice-cards-field"><span>候选召回</span><select value={stage.recallOutcome} onChange={(event) => setPractice((current) => current ? setPracticeScenarioRating(current, stage.stage, 'recallOutcome', event.target.value as PracticeAttemptRequest['outcome']) : current)}>{Object.entries(OUTCOME_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            <label className="practice-cards-field"><span>适用理由</span><select value={stage.applicabilityOutcome} onChange={(event) => setPractice((current) => current ? setPracticeScenarioRating(current, stage.stage, 'applicabilityOutcome', event.target.value as PracticeAttemptRequest['outcome']) : current)}>{Object.entries(OUTCOME_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          </div>)}
+          <label className="practice-cards-field"><span>提示 / 外部线索</span><select value={hinted && practice.cue !== 'lookup' ? 'hinted' : practice.cue} onChange={(event) => updatePractice('cue', event.target.value as PracticeAttemptRequest['cue'])}>{Object.entries(CUE_LABELS).filter(([value]) => !hinted || value === 'hinted' || value === 'lookup').map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small>显示结构或名称提示后至少记录为“得到提示后想到”；若查阅外部资料，请如实选择“查阅资料后想到”。</small></label>
+          <fieldset className="practice-cards-exposure"><legend>提交原答前是否看过资料</legend>{Object.entries(EXPOSURE_LABELS).map(([value, label]) => <label key={value}><input type="radio" name={`practice-exposure-${practice.card.eventId}`} value={value} checked={effectiveExposure === value} disabled={observedExposure} onChange={() => updatePractice('exposure', value as PracticeAttemptRequest['exposure'])} /><span>{label}</span></label>)}{observedExposure ? <small>系统记录到提交原答前已看过至少一个关联来源，因此会保留为“看过资料”。</small> : null}</fieldset>
+          <label className="practice-cards-field"><span>核对笔记（可选）</span><textarea maxLength={PRACTICE_NOTES_MAX_LENGTH} value={practice.checkNotes} onChange={(event) => updatePractice('checkNotes', event.target.value)} placeholder="记录这次核对后需要记住的差异和发生阶段。" /></label>
+        </fieldset>
+      </> : null}
+      {practice.validationError ? <p className="practice-cards-error" role="alert">{practice.validationError}</p> : null}
+      {practice.saveError ? <p className="practice-cards-error" role="alert">{practice.saveError}</p> : null}
+      {!canWriteOrigin(practiceOriginSourceId) && !practice.submittedRequest ? <p className="practice-cards-warning" role="alert">当前资料空间已变化或写入被锁定；回答和核对结果已保留，恢复后才能保存。</p> : null}
+      <div className="practice-cards-actions"><button type="button" className="practice-cards-button secondary" onClick={close} disabled={attemptSaving}>关闭</button><button type="button" className="practice-cards-button primary" onClick={() => void savePractice()} disabled={attemptSaving || practice.attemptSaved || !practice.scenarioReferenceVisible || (!canWriteOrigin(practiceOriginSourceId) && !practice.submittedRequest)}>{attemptSaving ? '保存中…' : practice.submittedRequest ? '重试保存' : '保存练习记录'}</button></div>
+    </section>;
+  };
+
   const renderPractice = () => {
     if (!practice) return null;
+    if (practice.card.kind === 'scenario') return renderScenarioPractice();
     if (practice.stage === 'predict') return <section className="practice-cards-practice" aria-labelledby={titleId}>
       <div className="practice-cards-section-heading"><div><span className="practice-cards-kicker">私人回忆</span><h3 id={titleId}>开始前先做一个预测</h3></div><button type="button" className="practice-cards-close-small" onClick={close} aria-label="退出练习">×</button></div>
       <p className="practice-cards-intro">你可以先记录自己有多大把握，也可以跳过。开始后只会看到题干和自己的回答。</p>
@@ -812,6 +966,7 @@ export function PracticeCardsDialog({
       <PracticeBlindAnswer prompt={practice.card.prompt} answer={practice.answer} disabled={false} onAnswer={(answer) => setPractice((current) => current && !current.submittedCore ? { ...current, answer, validationError: null } : current)} onSubmit={submitPractice} />
     </section>;
     const observedExposure = practice.submittedCore?.observedExposure === true;
+    const effectiveExposure = observedExposure ? 'exposed' : practice.exposure;
     return <section className="practice-cards-practice" aria-labelledby={titleId}>
       <div className="practice-cards-section-heading"><div><span className="practice-cards-kicker">私人回忆 · 核对</span><h3 id={titleId}>核对你的回答</h3></div><button type="button" className="practice-cards-close-small" onClick={close} disabled={attemptSaving} aria-label="退出练习">×</button></div>
       <div className="practice-cards-answer-summary"><span>你的回答</span><p>{practice.submittedCore?.answer || '（空白回答）'}</p><small>回答时间：{practice.submittedCore ? formatDate(practice.submittedCore.answeredAt) : '时间未知'}{practice.submittedCore?.confidence !== null && practice.submittedCore?.confidence !== undefined ? ` · 事前信心 ${practice.submittedCore.confidence}%` : ' · 跳过事前预测'}</small></div>
@@ -821,7 +976,7 @@ export function PracticeCardsDialog({
         <legend>这次练习的人工自评</legend>
         <label className="practice-cards-field"><span>结果</span><select value={practice.outcome} onChange={(event) => updatePractice('outcome', event.target.value as PracticeAttemptRequest['outcome'])}>{Object.entries(OUTCOME_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="practice-cards-field"><span>提示程度</span><select value={practice.cue} onChange={(event) => updatePractice('cue', event.target.value as PracticeAttemptRequest['cue'])}>{Object.entries(CUE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <fieldset className="practice-cards-exposure"><legend>提交前是否看过资料</legend>{Object.entries(EXPOSURE_LABELS).map(([value, label]) => <label key={value}><input type="radio" name={`practice-exposure-${practice.card.eventId}`} value={value} checked={practice.exposure === value} disabled={observedExposure} onChange={() => updatePractice('exposure', value as PracticeAttemptRequest['exposure'])} /><span>{label}</span></label>)}{observedExposure ? <small>系统记录到提交前已看过至少一个关联来源，因此会保留为“看过资料”。</small> : null}</fieldset>
+        <fieldset className="practice-cards-exposure"><legend>提交前是否看过资料</legend>{Object.entries(EXPOSURE_LABELS).map(([value, label]) => <label key={value}><input type="radio" name={`practice-exposure-${practice.card.eventId}`} value={value} checked={effectiveExposure === value} disabled={observedExposure} onChange={() => updatePractice('exposure', value as PracticeAttemptRequest['exposure'])} /><span>{label}</span></label>)}{observedExposure ? <small>系统记录到提交前已看过至少一个关联来源，因此会保留为“看过资料”。</small> : null}</fieldset>
         <label className="practice-cards-field"><span>核对笔记（可选）</span><textarea maxLength={PRACTICE_NOTES_MAX_LENGTH} value={practice.checkNotes} onChange={(event) => updatePractice('checkNotes', event.target.value)} placeholder="记录这次核对后需要记住的差异。" /></label>
       </fieldset>
       {practice.validationError ? <p className="practice-cards-error" role="alert">{practice.validationError}</p> : null}
@@ -834,14 +989,14 @@ export function PracticeCardsDialog({
   const renderList = () => <section className="practice-cards-list-view" aria-labelledby={titleId}>
     <header className="practice-cards-header"><div><span className="practice-cards-kicker">Private practice cards</span><h2 id={titleId}>私人练习卡</h2><p>手工维护问题和核对依据，练习记录独立保存，不改变时间衰减起点。</p></div><button type="button" className="practice-cards-close-small" onClick={close} disabled={loading || cardSaving} aria-label="关闭练习卡">×</button></header>
     {lockedReason ? <p className="practice-cards-lock" role="alert">当前暂不能写入练习卡：{lockedReason}。已经打开的草稿和阅读功能仍可保留。</p> : null}
-    <div className="practice-cards-toolbar"><label className="practice-cards-search"><span className="sr-only">搜索练习卡</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、题干或关联概念" /></label><button type="button" className="practice-cards-button primary" onClick={openCreate}>新建卡片</button></div>
+    <div className="practice-cards-toolbar"><label className="practice-cards-search"><span className="sr-only">搜索练习卡</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、题干或案例族" /></label><button type="button" className="practice-cards-button primary" onClick={openCreate}>新建卡片</button></div>
     <div className="practice-cards-filters" role="group" aria-label="筛选练习卡">{(Object.keys(FILTER_LABELS) as CardFilter[]).map((value) => <button type="button" key={value} className={filter === value ? 'is-active' : ''} aria-pressed={filter === value} onClick={() => setFilter(value)}>{FILTER_LABELS[value]}</button>)}</div>
     {pendingCardWrite?.error ? <p className="practice-cards-error" role="alert">{pendingCardWrite.error} <button type="button" className="practice-cards-link-button" onClick={() => { const view = cards?.items.find((item) => item.card.cardId === pendingCardWrite.cardId); if (view) void savePause(view, !view.card.paused, pendingCardWrite.request); }}>重试原请求</button></p> : null}
     {readError ? <p className="practice-cards-error" role="alert">{readError.message} <button type="button" className="practice-cards-link-button" onClick={() => void readConcept(readError.conceptId)}>重试读取资料</button></p> : null}
     {loading ? <div className="practice-cards-loading" role="status"><span>正在加载练习卡…</span><button type="button" className="practice-cards-button secondary" onClick={() => { loadRequestRef.current += 1; loadControllerRef.current?.abort(); loadControllerRef.current = null; setLoading(false); }}>取消加载</button></div> : loadError ? <div className="practice-cards-error" role="alert"><span>{loadError}</span><button type="button" className="practice-cards-button secondary" onClick={() => void refreshCards()}>重试</button></div> : filteredItems.length === 0 ? <div className="practice-cards-empty"><strong>没有符合条件的练习卡</strong><p>可以新建一张卡，或清除筛选和搜索条件。</p></div> : <div className="practice-cards-items">{filteredItems.map((view) => <article key={view.card.cardId} className="practice-cards-item">
-      <div className="practice-cards-item-heading"><div><span className="practice-cards-kind-label">{KIND_LABELS[view.card.kind]}</span><h3>{view.card.title}</h3></div><CardStatus view={view} /></div>
+      <div className="practice-cards-item-heading"><div><span className="practice-cards-kind-label">{KIND_LABELS[view.card.kind]}</span><h3>{view.card.title}</h3>{view.card.scenario?.caseFamily ? <span className="practice-cards-scenario-family">案例族：{view.card.scenario.caseFamily}</span> : null}</div><CardStatus view={view} /></div>
       <p className="practice-cards-item-prompt">{view.card.prompt}</p>
-      <div className="practice-cards-item-meta"><span>{view.card.sources.length} 个来源</span><span>当前版本 {sourceRevisionLabel(view.card.eventId)}</span>{view.latest ? <span>最近自评：{OUTCOME_LABELS[view.latest.outcome]}</span> : <span>尚无练习记录</span>}</div>
+      <div className="practice-cards-item-meta"><span>{view.card.sources.length} 个来源</span><span>当前版本 {sourceRevisionLabel(view.card.eventId)}</span>{view.latest?.scenario ? <span>最近原答：候选 {OUTCOME_LABELS[view.latest.scenario.stages[0].recallOutcome]} / 理由 {OUTCOME_LABELS[view.latest.scenario.stages[0].applicabilityOutcome]}</span> : view.latest ? <span>最近自评：{OUTCOME_LABELS[view.latest.outcome]}</span> : <span>尚无练习记录</span>}</div>
       {cardHasSourceReview(view) ? <p className="practice-cards-warning">来源版本变化或来源已删除。请阅读当前资料并修订后才能开始练习；旧题目不会自动替换来源版本。</p> : null}
       <div className="practice-cards-item-actions"><button type="button" className="practice-cards-button primary" disabled={view.status !== 'ready' || view.card.paused} onClick={() => startPractice(view)}>{view.card.paused ? '已暂停' : '开始练习'}</button><button type="button" className="practice-cards-button secondary" disabled={Boolean(pendingCardWrite)} onClick={() => openRevision(view)}>修订</button>{view.status === 'ready' || view.status === 'paused' ? <button type="button" className="practice-cards-button secondary" disabled={locked || cardSaving || Boolean(pendingCardWrite)} onClick={() => void savePause(view, !view.card.paused)}>{view.card.paused ? '恢复' : '暂停'}</button> : null}<button type="button" className="practice-cards-link-button" onClick={() => void loadHistory(view)}>{history?.cardId === view.card.cardId && history.data ? '收起历史' : '查看历史'}</button></div>
       {history?.cardId === view.card.cardId ? <div>{history.loading ? <p className="practice-cards-muted" role="status">正在加载历史…</p> : history.error ? <p className="practice-cards-error" role="alert">{history.error} <button type="button" className="practice-cards-link-button" onClick={() => void loadHistory(view)}>重试</button></p> : history.data ? <PracticeCardHistory data={history.data} currentEventId={view.card.eventId} concepts={concepts} readConcept={(conceptId) => void readConcept(conceptId)} /> : null}</div> : null}
@@ -849,9 +1004,9 @@ export function PracticeCardsDialog({
     <footer className="practice-cards-footer"><span>{cards ? `共 ${cards.items.length} 张卡片` : '正在读取卡片列表'}</span><button type="button" className="practice-cards-button secondary" onClick={close} disabled={loading || cardSaving}>关闭</button></footer>
   </section>;
 
-  return <dialog ref={dialogRef} className="practice-cards-dialog" aria-modal="true" aria-label="细节与概念辨别练习" onCancel={(event) => { event.preventDefault(); close(); }}>
+  return <dialog ref={dialogRef} className="practice-cards-dialog" aria-modal="true" aria-label="私人练习卡：细节、辨别与场景练习" onCancel={(event) => { event.preventDefault(); close(); }}>
     <div className="practice-cards-shell">
-      {editor ? <CardEditor editor={editor} concepts={concepts} readConcepts={readConcepts} readingConceptId={readingConceptId} readError={readError} locked={locked} canWrite={canWriteOrigin(editor.originSourceId) || Boolean(editor.draft.submittedRequest)} saving={cardSaving} onChange={updateEditor} onKindChange={updateEditorKind} onSourceChange={updateEditorSource} onAddSource={addEditorSource} onRemoveSource={removeEditorSource} onReadSource={(conceptId) => void readConcept(conceptId)} onSave={() => void saveEditor()} onCancel={() => { if (!hasUnsavedPracticeCardDraft(editor.draft) || typeof window === 'undefined' || window.confirm('当前卡片草稿尚未保存，确定取消吗？')) setEditor(null); }} /> : practice ? renderPractice() : renderList()}
+      {editor ? <CardEditor editor={editor} concepts={concepts} readConcepts={readConcepts} readingConceptId={readingConceptId} readError={readError} locked={locked} canWrite={canWriteOrigin(editor.originSourceId) || Boolean(editor.draft.submittedRequest)} saving={cardSaving} onChange={updateEditor} onScenarioChange={updateEditorScenario} onKindChange={updateEditorKind} onSourceChange={updateEditorSource} onAddSource={addEditorSource} onRemoveSource={removeEditorSource} onReadSource={(conceptId) => void readConcept(conceptId)} onSave={() => void saveEditor()} onCancel={() => { if (!hasUnsavedPracticeCardDraft(editor.draft) || typeof window === 'undefined' || window.confirm('当前卡片草稿尚未保存，确定取消吗？')) setEditor(null); }} /> : practice ? renderPractice() : renderList()}
     </div>
   </dialog>;
 }

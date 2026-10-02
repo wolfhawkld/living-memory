@@ -3,16 +3,22 @@ import type {
   PracticeAttemptRequest,
   PracticeCardRequest,
   PracticeKind,
+  PracticeOutcome,
+  PracticeScenarioAttempt,
+  PracticeScenarioCard,
+  PracticeScenarioStage,
   PracticeSource,
 } from '../shared/practice.js';
 import type { Exposure } from '../shared/types.js';
 import { StoreError } from './store.js';
 
 const EVENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const PRACTICE_KINDS = ['detail', 'comparison'] as const;
+const PRACTICE_KINDS = ['detail', 'comparison', 'scenario'] as const;
 const EXPOSURES = ['unexposed', 'exposed', 'unknown'] as const;
 const CUES = ['independent', 'hinted', 'lookup', 'unknown'] as const;
 const OUTCOMES = ['success', 'partial', 'failure', 'unverified'] as const;
+const SCENARIO_STAGES = ['independent', 'structure', 'name'] as const;
+const CASE_EXPOSURES = ['seen', 'unseen', 'unknown'] as const;
 
 function recordOf(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -66,6 +72,77 @@ function nullableInstant(record: Record<string, unknown>, key: string, code: str
   return new Date(Date.parse(value)).toISOString();
 }
 
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function scenarioCard(value: unknown): PracticeScenarioCard {
+  const record = recordOf(value, 'scenario');
+  return {
+    caseFamily: text(record, 'caseFamily', 160, true).trim(),
+    structureHint: text(record, 'structureHint', 4000).trim(),
+    nameHint: text(record, 'nameHint', 4000).trim(),
+  };
+}
+
+function scenarioStage(value: unknown, index: number): PracticeScenarioStage {
+  const record = recordOf(value, `scenario.stages[${index}]`);
+  const stage = record.stage;
+  oneOf(SCENARIO_STAGES, stage, `scenario.stages[${index}].stage`);
+  const answeredAt = instant(record, 'answeredAt', 'INVALID_SCENARIO_STAGE_TIME');
+  const hintShownAt = nullableInstant(record, 'hintShownAt', 'INVALID_SCENARIO_HINT_TIME');
+  const recallOutcome = record.recallOutcome;
+  oneOf(OUTCOMES, recallOutcome, `scenario.stages[${index}].recallOutcome`);
+  const applicabilityOutcome = record.applicabilityOutcome;
+  oneOf(OUTCOMES, applicabilityOutcome, `scenario.stages[${index}].applicabilityOutcome`);
+  return {
+    stage: stage as PracticeScenarioStage['stage'],
+    answer: text(record, 'answer', 12000),
+    answeredAt,
+    hintShownAt,
+    recallOutcome: recallOutcome as PracticeOutcome,
+    applicabilityOutcome: applicabilityOutcome as PracticeOutcome,
+  };
+}
+
+function scenarioAttempt(value: unknown): PracticeScenarioAttempt {
+  const record = recordOf(value, 'scenario');
+  if (!Array.isArray(record.stages) || record.stages.length < 1 || record.stages.length > 3) {
+    throw new StoreError('INVALID_BODY', 'scenario.stages 必须包含 1 到 3 个阶段。');
+  }
+  const stages = record.stages.map((stage, index) => scenarioStage(stage, index));
+  const first = stages[0];
+  if (first.stage !== 'independent' || first.hintShownAt !== null) {
+    throw new StoreError('INVALID_BODY', 'scenario.stages 必须从 independent 阶段开始，且首段 hintShownAt 必须为 null。');
+  }
+  const stageOrder = new Map(SCENARIO_STAGES.map((stage, index) => [stage, index]));
+  for (let index = 1; index < stages.length; index += 1) {
+    const previous = stages[index - 1];
+    const current = stages[index];
+    if (current.hintShownAt === null || (stageOrder.get(current.stage) ?? -1) <= (stageOrder.get(previous.stage) ?? -1)) {
+      throw new StoreError('INVALID_BODY', 'scenario.stages 必须唯一且严格升序，后续阶段必须有提示时间。');
+    }
+    if (Date.parse(current.hintShownAt) < Date.parse(previous.answeredAt)) {
+      throw new StoreError('INVALID_BODY', '后续阶段的 hintShownAt 不能早于上一阶段回答时间。');
+    }
+    if (Date.parse(current.answeredAt) < Date.parse(current.hintShownAt)) {
+      throw new StoreError('INVALID_BODY', '阶段回答时间不能早于 hintShownAt。');
+    }
+  }
+  const caseExposure = record.caseExposure;
+  oneOf(CASE_EXPOSURES, caseExposure, 'scenario.caseExposure');
+  if (typeof record.observedCaseExposure !== 'boolean') {
+    throw new StoreError('INVALID_BODY', 'scenario.observedCaseExposure 必须是布尔值。');
+  }
+  return {
+    stages,
+    // A frozen prior-contact observation is authoritative even when the UI's
+    // submitted value attempted to downgrade it to unseen.
+    caseExposure: record.observedCaseExposure ? 'seen' : caseExposure as PracticeScenarioAttempt['caseExposure'],
+    observedCaseExposure: record.observedCaseExposure,
+  };
+}
+
 function sources(record: Record<string, unknown>, kind: PracticeKind): PracticeSource[] {
   if (!Array.isArray(record.sources)) throw new StoreError('INVALID_BODY', 'sources 必须是数组。');
   const values = record.sources.map((value, index) => {
@@ -80,11 +157,15 @@ function sources(record: Record<string, unknown>, kind: PracticeKind): PracticeS
     }
     return { conceptId: conceptId.trim(), sourceRevision: sourceRevision.trim() };
   });
-  const required = kind === 'detail' ? values.length === 1 : values.length >= 2 && values.length <= 4;
+  const required = kind === 'detail'
+    ? values.length === 1
+    : values.length >= (kind === 'scenario' ? 1 : 2) && values.length <= 4;
   if (!required) {
     throw new StoreError('INVALID_BODY', kind === 'detail'
       ? 'detail 练习必须恰好引用一个来源概念。'
-      : 'comparison 练习必须引用 2 到 4 个来源概念。');
+      : kind === 'comparison'
+        ? 'comparison 练习必须引用 2 到 4 个来源概念。'
+        : 'scenario 练习必须引用 1 到 4 个来源概念。');
   }
   const keys = values.map((value) => value.conceptId);
   if (new Set(keys).size !== keys.length) throw new StoreError('INVALID_BODY', 'sources 必须引用不同概念，不能用同一概念的多个版本充当比较对象。');
@@ -118,7 +199,7 @@ export function parsePracticeCardRequest(value: unknown): PracticeCardRequest {
   const practiceKind = kind as PracticeKind;
   if (record.sourceChecked !== true) throw new StoreError('INVALID_BODY', 'sourceChecked 必须是字面量 true。');
   if (typeof record.paused !== 'boolean') throw new StoreError('INVALID_BODY', 'paused 必须是布尔值。');
-  return {
+  const request = {
     eventId,
     cardId,
     previousEventId,
@@ -131,7 +212,14 @@ export function parsePracticeCardRequest(value: unknown): PracticeCardRequest {
     sources: sources(record, practiceKind),
     sourceChecked: true,
     paused: record.paused,
-  };
+  } as PracticeCardRequest;
+  if (practiceKind === 'scenario') {
+    if (!hasOwn(record, 'scenario')) throw new StoreError('INVALID_BODY', 'scenario 练习必须包含 scenario 卡片信息。');
+    request.scenario = scenarioCard(record.scenario);
+  } else if (hasOwn(record, 'scenario')) {
+    throw new StoreError('INVALID_BODY', '非 scenario 练习不能携带 scenario 字段。');
+  }
+  return request;
 }
 
 /** Parse, validate, and canonicalize an answer to a specific card revision. */
@@ -168,12 +256,13 @@ export function parsePracticeAttemptRequest(value: unknown): PracticeAttemptRequ
   oneOf(CUES, cue, 'cue');
   const outcome = record.outcome;
   oneOf(OUTCOMES, outcome, 'outcome');
-  return {
+  const answer = text(record, 'answer', 12000);
+  const request = {
     eventId,
     cardId,
     cardEventId,
     answeredAt,
-    answer: text(record, 'answer', 12000),
+    answer,
     confidence: confidence as number | null,
     confidenceAt,
     exposure: normalizedExposure,
@@ -181,5 +270,23 @@ export function parsePracticeAttemptRequest(value: unknown): PracticeAttemptRequ
     cue: cue as PracticeAttemptRequest['cue'],
     outcome: outcome as PracticeAttemptRequest['outcome'],
     checkNotes: text(record, 'checkNotes', 4000),
-  };
+  } as PracticeAttemptRequest;
+  if (hasOwn(record, 'scenario')) {
+    const scenario = scenarioAttempt(record.scenario);
+    const first = scenario.stages[0];
+    if (request.outcome !== 'unverified') {
+      throw new StoreError('INVALID_BODY', 'scenario 练习的顶层 outcome 必须为 unverified。');
+    }
+    if (answer !== first.answer || answeredAt !== first.answeredAt) {
+      throw new StoreError('INVALID_BODY', 'scenario 练习的顶层 answer/answeredAt 必须等于首段。');
+    }
+    if (confidenceAt && Date.parse(confidenceAt) > Date.parse(first.answeredAt)) {
+      throw new StoreError('INVALID_BODY', '首次 confidenceAt 不能晚于首段回答时间。');
+    }
+    if (scenario.stages.length > 1 && (request.cue === 'independent' || request.cue === 'unknown')) {
+      request.cue = 'hinted';
+    }
+    request.scenario = scenario;
+  }
+  return request;
 }
