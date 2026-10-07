@@ -69,6 +69,7 @@ import { buildLearningProgress } from '../core/learning-progress.js';
 import { buildScenarioPromptPage, type ScenarioPromptCursor } from '../core/scenario-prompts.js';
 import { buildImportPlan, type PreparedConfig, type PreparedImport } from './import-plan.js';
 import { parsePracticeAttemptRequest, parsePracticeCardRequest } from './practice-validation.js';
+import { parseRelationSuggestion } from '../shared/relation-suggestions.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 7;
 const IDENTITY_DEFAULT_PREFERENCE: ConceptReviewPreference = { focus: false, deferUntil: null };
@@ -252,6 +253,12 @@ function normalizeApplicationRequest(value: unknown): ApplicationRecordRequest {
   const assistance = requireString(record, 'assistance');
   if (!isOneOf(APPLICATION_ASSISTANCE, assistance)) throw new StoreError('INVALID_BODY', 'assistance 必须是 independent、resources、people-or-ai、mixed 或 unknown。');
   const context = applicationText(record, 'context', 4000, kind === 'application');
+  const parent = { conceptId: requireString(record, 'conceptId'), sourceRevision: requireString(record, 'sourceRevision') };
+  let relationSuggestion: ApplicationRecordRequest['relationSuggestion'];
+  if (record.relationSuggestion !== undefined) {
+    try { relationSuggestion = parseRelationSuggestion(record.relationSuggestion, parent); }
+    catch (error) { throw new StoreError('INVALID_BODY', error instanceof Error ? error.message : '关系建议无效。'); }
+  }
   return {
     eventId: requireString(record, 'eventId'),
     conceptId: requireString(record, 'conceptId'),
@@ -267,6 +274,7 @@ function normalizeApplicationRequest(value: unknown): ApplicationRecordRequest {
     insight: applicationText(record, 'insight', 4000, false),
     correction: applicationText(record, 'correction', 4000, false),
     references: applicationText(record, 'references', 4000, false),
+    ...(relationSuggestion === undefined ? {} : { relationSuggestion }),
   };
 }
 
@@ -670,6 +678,7 @@ export class Store {
         insight TEXT NOT NULL,
         correction TEXT NOT NULL,
         references_text TEXT NOT NULL,
+        relation_suggestion_json TEXT,
         request_payload TEXT NOT NULL,
         PRIMARY KEY(namespace, event_id)
       );
@@ -810,6 +819,10 @@ export class Store {
         ON identity_bindings(namespace, concept_id, confirmed_at, operation_id);
     `);
     this.migratePracticeSchema();
+    const applicationColumns = this.db.prepare('PRAGMA table_info(applications)').all() as Array<{ name: string }>;
+    if (!applicationColumns.some((column) => column.name === 'relation_suggestion_json')) {
+      this.db.exec('ALTER TABLE applications ADD COLUMN relation_suggestion_json TEXT');
+    }
     // CREATE TABLE IF NOT EXISTS does not update an existing SQLite table.
     // Keep the evidence column additive so databases created by older builds
     // remain readable without rewriting historical observations.
@@ -1204,8 +1217,8 @@ export class Store {
       this.db.prepare(`INSERT INTO applications(
         namespace, event_id, concept_id, source_revision, occurred_at, recorded_at,
         kind, context, content, outcome, assistance, result, limitations,
-        insight, correction, references_text, request_payload
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        insight, correction, references_text, relation_suggestion_json, request_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         this.namespace,
         request.eventId,
         request.conceptId,
@@ -1222,6 +1235,7 @@ export class Store {
         request.insight,
         request.correction,
         request.references,
+        request.relationSuggestion ? canonicalJson(request.relationSuggestion) : null,
         requestPayload,
       );
       this.db.exec('COMMIT');
@@ -1955,7 +1969,7 @@ export class Store {
   getApplications(conceptId?: string, sourceRevision?: string): ApplicationRecord[] {
     let query = `SELECT event_id, concept_id, source_revision, occurred_at, recorded_at,
       kind, context, content, outcome, assistance, result, limitations, insight,
-      correction, references_text
+      correction, references_text, relation_suggestion_json
       FROM applications WHERE namespace = ?`;
     const parameters: string[] = [this.namespace];
     if (conceptId !== undefined) {
@@ -1972,7 +1986,7 @@ export class Store {
       kind: 'application' | 'summary'; context: string; content: string;
       outcome: 'success' | 'partial' | 'failure' | 'unverified';
       assistance: 'independent' | 'resources' | 'people-or-ai' | 'mixed' | 'unknown';
-      result: string; limitations: string; insight: string; correction: string; references_text: string;
+      result: string; limitations: string; insight: string; correction: string; references_text: string; relation_suggestion_json: string | null;
     }>;
     return rows.map((row) => ({
       eventId: row.event_id,
@@ -1990,6 +2004,7 @@ export class Store {
       insight: row.insight,
       correction: row.correction,
       references: row.references_text,
+      ...(row.relation_suggestion_json === null ? {} : { relationSuggestion: parseRelationSuggestion(JSON.parse(row.relation_suggestion_json), { conceptId: row.concept_id, sourceRevision: row.source_revision }) }),
     }));
   }
 
@@ -2248,6 +2263,7 @@ export class Store {
       insight: string | null;
       correction: string | null;
       references_text: string | null;
+      relation_suggestion_json: string | null;
       active: number | null;
       previous_event_id: string | null;
       config_revision: number | null;
@@ -2299,7 +2315,7 @@ export class Store {
           occurred_at AS event_at, recorded_at, kind,
           NULL AS application_kind, NULL AS context, NULL AS content, NULL AS outcome,
           NULL AS assistance, NULL AS result, NULL AS limitations, NULL AS insight,
-          NULL AS correction, NULL AS references_text,
+          NULL AS correction, NULL AS references_text, NULL AS relation_suggestion_json,
           NULL AS active, NULL AS previous_event_id,
           NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
           NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
@@ -2311,7 +2327,7 @@ export class Store {
           observed_at AS event_at, recorded_at, NULL AS kind,
           NULL AS application_kind, NULL AS context, NULL AS content, NULL AS outcome,
           NULL AS assistance, NULL AS result, NULL AS limitations, NULL AS insight,
-          NULL AS correction, NULL AS references_text,
+          NULL AS correction, NULL AS references_text, NULL AS relation_suggestion_json,
           NULL AS active, NULL AS previous_event_id,
           config_revision, half_life_days, anchor_event_id,
           elapsed_days, decay, answer, rating, exposure, observed_exposure, learning_json, evidence_mode
@@ -2322,7 +2338,7 @@ export class Store {
           occurred_at AS event_at, recorded_at, NULL AS kind,
           NULL AS application_kind, NULL AS context, NULL AS content, NULL AS outcome,
           NULL AS assistance, NULL AS result, NULL AS limitations, NULL AS insight,
-          NULL AS correction, NULL AS references_text,
+          NULL AS correction, NULL AS references_text, NULL AS relation_suggestion_json,
           active, previous_event_id,
           NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
           NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
@@ -2333,7 +2349,7 @@ export class Store {
         SELECT 'application' AS event_type, event_id, concept_id, source_revision,
           occurred_at AS event_at, recorded_at, NULL AS kind,
           kind AS application_kind, context, content, outcome, assistance, result,
-          limitations, insight, correction, references_text,
+          limitations, insight, correction, references_text, relation_suggestion_json,
           NULL AS active, NULL AS previous_event_id,
           NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
           NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
@@ -2343,7 +2359,7 @@ export class Store {
       )
       SELECT event_type, event_id, concept_id, source_revision, event_at, recorded_at,
         kind, application_kind, context, content, outcome, assistance, result, limitations,
-        insight, correction, references_text, active, previous_event_id, config_revision,
+        insight, correction, references_text, relation_suggestion_json, active, previous_event_id, config_revision,
         half_life_days, anchor_event_id, elapsed_days, decay, answer, rating, exposure,
         observed_exposure, learning_json, evidence_mode
       FROM history
@@ -2427,6 +2443,7 @@ export class Store {
             insight: row.insight as string,
             correction: row.correction as string,
             references: row.references_text as string,
+            ...(row.relation_suggestion_json === null ? {} : { relationSuggestion: parseRelationSuggestion(JSON.parse(row.relation_suggestion_json), { conceptId: row.concept_id, sourceRevision: row.source_revision }) }),
           },
         };
       }
@@ -3246,6 +3263,7 @@ export class Store {
       insight: event.insight,
       correction: event.correction,
       references: event.references,
+      ...(event.relationSuggestion === undefined ? {} : { relationSuggestion: parseRelationSuggestion(event.relationSuggestion, event) }),
     });
     if (this.eventAlreadyImported(event.eventId, 'application', requestPayload)) return;
     if (!isValidInstant(event.occurredAt) || !isValidInstant(event.recordedAt)) {
@@ -3254,8 +3272,8 @@ export class Store {
     this.db.prepare(`INSERT INTO applications(
       namespace, event_id, concept_id, source_revision, occurred_at, recorded_at,
       kind, context, content, outcome, assistance, result, limitations,
-      insight, correction, references_text, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      insight, correction, references_text, relation_suggestion_json, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       this.namespace,
       event.eventId,
       event.conceptId,
@@ -3272,6 +3290,7 @@ export class Store {
       event.insight,
       event.correction,
       event.references,
+      event.relationSuggestion ? canonicalJson(event.relationSuggestion) : null,
       requestPayload,
     );
   }
@@ -3492,6 +3511,15 @@ export class Store {
     // The current knowledge index is authoritative when an imported orphan
     // has since become live again with the same stable concept ID.
     for (const concept of liveConcepts) mergedConcepts.set(concept.id, concept);
+    const applications = this.getApplications();
+    for (const application of applications) {
+      if (!application.relationSuggestion) continue;
+      for (const endpoint of [application.relationSuggestion.source, application.relationSuggestion.target]) {
+        if (!mergedConcepts.has(endpoint.conceptId) && !boundRawIds.has(endpoint.conceptId)) {
+          mergedConcepts.set(endpoint.conceptId, { id: endpoint.conceptId, title: endpoint.title, source: { path: endpoint.path, revision: endpoint.sourceRevision } });
+        }
+      }
+    }
     const practice = this.getPracticeData();
     return {
       schemaVersion: 1,
@@ -3504,7 +3532,7 @@ export class Store {
       anchors: this.getAnchors(),
       observations: this.getObservations(),
       retentions: this.getRetentions(),
-      applications: this.getApplications(),
+      applications,
       corrections: this.getCorrections(),
       ...(practice.cards.length || practice.attempts.length ? { practice } : {}),
       reviewPlan: this.getReviewPlan(),

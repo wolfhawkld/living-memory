@@ -331,6 +331,7 @@ export function ApplicationCorrectionPanel({
       </div>
 
       <p className="application-correction-proposal">{application.correction}</p>
+      {application.relationSuggestion ? <p className="application-correction-help">下方处理结果仅针对文字修正，不表示关系建议已纳入知识源。</p> : null}
       <SourceRevisionSummary application={application} currentRevision={currentRevision} />
 
       {history === undefined ? (

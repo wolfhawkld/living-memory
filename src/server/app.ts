@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
-import type { Layout, ModelConfig, Snapshot } from '../shared/types.js';
+import type { Layout, ModelConfig, RelationSuggestion, RelationSuggestionValue, Snapshot } from '../shared/types.js';
 import { MAX_IMPORT_BYTES, type ImportCommitRequest } from '../shared/import-data.js';
 import { saveImportBackup } from './import-backup.js';
 import type { IdentityLinkCommit, IdentityLinkRequest } from '../shared/identity.js';
@@ -280,6 +280,26 @@ function conceptById(source: KnowledgeSource, id: string) {
   const concept = source.index.concepts.find((item) => item.id === id);
   if (!concept) throw new StoreError('CONCEPT_NOT_FOUND', '找不到对应概念，请先刷新知识源。', 404);
   return concept;
+}
+
+/** Validate a new suggestion against this account's complete knowledge index. */
+function assertRelationSuggestionCurrent(source: KnowledgeSource, suggestion: RelationSuggestion): void {
+  for (const endpoint of [suggestion.source, suggestion.target]) {
+    const concept = conceptById(source, endpoint.conceptId);
+    if (endpoint.sourceRevision !== concept.source.revision || endpoint.title !== concept.title || endpoint.path !== concept.source.path) {
+      throw new StoreError('SOURCE_REVISION_MISMATCH', '关系建议的概念资料已变化，请保留材料，刷新知识源后重新核对。', 409);
+    }
+  }
+  const hasRelation = (value: RelationSuggestionValue) => source.index.links.some((link) => (
+    link.source === suggestion.source.conceptId && link.target === suggestion.target.conceptId
+      && link.type === value.type && link.description === value.description
+  ));
+  if (suggestion.operation !== 'add' && !hasRelation(suggestion.before)) {
+    throw new StoreError('RELATION_SOURCE_CHANGED', '待修改或删除的原关系已变化，请保留建议并重新核对。', 409);
+  }
+  if (suggestion.operation !== 'remove' && hasRelation(suggestion.after)) {
+    throw new StoreError('RELATION_SOURCE_CHANGED', '建议关系已存在，请保留建议并重新核对。', 409);
+  }
 }
 
 function validateLayout(value: unknown): Layout {
@@ -724,6 +744,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     if (!store.hasEvent(record.eventId)) {
       const concept = conceptById(source, record.conceptId);
       if (record.sourceRevision !== concept.source.revision) throw new StoreError('SOURCE_REVISION_MISMATCH', '概念内容已变化，请保留当前记录，刷新知识源后重新确认。', 409);
+      if (record.relationSuggestion) assertRelationSuggestionCurrent(source, record.relationSuggestion);
     }
     const receipt = store.addApplication(record);
     if (receipt.status === 'accepted') changes.publish('application');

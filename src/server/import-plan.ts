@@ -28,6 +28,7 @@ import {
   type ImportPreview,
 } from '../shared/import-data.js';
 import { DAY_MS, MODEL_VERSION } from '../shared/types.js';
+import { parseRelationSuggestion } from '../shared/relation-suggestions.js';
 import { decayAt, isValidInstant } from '../core/time-model.js';
 import {
   parseApplicationRequest,
@@ -405,6 +406,23 @@ function mappedConceptEvent<T extends { conceptId: string }>(event: T, mapping: 
   return { ...event, conceptId: mappedId(mapping, event.conceptId) };
 }
 
+function mappedApplication(event: ApplicationRecord, mapping: ConceptMapping, state: IssueState): ApplicationRecord {
+  const mapped = mappedConceptEvent(event, mapping);
+  if (!event.relationSuggestion) return mapped;
+  const suggestion = {
+    ...event.relationSuggestion,
+    source: { ...event.relationSuggestion.source, conceptId: mappedId(mapping, event.relationSuggestion.source.conceptId) },
+    target: { ...event.relationSuggestion.target, conceptId: mappedId(mapping, event.relationSuggestion.target.conceptId) },
+  };
+  if (suggestion.source.conceptId === suggestion.target.conceptId) {
+    addIssue(state, 'RELATION_ENDPOINT_MAPPING_COLLISION', `应用事件 ${event.eventId} 的关系两端映射到了同一概念。`, {
+      eventId: event.eventId, conceptId: suggestion.source.conceptId,
+    });
+    return { ...mapped, relationSuggestion: suggestion };
+  }
+  return { ...mapped, relationSuggestion: parseRelationSuggestion(suggestion, mapped) };
+}
+
 /**
  * Practice source arrays are canonicalized by the request parser. Mapping can
  * change the lexical order, so normalize again after mapping before event
@@ -662,6 +680,12 @@ function collectReferences(events: Record<EventKind, unknown[]>, record: Record<
       // Anchor event IDs are not concept references; intentionally ignored.
     }
   }
+  for (const raw of events.applications) {
+    if (!isRecord(raw) || !isRecord(raw.relationSuggestion)) continue;
+    for (const endpoint of [raw.relationSuggestion.source, raw.relationSuggestion.target]) {
+      if (isRecord(endpoint) && typeof endpoint.conceptId === 'string' && endpoint.conceptId.trim()) references.add(endpoint.conceptId);
+    }
+  }
   if (isRecord(record.layout)) {
     for (const id of Object.keys(record.layout)) references.add(id);
   }
@@ -750,7 +774,7 @@ function classifyEventConflicts(
     ['practiceAttempts', incoming.practiceAttempts],
   ] as const) {
     for (const original of events) {
-      const event = kind === 'practiceCards' || kind === 'practiceAttempts'
+      const event = kind === 'practiceCards' || kind === 'practiceAttempts' || kind === 'applications'
         ? original as Event
         : mappedConceptEvent(original as { conceptId: string }, mapping) as Event;
       const identity = { kind, event } as EventIdentity;
@@ -1386,7 +1410,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   const mappedAnchors = parsedEvents.anchors.map((event) => mappedConceptEvent(event, mapping));
   const mappedObservations = parsedEvents.observations.map((event) => mappedConceptEvent(event, mapping));
   const mappedRetentions = parsedEvents.retentions.map((event) => mappedConceptEvent(event, mapping));
-  const mappedApplications = parsedEvents.applications.map((event) => mappedConceptEvent(event, mapping));
+  const mappedApplications = parsedEvents.applications.map((event) => mappedApplication(event, mapping, state));
   const mappedCorrections = parsedEvents.corrections.map((event) => mappedConceptEvent(event, mapping));
   const mappedPracticeCards = (parsedPractice?.cards ?? []).map((card) => mappedPracticeCard(card, mapping, state));
   const mappedPracticeAttempts = parsedPractice?.attempts ?? [];
@@ -1403,6 +1427,18 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     }
   }
 
+  for (const application of mappedApplications) {
+    if (!application.relationSuggestion) continue;
+    for (const endpoint of [application.relationSuggestion.source, application.relationSuggestion.target]) {
+      const concept = input.concepts.find((item) => item.id === endpoint.conceptId);
+      if (concept && concept.source.revision !== endpoint.sourceRevision) {
+        addIssue(state, 'RELATION_SOURCE_REVISION_CHANGED', `应用事件 ${application.eventId} 的关系端点 ${endpoint.conceptId} 引用了旧资料版本，将保留历史快照。`, {
+          severity: 'warning', eventId: application.eventId, conceptId: endpoint.conceptId,
+        });
+      }
+    }
+  }
+
   for (const event of [...mappedAnchors, ...mappedObservations, ...mappedRetentions, ...mappedApplications, ...mappedCorrections]) {
     if (event.sourceRevision && event.conceptId && input.concepts.some((concept) => concept.id === event.conceptId && concept.source.revision !== event.sourceRevision)) {
       addIssue(state, 'OLD_SOURCE_REVISION', `事件 ${event.eventId} 使用了当前概念的旧来源版本，将保留为历史记录。`, { severity: 'warning', eventId: event.eventId, conceptId: event.conceptId });
@@ -1411,6 +1447,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   validateFrozenObservations(parsedEvents.observations, parsedEvents.anchors, input.current, [...configMerge.merged], mapping, state);
   const classified = classifyEventConflicts({
     ...parsedEvents,
+    applications: mappedApplications,
     practiceCards: mappedPracticeCards,
     practiceAttempts: mappedPracticeAttempts,
   }, input.current, mapping, state);

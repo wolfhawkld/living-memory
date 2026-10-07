@@ -117,7 +117,26 @@ export interface Observation {
 }
 
 /** Private work/summary evidence, independent of recall scores and memory anchors. */
+export interface RelationSuggestionEndpoint {
+  conceptId: string;
+  sourceRevision: string;
+  title: string;
+  path: string;
+}
+
+export interface RelationSuggestionValue { type: string; description: string }
+
+export type RelationSuggestion = {
+  source: RelationSuggestionEndpoint;
+  target: RelationSuggestionEndpoint;
+} & (
+  | { operation: 'add'; after: RelationSuggestionValue }
+  | { operation: 'change'; before: RelationSuggestionValue; after: RelationSuggestionValue }
+  | { operation: 'remove'; before: RelationSuggestionValue }
+);
+
 export interface ApplicationRecordRequest {
+  relationSuggestion?: RelationSuggestion;
   eventId: string;
   conceptId: string;
   sourceRevision: string;

@@ -1,4 +1,5 @@
-import type { ApplicationRecordRequest, Concept } from '../shared/types';
+import type { ApplicationRecordRequest, Concept, GraphLink, RelationSuggestion, RelationSuggestionValue } from '../shared/types';
+import { parseRelationSuggestion } from '../shared/relation-suggestions.js';
 
 export const APPLICATION_CONTENT_MAX_LENGTH = 12_000;
 export const APPLICATION_TEXT_MAX_LENGTH = 4_000;
@@ -21,6 +22,7 @@ export const APPLICATION_MATERIAL_FIELDS = [
   'insight',
   'correction',
   'references',
+  'relationSuggestion',
 ] as const;
 export type ApplicationMaterialField = (typeof APPLICATION_MATERIAL_FIELDS)[number];
 
@@ -32,6 +34,7 @@ export const APPLICATION_MATERIAL_LABELS: Record<ApplicationMaterialField, strin
   insight: '新的 insight',
   correction: '需要修正的理解',
   references: '参考资料与线索',
+  relationSuggestion: '关系建议（待核对）',
 };
 
 export const APPLICATION_KIND_LABELS: Record<ApplicationRecordKind, string> = {
@@ -65,6 +68,74 @@ export interface ApplicationRecordDraft {
   insight: string;
   correction: string;
   references: string;
+  relationSuggestion?: RelationSuggestionDraft;
+}
+
+export interface RelationSuggestionDraft {
+  enabled: boolean;
+  operation: 'add' | 'change' | 'remove';
+  direction: 'outgoing' | 'incoming';
+  otherConceptId: string;
+  before: RelationSuggestionValue | null;
+  after: RelationSuggestionValue;
+}
+
+export const RELATION_OPERATION_LABELS = { add: '新增关系', change: '修改关系', remove: '移除关系' } as const;
+
+export function createRelationSuggestionDraft(): RelationSuggestionDraft {
+  return { enabled: false, operation: 'add', direction: 'outgoing', otherConceptId: '', before: null, after: { type: '', description: '' } };
+}
+
+export function directedSuggestionLinks(conceptId: string, draft: RelationSuggestionDraft, links: readonly GraphLink[]): GraphLink[] {
+  const source = draft.direction === 'outgoing' ? conceptId : draft.otherConceptId;
+  const target = draft.direction === 'outgoing' ? draft.otherConceptId : conceptId;
+  return links.filter((link) => link.source === source && link.target === target);
+}
+
+export function buildRelationSuggestion(
+  concept: Pick<Concept, 'id' | 'source'> & Partial<Pick<Concept, 'title'>>,
+  draft: RelationSuggestionDraft | undefined,
+  concepts: readonly Concept[],
+  links: readonly GraphLink[],
+): RelationSuggestion | undefined {
+  if (!draft?.enabled) return undefined;
+  const other = concepts.find((candidate) => candidate.id === draft.otherConceptId && candidate.id !== concept.id);
+  if (!other) throw new Error('关系建议需要选择第二个概念。');
+  if (draft.direction !== 'outgoing' && draft.direction !== 'incoming') throw new Error('关系建议方向无效。');
+  const current = { conceptId: concept.id, sourceRevision: concept.source.revision, title: concept.title, path: concept.source.path };
+  const counterpart = { conceptId: other.id, sourceRevision: other.source.revision, title: other.title, path: other.source.path };
+  const source = draft.direction === 'outgoing' ? current : counterpart;
+  const target = draft.direction === 'outgoing' ? counterpart : current;
+  const existing = directedSuggestionLinks(concept.id, draft, links);
+  if (draft.operation !== 'add' && !existing.some((link) => (
+    draft.before && link.type === draft.before.type && link.description === draft.before.description
+  ))) throw new Error('请为关系建议选择该方向现有的原关系。');
+  const value = draft.operation === 'add'
+    ? { operation: draft.operation, source, target, after: draft.after }
+    : draft.operation === 'change'
+      ? { operation: draft.operation, source, target, before: draft.before, after: draft.after }
+      : { operation: draft.operation, source, target, before: draft.before };
+  const suggestion = parseRelationSuggestion(value, { conceptId: concept.id, sourceRevision: concept.source.revision });
+  if (suggestion.operation !== 'remove' && existing.some((link) => (
+    link.type === suggestion.after.type && link.description === suggestion.after.description
+  ))) throw new Error('该方向已有相同类型和描述的关系，请核对关系建议。');
+  return suggestion;
+}
+
+export function relationSuggestionMaterial(suggestion: RelationSuggestion): string {
+  const endpoint = (name: string, value: RelationSuggestion['source']) => [
+    `- ${name}：${value.title}`, `  - ID：${value.conceptId}`, `  - 路径：${value.path}`, `  - 版本：${value.sourceRevision}`,
+  ];
+  const lines = [
+    '待核对建议，尚未验证采纳。',
+    '记录时快照，整理前核对当前知识源。',
+    `- 操作：${RELATION_OPERATION_LABELS[suggestion.operation]}`,
+    `- 方向：${suggestion.source.title} → ${suggestion.target.title}`,
+    ...endpoint('源概念', suggestion.source), ...endpoint('目标概念', suggestion.target),
+  ];
+  if (suggestion.operation !== 'add') lines.push(`- 原关系类型：${suggestion.before.type}`, `- 原关系描述：${suggestion.before.description || '（无描述）'}`);
+  if (suggestion.operation !== 'remove') lines.push(`- 建议关系类型：${suggestion.after.type}`, `- 建议关系描述：${suggestion.after.description || '（无描述）'}`);
+  return lines.join('\n');
 }
 
 export function createApplicationRecordDraft(kind: ApplicationRecordKind = 'application'): ApplicationRecordDraft {
@@ -126,6 +197,10 @@ export function validateApplicationRecordRequest(request: ApplicationRecordReque
 
   if (!isOneOf(request.outcome, APPLICATION_OUTCOMES)) return '结果判断无效。';
   if (!isOneOf(request.assistance, APPLICATION_ASSISTANCE)) return '辅助方式无效。';
+  if (request.relationSuggestion !== undefined) {
+    try { parseRelationSuggestion(request.relationSuggestion, request); }
+    catch (error) { return error instanceof Error ? error.message : '关系建议无效。'; }
+  }
   return null;
 }
 
@@ -140,11 +215,13 @@ export function newApplicationRecordEventId(): string {
  * pass this exact object back to the caller, even if the clock/source changes meanwhile.
  */
 export function buildApplicationRecordRequest(
-  concept: Pick<Concept, 'id' | 'source'>,
+  concept: Pick<Concept, 'id' | 'source'> & Partial<Pick<Concept, 'title'>>,
   draft: ApplicationRecordDraft,
   occurredAt = new Date().toISOString(),
   eventId = newApplicationRecordEventId(),
+  graph: { concepts?: readonly Concept[]; links?: readonly GraphLink[] } = {},
 ): ApplicationRecordRequest {
+  const relationSuggestion = buildRelationSuggestion(concept, draft.relationSuggestion, graph.concepts ?? [], graph.links ?? []);
   const request: ApplicationRecordRequest = {
     eventId,
     conceptId: concept.id,
@@ -160,6 +237,7 @@ export function buildApplicationRecordRequest(
     insight: draft.insight,
     correction: draft.correction,
     references: draft.references,
+    ...(relationSuggestion ? { relationSuggestion } : {}),
   };
   const error = validateApplicationRecordRequest(request);
   if (error) throw new Error(error);
@@ -167,7 +245,9 @@ export function buildApplicationRecordRequest(
 }
 
 export function defaultApplicationMaterialFields(record: Pick<ApplicationRecordRequest, ApplicationMaterialField>): ApplicationMaterialField[] {
-  return (['insight', 'correction', 'references'] as const).filter((field) => Boolean(record[field].trim()));
+  const fields: ApplicationMaterialField[] = (['insight', 'correction', 'references'] as const).filter((field) => Boolean(record[field].trim()));
+  if (record.relationSuggestion) fields.push('relationSuggestion');
+  return fields;
 }
 
 /**
@@ -180,7 +260,12 @@ export function buildApplicationMaterial(
   record: ApplicationRecordRequest,
   fields: readonly ApplicationMaterialField[],
 ): string {
-  const selected = APPLICATION_MATERIAL_FIELDS.filter((field) => fields.includes(field) && Boolean(record[field].trim()));
+  const selected = APPLICATION_MATERIAL_FIELDS.filter((field) => fields.includes(field)).flatMap((field) => {
+    const content = field === 'relationSuggestion'
+      ? record.relationSuggestion ? relationSuggestionMaterial(record.relationSuggestion) : ''
+      : record[field];
+    return content.trim() ? [{ field, content }] : [];
+  });
   const lines = [
     `# ${concept.title}`,
     '',
@@ -190,8 +275,8 @@ export function buildApplicationMaterial(
     `- 记录类型：${APPLICATION_KIND_LABELS[record.kind]}`,
     '',
   ];
-  for (const field of selected) {
-    lines.push(`## ${APPLICATION_MATERIAL_LABELS[field]}`, '', record[field], '');
+  for (const { field, content } of selected) {
+    lines.push(`## ${APPLICATION_MATERIAL_LABELS[field]}`, '', content, '');
   }
   if (selected.length === 0) lines.push('（尚未选择可导出的内容。）', '');
   return lines.join('\n').trimEnd() + '\n';

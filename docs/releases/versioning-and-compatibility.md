@@ -44,7 +44,11 @@
 
 JSON 不包含知识正文、关系、附件、账号密码或浏览器草稿，也不能完整重建本机身份绑定登记。它是学习数据交换，不是应用整体备份。
 
+2026-10-07 增加 `applications[].relationSuggestion`，保存待核对的双端及前后关系快照，不是实际知识图谱连线。缺失字段保持缺失；新备份须用本轮或更新程序恢复，旧程序不了解此字段，不能保证保留。双端 ID 一起映射，端点碰撞阻止导入，历史名称 / 路径 / 版本保留。细则见[结构化关系建议](../development/relation-suggestions.md#备份导入与兼容)。
+
 ## SQLite：当前迁移范围
+
+LM-014A 在学习库 `applications` 增加可空 `relation_suggestion_json` 列；已知旧库仅加列，旧行、原 canonical 请求及各 namespace 数据不重写。关系建议的新读写、混合历史、重启与导入事务用隔离数据库检查；恢复使用匹配版本与升级前备份，不承诺旧程序保留新字段。网页与后台应同步更新，避免旧接口忽略新的请求内容。
 
 [Store.initialize](../../src/server/store.ts)使用 `CREATE TABLE IF NOT EXISTS` 补缺失表，并为已知旧 `observations` 表增加可空 `learning_json` 列；已有观察保留，缺失学习证据保持缺失。[Accounts](../../src/server/accounts.ts)创建账号、会话及飞书绑定相关表和索引，没有账号库迁移版本。
 

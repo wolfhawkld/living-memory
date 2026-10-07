@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type ReactElement } from 'react';
-import type { ApplicationRecordRequest, Concept } from '../shared/types';
+import type { ApplicationRecordRequest, Concept, GraphLink } from '../shared/types';
+import { RelationSuggestionFields } from './RelationSuggestionFields';
 import {
   APPLICATION_ASSISTANCE,
   APPLICATION_ASSISTANCE_LABELS,
@@ -14,6 +15,7 @@ import {
   buildApplicationMaterial,
   buildApplicationRecordRequest,
   createApplicationRecordDraft,
+  createRelationSuggestionDraft,
   defaultApplicationMaterialFields,
   newApplicationRecordEventId,
   type ApplicationMaterialField,
@@ -26,6 +28,8 @@ export { buildApplicationMaterial } from './application-record';
 export interface ApplicationRecordDialogProps {
   concept: Concept;
   initialDraft?: ApplicationRecordDraft;
+  concepts?: readonly Concept[];
+  links?: readonly GraphLink[];
   busy: boolean;
   onSave: (request: ApplicationRecordRequest) => Promise<boolean>;
   onClose: () => void;
@@ -58,6 +62,7 @@ function draftFromState(state: DialogState): ApplicationRecordDraft {
     insight: state.insight,
     correction: state.correction,
     references: state.references,
+    ...(state.relationSuggestion ? { relationSuggestion: state.relationSuggestion } : {}),
   };
 }
 
@@ -65,7 +70,8 @@ function isDirty(state: DialogState): boolean {
   return Boolean(
     state.context.trim() || state.content.trim() || state.result.trim() || state.limitations.trim()
       || state.insight.trim() || state.correction.trim() || state.references.trim()
-      || state.outcome !== 'unverified' || state.assistance !== 'unknown' || state.kind !== 'application',
+      || state.outcome !== 'unverified' || state.assistance !== 'unknown' || state.kind !== 'application'
+      || state.relationSuggestion?.enabled,
   );
 }
 
@@ -96,7 +102,7 @@ function textArea(
   </>;
 }
 
-export function ApplicationRecordDialog({ concept, initialDraft, busy, onSave, onClose }: ApplicationRecordDialogProps): ReactElement {
+export function ApplicationRecordDialog({ concept, initialDraft, concepts = [], links = [], busy, onSave, onClose }: ApplicationRecordDialogProps): ReactElement {
   const stateRef = useRef<DialogState | null>(null);
   if (!stateRef.current) stateRef.current = initialState(initialDraft);
   const [state, setState] = useState<DialogState>(stateRef.current);
@@ -145,7 +151,7 @@ export function ApplicationRecordDialog({ concept, initialDraft, busy, onSave, o
     let request = state.submittedRequest;
     if (!request) {
       try {
-        request = buildApplicationRecordRequest(concept, draftFromState(state), new Date().toISOString(), newApplicationRecordEventId());
+        request = buildApplicationRecordRequest(concept, draftFromState(state), new Date().toISOString(), newApplicationRecordEventId(), { concepts, links });
       } catch (error: unknown) {
         setState((current) => ({ ...current, validationError: error instanceof Error ? error.message : '请补充记录内容。' }));
         savingRef.current = false;
@@ -225,6 +231,15 @@ export function ApplicationRecordDialog({ concept, initialDraft, busy, onSave, o
             <label className="application-record-field" htmlFor={referencesId}><span>参考资料与线索</span>{textArea(state.references, APPLICATION_TEXT_MAX_LENGTH, (event) => updateField(setState, 'references', event.target.value), referencesId, '可供后续整理的链接、文件或概念线索。', fieldDisabled)}</label>
           </div>
         </details>
+
+        <RelationSuggestionFields
+          concept={concept}
+          concepts={concepts}
+          links={links}
+          draft={state.relationSuggestion ?? createRelationSuggestionDraft()}
+          disabled={fieldDisabled}
+          onChange={(draft) => updateField(setState, 'relationSuggestion', draft)}
+        />
 
         {state.validationError ? <p className="application-record-error" role="alert">{state.validationError}</p> : null}
         {state.saveError ? <p className="application-record-error" role="alert">{state.saveError}</p> : null}

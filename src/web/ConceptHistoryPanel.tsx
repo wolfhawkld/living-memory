@@ -11,6 +11,7 @@ import type {
 import type { CorrectionHistory } from '../shared/corrections';
 import { ApplicationMaterialPreview } from './ApplicationRecordDialog';
 import { ApplicationCorrectionPanel, type SaveCorrection } from './ApplicationCorrectionPanel';
+import { RelationSuggestionPreview } from './RelationSuggestionPreview';
 
 export interface ConceptHistoryPanelProps {
   history: ConceptHistory | null;
@@ -247,6 +248,7 @@ function ApplicationEntry({ event, history, concept, onRevealAnswer, correctionH
       }}>{revealed ? '收起应用 / 总结内容' : '展开应用 / 总结内容'}</button>
       {revealed ? <div className="concept-history-answer">
         {fields.filter(([, value]) => value).map(([label, value]) => <div key={label}><span className="concept-history-answer-label">{label}</span><p>{value}</p></div>)}
+        {event.relationSuggestion ? <RelationSuggestionPreview suggestion={event.relationSuggestion} /> : null}
         {concept ? <ApplicationMaterialPreview concept={{ ...concept, source: { ...concept.source, revision: event.sourceRevision } }} record={event} /> : null}
         <ApplicationCorrectionPanel
           key={`${event.eventId}:${recoveryVersion}`}

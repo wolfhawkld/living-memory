@@ -2059,7 +2059,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         onRefresh={() => { if (!sourceReloadPending && !overviewActionRef.current) { setOverviewSelectionError(null); void overviewLoader.refresh(); } }} /> : null}
 
       {applicationDraft ? <ApplicationRecordDialog key={`${applicationDraft.sourceId}:${applicationDraft.concept.id}`}
-        concept={applicationDraft.concept} initialDraft={applicationDraft.initialDraft} busy={busyAction === 'application'} onSave={saveApplication}
+        concept={applicationDraft.concept} concepts={snapshot.concepts} links={snapshot.links} initialDraft={applicationDraft.initialDraft} busy={busyAction === 'application'} onSave={saveApplication}
         onClose={() => setApplicationDraft(null)} /> : null}
 
       {scenarioOpen ? <ScenarioPractice key={sourceId} snapshot={snapshot} sourceId={sourceId} busy={busyAction === 'scenario'}

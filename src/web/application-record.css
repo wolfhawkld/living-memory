@@ -63,10 +63,25 @@
 .application-material-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .application-material-copy-error { color: var(--ui-warning, #dcb985); font-size: 11px; }
 .application-material-fallback { min-height: 150px !important; margin-top: 10px; }
+.relation-suggestion-fields { margin-top: 14px; padding-bottom: 13px; }
+.relation-suggestion-enable { display: flex; align-items: center; gap: 7px; color: var(--ui-text-muted, #c1d1e8); font-size: 12px; }
+.relation-suggestion-enable input { accent-color: var(--ui-accent, #78aaff); }
+.relation-suggestion-note { margin: 12px 0; color: var(--ui-text-muted, #a8bdd8); font-size: 12px; line-height: 1.6; }
+.relation-suggestion-fields .application-record-detail-grid .application-record-field:last-child { grid-column: auto; }
+.relation-suggestion-fields .application-record-field input { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--ui-border-strong, #344c6c); border-radius: 9px; background: var(--ui-input, #081221); color: var(--ui-text, #e7f0ff); font: inherit; }
+.relation-suggestion-preview { margin-top: 14px; padding: 14px; border: 1px solid var(--ui-border, rgba(126, 155, 199, .17)); border-radius: 9px; background: var(--ui-panel, rgba(15, 28, 48, .42)); }
+.relation-suggestion-preview h3, .relation-suggestion-preview h4 { margin: 0 0 8px; color: var(--ui-text, #e7f0ff); font-size: 12px; overflow-wrap: anywhere; }
+.relation-suggestion-direction { margin: 10px 0; color: var(--ui-text, #e7f0ff); font-size: 12px; overflow-wrap: anywhere; }
+.relation-suggestion-endpoints { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.relation-suggestion-preview dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 10px; margin: 0; font-size: 11px; line-height: 1.6; }
+.relation-suggestion-preview dt { color: var(--ui-text-muted, #a8bdd8); }
+.relation-suggestion-preview dd { margin: 0; color: var(--ui-text, #e7f0ff); white-space: pre-wrap; overflow-wrap: anywhere; }
+.relation-suggestion-preview .relation-suggestion-values { margin-top: 14px; }
 @media (max-width: 760px) {
   .application-record-dialog { width: 97vw; height: 95dvh; border-radius: 12px; }
   .application-record-header { padding: 21px 20px 17px; }
   .application-record-body { padding: 22px 20px 28px; }
   .application-record-main-fields, .application-record-selects, .application-record-detail-grid { grid-template-columns: 1fr; gap: 0; }
   .application-record-detail-grid .application-record-field:last-child { grid-column: auto; }
+  .relation-suggestion-endpoints { grid-template-columns: 1fr; }
 }
