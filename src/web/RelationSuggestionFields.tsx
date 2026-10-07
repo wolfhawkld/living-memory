@@ -45,25 +45,25 @@ export function RelationSuggestionFields({ concept, concepts, links, draft, disa
         <label className="application-record-field" htmlFor={`${id}-search`}><span>搜索第二个概念</span>
           <input id={`${id}-search`} type="search" value={query} disabled={disabled} placeholder="搜索标题、领域、路径或 ID" onChange={(event) => { if (!disabled) setQuery(event.currentTarget.value); }} />
         </label>
-        <label className="application-record-field" htmlFor={`${id}-concept`}><span>第二个概念（全部领域）</span>
-          <select id={`${id}-concept`} value={draft.otherConceptId} disabled={disabled} onChange={(event) => change({ otherConceptId: event.currentTarget.value, before: null })}>
+        <label className="application-record-field" htmlFor={`${id}-concept`}><span id={`${id}-concept-label`}>第二个概念（全部领域）</span>
+          <select id={`${id}-concept`} aria-labelledby={`${id}-concept-label`} aria-describedby={!options.length ? `${id}-concept-help` : undefined} value={draft.otherConceptId} disabled={disabled} onChange={(event) => change({ otherConceptId: event.currentTarget.value, before: null })}>
             <option value="">请选择概念</option>
             {options.map((item) => <option key={item.id} value={item.id}>{item.title} · {domainLabel(domainIdOf(item))} · {item.source.path} · {item.id}</option>)}
           </select>
-          {!options.length ? <small>没有匹配的其他概念。</small> : null}
+          {!options.length ? <small id={`${id}-concept-help`}>没有匹配的其他概念。</small> : null}
         </label>
-        <label className="application-record-field" htmlFor={`${id}-direction`}><span>关系方向</span>
-          <select id={`${id}-direction`} value={draft.direction} disabled={disabled} onChange={(event) => {
+        <label className="application-record-field" htmlFor={`${id}-direction`}><span id={`${id}-direction-label`}>关系方向</span>
+          <select id={`${id}-direction`} aria-labelledby={`${id}-direction-label`} aria-describedby={`${id}-direction-help`} value={draft.direction} disabled={disabled} onChange={(event) => {
             const direction = event.currentTarget.value;
             if (direction === 'outgoing' || direction === 'incoming') change({ direction, before: null });
           }}>
             <option value="outgoing">当前概念 → 第二个概念</option>
             <option value="incoming">第二个概念 → 当前概念</option>
           </select>
-          <small>{draft.direction === 'outgoing' ? `${concept.title} → ${other?.title ?? '请选择第二个概念'}` : `${other?.title ?? '请选择第二个概念'} → ${concept.title}`}</small>
+          <small id={`${id}-direction-help`}>{draft.direction === 'outgoing' ? `${concept.title} → ${other?.title ?? '请选择第二个概念'}` : `${other?.title ?? '请选择第二个概念'} → ${concept.title}`}</small>
         </label>
-        <label className="application-record-field" htmlFor={`${id}-operation`}><span>建议操作</span>
-          <select id={`${id}-operation`} value={draft.operation} disabled={disabled} onChange={(event) => {
+        <label className="application-record-field" htmlFor={`${id}-operation`}><span id={`${id}-operation-label`}>建议操作</span>
+          <select id={`${id}-operation`} aria-labelledby={`${id}-operation-label`} value={draft.operation} disabled={disabled} onChange={(event) => {
             const operation = event.currentTarget.value;
             if (operation === 'add' || operation === 'change' || operation === 'remove') change({ operation, before: null });
           }}>
@@ -71,8 +71,8 @@ export function RelationSuggestionFields({ concept, concepts, links, draft, disa
           </select>
         </label>
       </div>
-      {draft.operation !== 'add' ? <label className="application-record-field" htmlFor={`${id}-before`}><span>该方向现有的原关系</span>
-        <select id={`${id}-before`} value={draft.before ? key(draft.before) : ''} disabled={disabled} onChange={(event) => {
+      {draft.operation !== 'add' ? <label className="application-record-field" htmlFor={`${id}-before`}><span id={`${id}-before-label`}>该方向现有的原关系</span>
+        <select id={`${id}-before`} aria-labelledby={`${id}-before-label`} aria-describedby={`${id}-before-help`} value={draft.before ? key(draft.before) : ''} disabled={disabled} onChange={(event) => {
           const link = relations.find((candidate) => key(candidate) === event.currentTarget.value);
           const before = link ? { type: link.type, description: link.description } : null;
           change({ before, ...(before && draft.operation === 'change' ? { after: { ...before } } : {}) });
@@ -80,7 +80,7 @@ export function RelationSuggestionFields({ concept, concepts, links, draft, disa
           <option value="">请选择原关系</option>
           {relations.map((link) => <option key={key(link)} value={key(link)}>{link.type} · {link.description || '（无描述）'}</option>)}
         </select>
-        <small>{relations.length ? '原关系的类型和描述会一并保存。' : '该方向没有现有关系，无法提出修改或移除建议。'}修改方向请分别记录移除和新增建议。</small>
+        <small id={`${id}-before-help`}>{relations.length ? '原关系的类型和描述会一并保存。' : '该方向没有现有关系，无法提出修改或移除建议。'}修改方向请分别记录移除和新增建议。</small>
       </label> : null}
       {draft.operation !== 'remove' ? <div className="application-record-detail-grid">
         <label className="application-record-field" htmlFor={`${id}-type`}><span>建议关系类型</span>

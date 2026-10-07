@@ -49,6 +49,21 @@ test('change/remove list only exact relations in the chosen direction and lock a
   for (const tag of removed.match(/<(?:input|select|textarea)\b[^>]*>/g) ?? []) assert.match(tag, /disabled=""/);
 });
 
+test('select accessible names reference only their field labels, with separate descriptions', () => {
+  const html = fields(draft({ operation: 'change' }));
+  for (const [field, text] of [
+    ['concept', '第二个概念（全部领域）'], ['direction', '关系方向'],
+    ['operation', '建议操作'], ['before', '该方向现有的原关系'],
+  ]) {
+    const label = html.match(new RegExp(`<span id="([^"]+-${field}-label)">${text}<\\/span>`));
+    assert.ok(label, `a dedicated label is required for ${field}`);
+    const select = html.match(new RegExp(`<select id="${label[1].slice(0, -6)}"[^>]*>`));
+    assert.ok(select);
+    assert.ok(select[0].includes(`aria-labelledby="${label[1]}"`), 'options must not become part of the field name');
+    if (field === 'direction' || field === 'before') assert.match(select[0], /aria-describedby="[^"]+-help"/);
+  }
+});
+
 test('snapshot preview shows frozen identities and before/after for each operation without current lookups', () => {
   for (const operation of ['add', 'change', 'remove'] as const) {
     const suggestion = buildRelationSuggestion(concept, draft({ operation, before: { type: forward.type, description: forward.description } }), [other], [forward])!;
