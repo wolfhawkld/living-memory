@@ -2,6 +2,8 @@ import type { Exposure, LearningEvidence, RecallRating } from './types.js';
 
 /** Metadata only; answers and scenario text must never be included. */
 export interface LearningProgressPoint {
+  /** Explicit answer medium; omitted for legacy records. */
+  evidenceMode?: import('./types.js').ObservationEvidenceMode;
   eventId: string;
   observedAt: string;
   recordedAt: string;

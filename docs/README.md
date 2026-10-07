@@ -39,6 +39,7 @@
 
 ## 数据、历史衔接与日常通道
 
+- [回忆作答方式与回归结果](development/observation-evidence-mode.md)：脑中自报 / 书面记录 / 旧缺失方式的证据区别、迁移与恢复兼容；飞书复习写回尚未接入。
 - [学习数据导入恢复](development/learning-data-import.md)：JSON 预览、来源/版本对应、重复与冲突检查、事务恢复及导入前备份。
 - [概念改名与移动后的历史衔接](development/concept-identity.md)：人工预览确认路径对应，保留原学习时间与稳定身份，支持连续移动、冲突诊断和绑定前备份。
 - [待同步协调与超时恢复](development/pending-sync.md)：按知识空间协调多个页面的队列；参数请求可按历史版本重复确认；请求超时保留原记录并释放同步锁。更新后需刷新所有项目页面。

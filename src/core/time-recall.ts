@@ -104,6 +104,7 @@ function conditionForObservation(observation: Observation): TimeRecallCondition 
   ) {
     return 'assisted';
   }
+  if (observation.evidenceMode === 'mental') return 'unknown';
   if (observation.exposure === 'unexposed'
     && observation.observedExposure === false
     && learning?.cue === 'independent') {
@@ -169,6 +170,7 @@ function makeEvidence(
   anchor: AnchorEvent,
 ): TimeRecallEvidence {
   return {
+    ...(observation.evidenceMode ? { evidenceMode: observation.evidenceMode } : {}),
     eventId: observation.eventId,
     observedAt: observation.observedAt,
     recordedAt: observation.recordedAt,

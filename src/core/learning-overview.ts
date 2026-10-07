@@ -106,6 +106,7 @@ function latestRecord<T extends TimedRecord>(records: readonly T[]): T | null {
 function overviewObservation(event: Observation): OverviewObservation {
   const evidence = event.learning;
   return {
+    ...(event.evidenceMode ? { evidenceMode: event.evidenceMode } : {}),
     eventId: event.eventId,
     observedAt: event.observedAt,
     rating: event.rating,
@@ -180,7 +181,8 @@ export function overviewHasRecallDifficulty(item: LearningOverviewItem): boolean
 export function overviewNeedsScenarioCheck(item: LearningOverviewItem): boolean {
   const latest = item.scenario.latest;
   if (!latest) return false;
-  return latest.outcome !== 'success'
+  return latest.evidenceMode === 'mental'
+    || latest.outcome !== 'success'
     || latest.basis === 'unknown'
     || latest.cue !== 'independent'
     || latest.exposure !== 'unexposed'

@@ -90,6 +90,7 @@ function eventDate(entry: ConceptHistoryEntry): string {
 /** An answer is inserted only after the user explicitly asks to reveal it. */
 export function HistoryObservationAnswer({ event, onRevealAnswer }: HistoryObservationAnswerProps) {
   const [revealed, setRevealed] = useState(false);
+  if (event.evidenceMode === 'mental') return <p className="concept-history-old-note">脑中回忆，未记录原答 · 脑中自报，不计入独立成功或信心校准。</p>;
   if (!revealed) {
     return (
       <button
@@ -196,11 +197,12 @@ function ObservationEntry({
           <span>{exposureLabel(event)}</span>
         </div>
         {oldRevision ? <p className="concept-history-old-note">{oldRevision}</p> : null}
+        <p className="concept-history-old-note">{event.evidenceMode === 'written' ? '书面回答' : event.evidenceMode === 'mental' ? '脑中自报' : '作答方式未记录'}</p>
         {event.learning ? <div className="concept-history-learning">
           {event.learning.scenarioRevisit ? <div>同场景回访 · 不代表新场景迁移</div> : null}
           <div>事前信心：{event.learning.confidence === null ? '未预测' : `${event.learning.confidence}%`}</div>
-          <div>作答方式：{{ independent: '独立作答', hinted: '借助提示', lookup: '查阅后作答', unknown: '不确定' }[event.learning.cue]}</div>
-          <div>核对结果：{{ success: '成功', partial: '部分成功', failure: '未成功', unverified: '尚未核对' }[event.learning.outcome]} · {{ 'self-check': '自己对照资料', application: '实际应用核对', unknown: '依据未记录' }[event.learning.basis]}</div>
+          <div>{event.evidenceMode === 'mental' ? '自报提示方式' : '作答方式'}：{{ independent: '独立作答', hinted: '借助提示', lookup: '查阅后作答', unknown: '不确定' }[event.learning.cue]}</div>
+          <div>{event.evidenceMode === 'mental' ? '自报结果' : '核对结果'}：{{ success: '成功', partial: '部分成功', failure: '未成功', unverified: '尚未核对' }[event.learning.outcome]} · {{ 'self-check': '自己对照资料', application: '实际应用核对', unknown: '依据未记录' }[event.learning.basis]}</div>
         </div> : null}
         <HistoryObservationAnswer event={event} onRevealAnswer={onRevealAnswer} />
       </div>

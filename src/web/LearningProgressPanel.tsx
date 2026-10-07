@@ -127,14 +127,15 @@ function ProgressPoint({ point, task, label }: {
       <time dateTime={point.observedAt || undefined}>{formatDate(point.observedAt)}</time>
     </div>
     <div className="learning-progress-point-recorded">记录于 {formatDate(point.recordedAt)}</div>
+    <p className="learning-progress-point-recorded">{point.evidenceMode === 'mental' ? '脑中自报 · 未记录原答，不计入独立成功或信心校准' : point.evidenceMode === 'written' ? '书面回答' : '作答方式未记录'}</p>
     <dl className="learning-progress-metrics">
       {task === 'concept' ? <div><dt>自评</dt><dd>{lookupLabel(ratingLabels, point.rating)}</dd></div> : null}
       {task === 'scenario' ? <>
         <div><dt>场景来源</dt><dd>{point.scenarioRevisit ? '同场景回访' : '未标记回访'}</dd></div>
-        <div><dt>核对结果</dt><dd>{lookupLabel(outcomeLabels, point.outcome)}</dd></div>
+        <div><dt>{point.evidenceMode === 'mental' ? '自报结果' : '核对结果'}</dt><dd>{lookupLabel(outcomeLabels, point.outcome)}</dd></div>
         <div><dt>核对依据</dt><dd>{lookupLabel(basisLabels, point.basis)}</dd></div>
       </> : null}
-      <div><dt>提示方式</dt><dd>{lookupLabel(cueLabels, point.cue)}</dd></div>
+      <div><dt>提示方式</dt><dd>{point.evidenceMode === 'mental' ? '自报：' : ''}{lookupLabel(cueLabels, point.cue)}</dd></div>
       <div><dt>曝光</dt><dd>{exposureLabel(point)}</dd></div>
       <div><dt>事前信心</dt><dd>{formatConfidence(point.confidence)}</dd></div>
       <div><dt>距重温</dt><dd>{formatElapsedDays(point.elapsedDays)}</dd></div>

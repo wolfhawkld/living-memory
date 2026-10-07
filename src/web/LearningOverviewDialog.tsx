@@ -98,8 +98,8 @@ function latestRecall(item: LearningOverviewItem): ReactElement {
   const latest = item.recall.latest;
   if (!latest) return <span className="learning-overview-muted">暂无回忆记录</span>;
   return <>
-    <strong>{RATING_LABELS[latest.rating]}</strong>
-    <small>{formatDate(latest.observedAt)} · {latest.observedExposure ? '已查看资料' : EXPOSURE_LABELS[latest.exposure]}</small>
+    <strong>{RATING_LABELS[latest.rating]}{latest.evidenceMode === 'mental' ? ' · 脑中自报' : ''}</strong>
+    <small>{latest.evidenceMode === 'written' ? '书面回答 · ' : latest.evidenceMode === 'mental' ? '未记录原答 · ' : '作答方式未记录 · '}{formatDate(latest.observedAt)} · {latest.observedExposure ? '已查看资料' : EXPOSURE_LABELS[latest.exposure]}</small>
   </>;
 }
 
@@ -107,8 +107,8 @@ function latestScenario(item: LearningOverviewItem): ReactElement {
   const latest = item.scenario.latest;
   if (!latest) return <span className="learning-overview-muted">暂无场景证据</span>;
   return <>
-    <strong>{OUTCOME_LABELS[latest.outcome]} · {CUE_LABELS[latest.cue]}</strong>
-    <small>{formatDate(latest.observedAt)} · {latest.observedExposure ? '已查看资料' : EXPOSURE_LABELS[latest.exposure]} · 共 {item.scenario.total} 次</small>
+    <strong>{OUTCOME_LABELS[latest.outcome]} · {latest.evidenceMode === 'mental' ? '脑中自报' : CUE_LABELS[latest.cue]}</strong>
+    <small>{latest.evidenceMode === 'written' ? '书面回答 · ' : latest.evidenceMode === 'mental' ? '未记录原答 · ' : '作答方式未记录 · '}{formatDate(latest.observedAt)} · {latest.observedExposure ? '已查看资料' : EXPOSURE_LABELS[latest.exposure]} · 共 {item.scenario.total} 次</small>
     {latest.scenarioRevisit ? <small>最近一次为同场景回访</small> : null}
   </>;
 }

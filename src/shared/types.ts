@@ -94,6 +94,7 @@ export interface MemoryState {
 
 export type RecallRating = 'clear' | 'partial' | 'blank';
 export type Exposure = 'unexposed' | 'exposed' | 'unknown';
+export type ObservationEvidenceMode = 'mental' | 'written';
 
 export interface Observation {
   eventId: string;
@@ -107,6 +108,8 @@ export interface Observation {
   elapsedDays: number | null;
   decay: number | null;
   answer: string;
+  /** Explicit answer medium; absent on legacy observations. */
+  evidenceMode?: ObservationEvidenceMode;
   rating: RecallRating;
   exposure: Exposure;
   observedExposure: boolean;
@@ -197,6 +200,8 @@ export interface ObservationRequest {
   configRevision: number;
   anchorEventId: string | null;
   answer: string;
+  /** Explicit answer medium; absent on legacy observations. */
+  evidenceMode?: ObservationEvidenceMode;
   rating: RecallRating;
   exposure: Exposure;
   observedExposure: boolean;

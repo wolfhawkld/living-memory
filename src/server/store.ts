@@ -270,6 +270,18 @@ function normalizeApplicationRequest(value: unknown): ApplicationRecordRequest {
   };
 }
 
+/** Missing mode stays missing; an empty legacy answer is not mental evidence. */
+function normalizeObservationEvidenceMode(value: unknown, answer: unknown): Observation['evidenceMode'] {
+  if (value === undefined) return undefined;
+  if (value !== 'mental' && value !== 'written') {
+    throw new StoreError('INVALID_EVIDENCE_MODE', 'evidenceMode 必须是 mental 或 written。');
+  }
+  if (value === 'mental' && answer !== '') {
+    throw new StoreError('INVALID_EVIDENCE_MODE', 'mental 观察的 answer 必须是空字符串。');
+  }
+  return value;
+}
+
 /**
  * Validate and normalize optional evidence attached to an observation. Keeping
  * this at the request boundary means old observations can remain NULL in the
@@ -625,6 +637,7 @@ export class Store {
         exposure TEXT NOT NULL CHECK(exposure IN ('unexposed', 'exposed', 'unknown')),
         observed_exposure INTEGER NOT NULL CHECK(observed_exposure IN (0, 1)),
         learning_json TEXT,
+        evidence_mode TEXT,
         request_payload TEXT NOT NULL,
         PRIMARY KEY(namespace, event_id)
       );
@@ -803,6 +816,9 @@ export class Store {
     const observationColumns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
     if (!observationColumns.some((column) => column.name === 'learning_json')) {
       this.db.exec('ALTER TABLE observations ADD COLUMN learning_json TEXT');
+    }
+    if (!observationColumns.some((column) => column.name === 'evidence_mode')) {
+      this.db.exec('ALTER TABLE observations ADD COLUMN evidence_mode TEXT');
     }
     const createdAt = iso(this.now());
     this.db.prepare('INSERT OR IGNORE INTO namespaces(namespace, created_at) VALUES (?, ?)').run(this.namespace, createdAt);
@@ -1037,6 +1053,7 @@ export class Store {
     const exposure = input.observedExposure ? 'exposed' : input.exposure;
     const observedAt = normalizeDate(input.observedAt, 'INVALID_OBSERVED_AT');
     const learning = normalizeLearningEvidence(input.learning, observedAt);
+    const evidenceMode = normalizeObservationEvidenceMode(input.evidenceMode, input.answer);
     const request = {
       eventId: input.eventId,
       conceptId: input.conceptId,
@@ -1049,6 +1066,7 @@ export class Store {
       exposure,
       observedExposure: input.observedExposure,
       ...(learning ? { learning } : {}),
+      ...(evidenceMode ? { evidenceMode } : {}),
     };
     const requestPayload = canonicalJson(request);
     const existing = this.findEvent(input.eventId);
@@ -1080,8 +1098,8 @@ export class Store {
       this.db.prepare(`INSERT INTO observations(
         namespace, event_id, concept_id, source_revision, observed_at, recorded_at,
         config_revision, half_life_days, anchor_event_id, elapsed_days, decay,
-        answer, rating, exposure, observed_exposure, learning_json, request_payload
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        answer, rating, exposure, observed_exposure, learning_json, evidence_mode, request_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         this.namespace,
         input.eventId,
         input.conceptId,
@@ -1098,6 +1116,7 @@ export class Store {
         exposure,
         input.observedExposure ? 1 : 0,
         learning ? canonicalJson(learning) : null,
+        evidenceMode ?? null,
         requestPayload,
       );
       this.db.exec('COMMIT');
@@ -1856,7 +1875,7 @@ export class Store {
 
   getObservations(conceptId?: string, sourceRevision?: string): Observation[] {
     let query = `SELECT event_id, concept_id, source_revision, observed_at, recorded_at,
-      config_revision, half_life_days, anchor_event_id, elapsed_days, decay, answer, rating, exposure, observed_exposure, learning_json
+      config_revision, half_life_days, anchor_event_id, elapsed_days, decay, answer, rating, exposure, observed_exposure, learning_json, evidence_mode
       FROM observations WHERE namespace = ?`;
     const parameters: string[] = [this.namespace];
     if (conceptId !== undefined) {
@@ -1871,7 +1890,7 @@ export class Store {
     const rows = this.db.prepare(query).all(...parameters) as Array<{
         event_id: string; concept_id: string; source_revision: string; observed_at: string; recorded_at: string;
         config_revision: number; half_life_days: number; anchor_event_id: string | null; elapsed_days: number | null; decay: number | null;
-        answer: string; rating: RecallRating; exposure: 'unexposed' | 'exposed' | 'unknown'; observed_exposure: number; learning_json: string | null;
+        answer: string; rating: RecallRating; exposure: 'unexposed' | 'exposed' | 'unknown'; observed_exposure: number; learning_json: string | null; evidence_mode: Observation['evidenceMode'] | null;
       }>;
     return rows.map((row) => {
       const learning = parseStoredLearning(row.learning_json);
@@ -1891,6 +1910,7 @@ export class Store {
         exposure: row.exposure,
         observedExposure: Boolean(row.observed_exposure),
         ...(learning ? { learning } : {}),
+        ...(row.evidence_mode !== null ? { evidenceMode: normalizeObservationEvidenceMode(row.evidence_mode, row.answer) } : {}),
       };
     });
   }
@@ -2240,6 +2260,7 @@ export class Store {
       exposure: 'unexposed' | 'exposed' | 'unknown' | null;
       observed_exposure: number | null;
       learning_json: string | null;
+      evidence_mode: Observation['evidenceMode'] | null;
     };
 
     const historyPredicates: string[] = [];
@@ -2282,7 +2303,7 @@ export class Store {
           NULL AS active, NULL AS previous_event_id,
           NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
           NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
-          NULL AS exposure, NULL AS observed_exposure, NULL AS learning_json
+          NULL AS exposure, NULL AS observed_exposure, NULL AS learning_json, NULL AS evidence_mode
         FROM anchors
         WHERE namespace = ? AND concept_id = ?
         UNION ALL
@@ -2293,7 +2314,7 @@ export class Store {
           NULL AS correction, NULL AS references_text,
           NULL AS active, NULL AS previous_event_id,
           config_revision, half_life_days, anchor_event_id,
-          elapsed_days, decay, answer, rating, exposure, observed_exposure, learning_json
+          elapsed_days, decay, answer, rating, exposure, observed_exposure, learning_json, evidence_mode
         FROM observations
         WHERE namespace = ? AND concept_id = ?
         UNION ALL
@@ -2305,7 +2326,7 @@ export class Store {
           active, previous_event_id,
           NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
           NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
-          NULL AS exposure, NULL AS observed_exposure, NULL AS learning_json
+          NULL AS exposure, NULL AS observed_exposure, NULL AS learning_json, NULL AS evidence_mode
         FROM retentions
         WHERE namespace = ? AND concept_id = ?
         UNION ALL
@@ -2316,7 +2337,7 @@ export class Store {
           NULL AS active, NULL AS previous_event_id,
           NULL AS config_revision, NULL AS half_life_days, NULL AS anchor_event_id,
           NULL AS elapsed_days, NULL AS decay, NULL AS answer, NULL AS rating,
-          NULL AS exposure, NULL AS observed_exposure, NULL AS learning_json
+          NULL AS exposure, NULL AS observed_exposure, NULL AS learning_json, NULL AS evidence_mode
         FROM applications
         WHERE namespace = ? AND concept_id = ?
       )
@@ -2324,7 +2345,7 @@ export class Store {
         kind, application_kind, context, content, outcome, assistance, result, limitations,
         insight, correction, references_text, active, previous_event_id, config_revision,
         half_life_days, anchor_event_id, elapsed_days, decay, answer, rating, exposure,
-        observed_exposure, learning_json
+        observed_exposure, learning_json, evidence_mode
       FROM history
       ${historyFilter}
       ORDER BY event_at DESC, recorded_at DESC, event_id DESC
@@ -2428,6 +2449,7 @@ export class Store {
           exposure: row.exposure as 'unexposed' | 'exposed' | 'unknown',
           observedExposure: Boolean(row.observed_exposure),
           ...(learning ? { learning } : {}),
+          ...(row.evidence_mode !== null ? { evidenceMode: normalizeObservationEvidenceMode(row.evidence_mode, row.answer) } : {}),
         },
       };
     });
@@ -3129,6 +3151,7 @@ export class Store {
       exposure: event.exposure,
       observedExposure: event.observedExposure,
       ...(event.learning ? { learning: event.learning } : {}),
+      ...(event.evidenceMode !== undefined ? { evidenceMode: normalizeObservationEvidenceMode(event.evidenceMode, event.answer) } : {}),
     };
     return canonicalJson(request);
   }
@@ -3149,8 +3172,8 @@ export class Store {
     this.db.prepare(`INSERT INTO observations(
       namespace, event_id, concept_id, source_revision, observed_at, recorded_at,
       config_revision, half_life_days, anchor_event_id, elapsed_days, decay,
-      answer, rating, exposure, observed_exposure, learning_json, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      answer, rating, exposure, observed_exposure, learning_json, evidence_mode, request_payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       this.namespace,
       event.eventId,
       event.conceptId,
@@ -3167,6 +3190,7 @@ export class Store {
       event.exposure,
       event.observedExposure ? 1 : 0,
       event.learning ? canonicalJson(event.learning) : null,
+      event.evidenceMode ?? null,
       requestPayload,
     );
   }
@@ -3551,6 +3575,7 @@ export function parseObservationRequest(value: unknown): ObservationRequest {
   if (typeof record.observedExposure !== 'boolean') throw new StoreError('INVALID_BODY', 'observedExposure 必须是布尔值。');
   const observedAt = normalizeDate(requireString(record, 'observedAt'), 'INVALID_OBSERVED_AT');
   const learning = normalizeLearningEvidence(record.learning, observedAt);
+  const evidenceMode = normalizeObservationEvidenceMode(record.evidenceMode, record.answer);
   return {
     eventId: requireString(record, 'eventId'),
     conceptId: requireString(record, 'conceptId'),
@@ -3563,5 +3588,6 @@ export function parseObservationRequest(value: unknown): ObservationRequest {
     exposure: exposure as 'unexposed' | 'exposed' | 'unknown',
     observedExposure: record.observedExposure,
     ...(learning ? { learning } : {}),
+    ...(evidenceMode ? { evidenceMode } : {}),
   };
 }

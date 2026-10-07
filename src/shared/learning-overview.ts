@@ -2,6 +2,8 @@ import type { CalibrationSummary, Exposure, LearningEvidence, LearningSummary, M
 
 /** Evidence metadata only. Answers, scenarios and private application text never leave the overview API. */
 export interface OverviewObservation {
+  /** Explicit answer medium; omitted for legacy records. */
+  evidenceMode?: import('./types.js').ObservationEvidenceMode;
   eventId: string;
   observedAt: string;
   rating: RecallRating;

@@ -526,6 +526,13 @@ function validateObservation(
     invalid(`observations[${index}] 无 anchorEventId 时 elapsedDays 与 decay 必须为 null。`, 'FROZEN_DECAY_MISMATCH');
   }
   if (typeof record.answer !== 'string') invalid(`observations[${index}].answer 必须是字符串。`);
+  const evidenceMode = record.evidenceMode;
+  if (evidenceMode !== undefined && evidenceMode !== 'mental' && evidenceMode !== 'written') {
+    invalid(`observations[${index}].evidenceMode 必须是 mental 或 written。`, 'INVALID_EVIDENCE_MODE');
+  }
+  if (evidenceMode === 'mental' && record.answer !== '') {
+    invalid(`observations[${index}] mental 观察的 answer 必须为空字符串。`, 'INVALID_EVIDENCE_MODE');
+  }
   if (!RECALL_RATINGS.includes(record.rating as (typeof RECALL_RATINGS)[number])) invalid(`observations[${index}].rating 无效。`);
   if (!EXPOSURES.includes(record.exposure as (typeof EXPOSURES)[number])) invalid(`observations[${index}].exposure 无效。`);
   const observedExposure = requireBoolean(record.observedExposure, `observations[${index}].observedExposure`);
@@ -551,6 +558,7 @@ function validateObservation(
     exposure: record.exposure as Observation['exposure'],
     observedExposure,
     ...(learning ? { learning } : {}),
+    ...(evidenceMode !== undefined ? { evidenceMode: evidenceMode as Observation['evidenceMode'] } : {}),
   };
 }
 

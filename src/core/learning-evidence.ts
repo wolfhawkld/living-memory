@@ -4,7 +4,7 @@ import { isValidInstant } from './time-model.js';
 function calibration(events: Observation[], task: 'concept' | 'scenario'): CalibrationSummary {
   const eligible = events.filter((event) => {
     const evidence = event.learning;
-    return evidence?.task === task && evidence.cue === 'independent'
+    return event.evidenceMode !== 'mental' && evidence?.task === task && evidence.cue === 'independent'
       && event.exposure === 'unexposed' && !event.observedExposure
       && (evidence.outcome === 'success' || evidence.outcome === 'failure')
       && (evidence.basis === 'self-check' || evidence.basis === 'application')
@@ -27,7 +27,7 @@ export function summarizeLearning(events: Observation[]): LearningSummary {
   return {
     scenario: {
       total: scenarios.length,
-      independentSuccess: scenarios.filter((event) => event.learning!.cue === 'independent'
+      independentSuccess: scenarios.filter((event) => event.evidenceMode !== 'mental' && event.learning!.cue === 'independent'
         && event.learning!.outcome === 'success' && event.learning!.basis !== 'unknown'
         && event.exposure === 'unexposed' && !event.observedExposure).length,
       assisted: scenarios.filter((event) => ['hinted', 'lookup'].includes(event.learning!.cue)

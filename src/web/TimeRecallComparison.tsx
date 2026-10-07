@@ -118,7 +118,8 @@ function TimeRecallRow({ row, disabled, onSelect }: {
     </td>
     <td>
       <div className="time-recall-detail">
-        <strong>{ratingLabel(evidence.rating)}</strong>
+        <strong>{ratingLabel(evidence.rating)}{evidence.evidenceMode === 'mental' ? ' · 脑中自报' : ''}</strong>
+        <small>{evidence.evidenceMode === 'written' ? '书面回答' : evidence.evidenceMode === 'mental' ? '未记录原答，不视为独立作答' : '作答方式未记录'}</small>
         <time dateTime={evidence.observedAt}>{formatDate(evidence.observedAt)}</time>
         <small>时间起点：{formatDate(evidence.anchorOccurredAt)}</small>
       </div>

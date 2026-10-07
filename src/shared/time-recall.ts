@@ -6,6 +6,8 @@ export type TimeRecallFocus = 'all' | 'recent-difficulty' | 'stale-clear';
 
 /** Frozen observation metadata only; never include answers or scenario text. */
 export interface TimeRecallEvidence {
+  /** Explicit answer medium; omitted for legacy records. */
+  evidenceMode?: import('./types.js').ObservationEvidenceMode;
   eventId: string;
   observedAt: string;
   recordedAt: string;

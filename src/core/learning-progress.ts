@@ -86,6 +86,7 @@ function confidenceOf(observation: Observation, observedTimestamp: number): numb
 function pointOf({ observation, observedTimestamp }: TimedObservation): LearningProgressPoint {
   const evidence = observation.learning;
   return {
+    ...(observation.evidenceMode ? { evidenceMode: observation.evidenceMode } : {}),
     eventId: observation.eventId,
     observedAt: observation.observedAt,
     recordedAt: observation.recordedAt,
@@ -109,6 +110,10 @@ function effectiveExposure(point: LearningProgressPoint): LearningProgressPoint[
 
 function conditionsOf(task: Task, latest: LearningProgressPoint | null, previous: LearningProgressPoint | null): LearningProgressPair['conditions'] {
   if (latest === null || previous === null) return 'insufficient';
+
+  if (latest.evidenceMode !== previous.evidenceMode) {
+    return latest.evidenceMode && previous.evidenceMode ? 'different' : 'unknown';
+  }
 
   const latestExposure = effectiveExposure(latest);
   const previousExposure = effectiveExposure(previous);

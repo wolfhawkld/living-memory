@@ -1,6 +1,6 @@
 # 版本与兼容约定
 
-更新：2026-10-02。适用于本地 Web 预览与后续维护；现有实现入口见[开发导览](../development/codebase-guide.md)。本页区分已实现的兼容行为和今后改动应遵守的约定，不把文档约定当成自动迁移功能。
+更新：2026-10-07。适用于本地 Web 预览与后续维护；现有实现入口见[开发导览](../development/codebase-guide.md)。本页区分已实现的兼容行为和今后改动应遵守的约定，不把文档约定当成自动迁移功能。
 
 ## 四种版本分别维护
 
@@ -9,7 +9,7 @@
 | 软件版本 | `package.json` 与 lockfile 为 `0.0.1-preview.1` | 首个预览已发布；固定 tag 为 `v0.0.1-preview.1`，精确目标与结果见 [GitHub release](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1) |
 | 学习 JSON 格式 | `schemaVersion: 1` | 导出/导入结构，与软件版本独立 |
 | 记忆模型 | `time-only-v0` | 标识时间投影语义；配置 revision 标识本人修改 H 的历史，不是软件或格式版本 |
-| SQLite 结构 | 没有统一 schema version | 启动时创建缺失表，已知旧观察表补 `learning_json` 列；没有通用升级/降级框架 |
+| SQLite 结构 | 没有统一 schema version | 启动时创建缺失表，已知旧观察表补 `learning_json` / `evidence_mode` 列；没有通用升级/降级框架 |
 
 包版本必须在 `package.json`、lockfile 顶层和 `packages[""]` 三处一致。只改项目版本时不重新解析依赖，不改变 JSON schema、模型版本或既有学习事件。`private: true` 用来防止误发 npm，不妨碍源码开源。
 
@@ -31,6 +31,7 @@
 | --- | --- |
 | 基本结构 | 必须有导出时间、来源、概念清单、当前配置/配置历史、重温、观察和布局；完整字段校验以实现为准 |
 | 可选后续字段 | `retentions`、`applications`、`corrections` 缺失时视为无此类事件；`reviewPlan` 缺失不改当前计划 |
+| 观察作答方式 | 可选 `evidenceMode: mental / written` 按实际记录保留；旧缺失字段不补默认值。脑中模式必须是空答案，旧空答案不推断为脑中记录；旧程序不保证保留该新增字段 |
 | `restoreMetadata` | 旧 v1 可缺失，会提示 `LEGACY_RESTORE_METADATA`；配置时间用导出时间补齐，无法保证旧“省略发生时间”请求恢复后仍可原样重试 |
 | `identityBindings` | 仅审计，非空时提示 `IDENTITY_BINDINGS_UNTRUSTED`；上传的绑定不创建本机授权关系 |
 | 概念对应 | 先核对相同 ID 与已登记路径；无 ID 对应时只接受唯一的相对路径＋资料 revision，不靠标题猜测 |
@@ -46,6 +47,8 @@ JSON 不包含知识正文、关系、附件、账号密码或浏览器草稿，
 ## SQLite：当前迁移范围
 
 [Store.initialize](../../src/server/store.ts)使用 `CREATE TABLE IF NOT EXISTS` 补缺失表，并为已知旧 `observations` 表增加可空 `learning_json` 列；已有观察保留，缺失学习证据保持缺失。[Accounts](../../src/server/accounts.ts)创建账号、会话及飞书绑定相关表和索引，没有账号库迁移版本。
+
+2026-10-07 的证据基础更新增加可空 `evidence_mode` 列；旧行与精确请求载荷保持原样，缺失模式不猜测为书面或脑中回忆。新旧混合记录的幂等重放、导出恢复及路径＋版本映射已用合成资料回归，见[检查结果](../development/observation-evidence-mode.md)。包含显式模式的 JSON 使用本轮或更新版本恢复，不承诺旧程序保留脑中自报的投影限制。
 
 2026-10-02 的场景卡更新为两张练习表增加可空 `scenario_json`。从之前只允许 `detail / comparison` 的已知练习卡表升级时，在单一事务中重建卡片及其来源引用表，保留各 namespace、原 rowid 顺序、版本链、来源及精确请求载荷；回答表增加列。失败回滚并恢复外键检查，原概念观察 / 重温 / 参数记录不因此改写。备份与回退仍按[完整恢复步骤](upgrade-and-recovery.md)执行；新 JSON 内的阶段提示与两项自评需要本轮或更新版本恢复，不用旧程序直接打开迁移后的数据库。
 
