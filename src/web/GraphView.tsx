@@ -15,6 +15,7 @@ import { themePalette, type ThemePalette } from './theme-palette';
 import { useTheme } from './ThemeProvider';
 import { applyNodeTheme, applySceneTheme, type GraphThemeResources, type NodeVisual } from './graph-theme';
 import { applyGraphPixelRatio, resolveGraphPixelRatio, type GraphRenderQuality } from './graph-render-quality';
+import { createGraphActivityController } from './graph-activity';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -298,7 +299,7 @@ function GraphViewInstance({
   const rotationPausedRef = useRef(rotationPaused);
   const onRotationStatusRef = useRef(onRotationStatusChange);
   const pausedRef = useRef(paused);
-  const animationPausedRef = useRef(false);
+  const syncGraphActivityRef = useRef<(() => void) | null>(null);
   const graphReadyRef = useRef(false);
   const focusRequestedRef = useRef(false);
   const rotationNotBeforeRef = useRef(0);
@@ -363,6 +364,29 @@ function GraphViewInstance({
       return undefined;
     }
 
+    let disposed = false;
+    let ownedGraph: GraphInstance | null = null;
+    let activity: ReturnType<typeof createGraphActivityController> | null = null;
+    const disposers: Array<() => void> = [];
+    // One failed resource release must not leave other listeners or loops alive.
+    const release = (dispose: () => void) => {
+      try { dispose(); } catch { /* Continue releasing this instance's resources. */ }
+    };
+    const cleanup = () => {
+      if (disposed) return;
+      disposed = true;
+      release(() => activity?.dispose());
+      release(() => ownedGraph?.pauseAnimation?.());
+      if (graphRef.current === ownedGraph) {
+        graphRef.current = null;
+        if (layoutTimerRef.current !== null) {
+          window.clearTimeout(layoutTimerRef.current);
+          layoutTimerRef.current = null;
+        }
+      }
+      for (const dispose of disposers.reverse()) release(dispose);
+    };
+
     try {
       // React development effect replay can construct, destroy, and construct
       // the instance on one fiber; reset its readiness state each time.
@@ -370,15 +394,38 @@ function GraphViewInstance({
       layoutNeedsSaveRef.current = true;
       focusRequestedRef.current = false;
       rotationNotBeforeRef.current = 0;
-      animationPausedRef.current = false;
       hoveredIdRef.current = null;
       const graph = new ForceGraph3D(host) as unknown as GraphInstance;
+      ownedGraph = graph;
+      graphRef.current = graph;
+      disposers.push(() => {
+        let nodes = graphData.nodes;
+        release(() => {
+          const data = graph.graphData();
+          if ('nodes' in data) nodes = data.nodes;
+        });
+        release(() => graph._destructor?.());
+        for (const node of nodes) {
+          release(() => node.__mesh?.traverse((object) => {
+            const mesh = object as THREE.Mesh;
+            if (mesh.geometry) release(() => mesh.geometry.dispose());
+            const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
+            const disposeMaterial = (item: THREE.Material) => {
+              const withMap = item as THREE.Material & { map?: THREE.Texture };
+              release(() => withMap.map?.dispose());
+              release(() => item.dispose());
+            };
+            if (Array.isArray(material)) material.forEach(disposeMaterial);
+            else if (material) disposeMaterial(material);
+          }));
+        }
+      });
       const labels = createGraphLabels(host);
+      disposers.push(() => labels.dispose());
       let initialFitDone = false;
       let layoutSettled = false;
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
       const transitionMs = reducedMotion.matches ? 0 : 550;
-      graphRef.current = graph;
       // ForceGraph's default TrackballControls otherwise lets a flat graph turn
       // edge-on or leave the camera plane after a drag. Pan and zoom stay enabled.
       graph.controls().noRotate = twoDimensional;
@@ -470,6 +517,16 @@ function GraphViewInstance({
       composer.reset();
       let bloomPass: UnrealBloomPass | null = null;
       let outputPass: OutputPass | null = null;
+      disposers.push(() => {
+        if (bloomPass) {
+          release(() => composer.removePass(bloomPass!));
+          release(() => bloomPass?.dispose());
+        }
+        if (outputPass) {
+          release(() => composer.removePass(outputPass!));
+          release(() => outputPass?.dispose());
+        }
+      });
       try {
         bloomPass = new UnrealBloomPass(
           new THREE.Vector2(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight)),
@@ -486,10 +543,10 @@ function GraphViewInstance({
         graph.postProcessingComposer().addPass(outputPass);
       } catch {
         // Browsers without a compatible post-processing path still keep the sprite glow.
-        if (bloomPass) graph.postProcessingComposer().removePass(bloomPass);
-        if (outputPass) graph.postProcessingComposer().removePass(outputPass);
-        bloomPass?.dispose();
-        outputPass?.dispose();
+        if (bloomPass) release(() => composer.removePass(bloomPass!));
+        if (outputPass) release(() => composer.removePass(outputPass!));
+        release(() => bloomPass?.dispose());
+        release(() => outputPass?.dispose());
         bloomPass = null;
         outputPass = null;
       }
@@ -506,6 +563,9 @@ function GraphViewInstance({
       graph.lights([ambient, point]);
       const themeResources = { ambient, directional: point, bloom: bloomPass, output: outputPass };
       themeResourcesRef.current = themeResources;
+      disposers.push(() => {
+        if (themeResourcesRef.current === themeResources) themeResourcesRef.current = null;
+      });
       applySceneTheme(graph, themeResources, themeRef.current, glowEnabledRef.current);
 
       // Canvas and post-processing buffers use the same ratio. Logical sizes,
@@ -519,33 +579,39 @@ function GraphViewInstance({
         appliedPixelRatio = ratio;
       };
       refreshGraphPixelRatioRef.current = refreshGraphPixelRatio;
+      disposers.push(() => {
+        window.removeEventListener('resize', refreshGraphPixelRatio);
+        if (refreshGraphPixelRatioRef.current === refreshGraphPixelRatio) refreshGraphPixelRatioRef.current = null;
+      });
       refreshGraphPixelRatio();
 
       let width = host.clientWidth;
       let height = host.clientHeight;
-      let frame = 0;
       let activeLabelId: string | null | undefined;
       let previousLinks: GraphLink[] | undefined;
       let neighborIds = new Set<string>();
       let previousRotationStatus = '';
       const cameraSpace = new THREE.Vector3();
-      // Labels live outside the WebGL/bloom scene. ForceGraph has no public
-      // post-render hook; this loop also follows the camera after layout settles.
-      const updatePresentation = (now: number) => {
-        frame = window.requestAnimationFrame(updatePresentation);
-        const rotationStatus = readRotationStatus(rotationClock, now, {
+      const publishRotationStatus = (now: number) => {
+        const status = readRotationStatus(rotationClock, now, {
           enabled: autoRotateEnabledRef.current,
           ready: graphReadyRef.current && now >= rotationNotBeforeRef.current,
           twoDimensional: twoDimensionalRef.current,
           hidden: document.hidden,
           paused: pausedRef.current || rotationPausedRef.current,
         });
-        const rotationAngle = rotationClock.step(now, rotationStatus.kind === 'rotating');
-        if (rotationStatus.text !== previousRotationStatus) {
-          previousRotationStatus = rotationStatus.text;
-          host.dataset.rotationStatus = rotationStatus.kind;
-          onRotationStatusRef.current?.(rotationStatus);
+        if (status.text !== previousRotationStatus) {
+          previousRotationStatus = status.text;
+          host.dataset.rotationStatus = status.kind;
+          onRotationStatusRef.current?.(status);
         }
+        return status;
+      };
+      // Labels live outside the WebGL/bloom scene. ForceGraph has no public
+      // post-render hook; this loop also follows the camera after layout settles.
+      const updatePresentation = (now: number) => {
+        const rotationStatus = publishRotationStatus(now);
+        const rotationAngle = rotationClock.step(now, rotationStatus.kind === 'rotating');
         if (document.hidden || pausedRef.current) return;
         const camera = graph.camera();
         if (rotationAngle > 0) {
@@ -589,9 +655,35 @@ function GraphViewInstance({
           twoDimensional: twoDimensionalRef.current,
           selectedId: selectedIdRef.current, hoveredId: hoveredIdRef.current, neighborIds });
       };
-      frame = window.requestAnimationFrame(updatePresentation);
+      activity = createGraphActivityController({
+        requestFrame: (callback) => window.requestAnimationFrame(callback),
+        cancelFrame: (ticket) => window.cancelAnimationFrame(ticket),
+        onFrame: updatePresentation,
+        onStart: () => {
+          labels.setPaused(false);
+          rotationClock.step(performance.now(), false);
+          graph.resumeAnimation?.();
+        },
+        onStop: () => {
+          graph.pauseAnimation?.();
+          labels.setPaused(true);
+          rotationClock.step(performance.now(), false);
+        },
+      });
+      const syncGraphActivity = () => {
+        if (disposed || graphRef.current !== graph) return;
+        const active = !document.hidden && !pausedRef.current;
+        activity!.setActive(active);
+        publishRotationStatus(performance.now());
+      };
+      syncGraphActivityRef.current = syncGraphActivity;
+      disposers.push(() => {
+        document.removeEventListener('visibilitychange', syncGraphActivity);
+        if (syncGraphActivityRef.current === syncGraphActivity) syncGraphActivityRef.current = null;
+      });
 
       const resizeObserver = new ResizeObserver(() => {
+        if (disposed) return;
         width = host.clientWidth;
         height = host.clientHeight;
         graph.width(width).height(height);
@@ -600,67 +692,20 @@ function GraphViewInstance({
         // Later resizes preserve the user's chosen view.
         fitInitialView();
       });
+      disposers.push(() => resizeObserver.disconnect());
       resizeObserver.observe(host);
-      const onVisibility = () => {
-        if (document.hidden) {
-          graph.pauseAnimation?.();
-          animationPausedRef.current = true;
-        } else if (!pausedRef.current && animationPausedRef.current) {
-          graph.resumeAnimation?.();
-          animationPausedRef.current = false;
-        }
-      };
-      document.addEventListener('visibilitychange', onVisibility);
-      if (document.hidden || pausedRef.current) {
-        graph.pauseAnimation?.();
-        animationPausedRef.current = true;
-      }
+      document.addEventListener('visibilitychange', syncGraphActivity);
+      syncGraphActivity();
       // Domain filtering can leave a node with only hidden, cross-domain links.
       // Keep those nodes near the visible graph without inventing any edges.
       graph.d3Force('isolatedBoundary', createIsolatedNodeForce(graphData.links, twoDimensional));
       graph.graphData({ nodes: graphData.nodes, links: cloneLinks(graphData.links) });
       window.addEventListener('resize', refreshGraphPixelRatio);
 
-      return () => {
-        window.cancelAnimationFrame(frame);
-        labels.dispose();
-        resizeObserver.disconnect();
-        window.removeEventListener('resize', refreshGraphPixelRatio);
-        if (refreshGraphPixelRatioRef.current === refreshGraphPixelRatio) refreshGraphPixelRatioRef.current = null;
-        document.removeEventListener('visibilitychange', onVisibility);
-        if (layoutTimerRef.current !== null) window.clearTimeout(layoutTimerRef.current);
-        graph.pauseAnimation?.();
-        animationPausedRef.current = true;
-        graphRef.current = null;
-        if (themeResourcesRef.current === themeResources) themeResourcesRef.current = null;
-        if (bloomPass) {
-          graph.postProcessingComposer().removePass(bloomPass);
-          bloomPass.dispose();
-        }
-        if (outputPass) {
-          graph.postProcessingComposer().removePass(outputPass);
-          outputPass.dispose();
-        }
-        graph._destructor?.();
-        for (const node of nodesRef.current) {
-          node.__mesh?.traverse((object) => {
-            const mesh = object as THREE.Mesh;
-            if (mesh.geometry) mesh.geometry.dispose();
-            const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
-            const disposeMaterial = (item: THREE.Material) => {
-              const withMap = item as THREE.Material & { map?: THREE.Texture };
-              withMap.map?.dispose();
-              item.dispose();
-            };
-            if (Array.isArray(material)) material.forEach(disposeMaterial);
-            else if (material) disposeMaterial(material);
-          });
-        }
-      };
+      return cleanup;
     } catch {
+      cleanup();
       setGraphError('3D 图谱初始化失败，将使用文字列表继续工作。');
-      graphRef.current = null;
-      refreshGraphPixelRatioRef.current = null;
       return undefined;
     }
     // graphData is the initial data for this graph instance; subsequent updates preserve node objects and positions below.
@@ -732,16 +777,8 @@ function GraphViewInstance({
   }, [graphData, selectedId]);
 
   useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    if (paused) {
-      graph.pauseAnimation?.();
-      animationPausedRef.current = true;
-    } else if (!document.hidden && animationPausedRef.current) {
-      graph.resumeAnimation?.();
-      animationPausedRef.current = false;
-    }
-  }, [paused]);
+    syncGraphActivityRef.current?.();
+  }, [paused, rotationPaused, autoRotateEnabled]);
 
   useEffect(() => {
     const graph = graphRef.current;

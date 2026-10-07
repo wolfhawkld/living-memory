@@ -28,6 +28,7 @@ export interface GraphLabelUpdate {
 
 export interface GraphLabelLayer {
   update: (state: GraphLabelUpdate) => void;
+  setPaused: (paused: boolean) => void;
   dispose: () => void;
 }
 
@@ -459,16 +460,24 @@ export function createGraphLabels(host: HTMLElement): GraphLabelLayer {
 
   const entries = new Map<string, LabelEntry>();
   let disposed = false;
+  let paused = false;
   let pending: GraphLabelUpdate | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastRenderAt = Number.NEGATIVE_INFINITY;
+  let timerGeneration = 0;
+
+  const cancelPendingTimer = (): void => {
+    timerGeneration += 1;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
 
   const now = (): number => (
     typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now()
   );
 
   const render = (state: GraphLabelUpdate): void => {
-    if (disposed) return;
+    if (disposed || paused) return;
     const theme = state.theme ?? DARK_THEME;
     const paletteSignature = labelPaletteSignature(theme);
     const width = Math.max(0, Number.isFinite(state.width) ? state.width : 0);
@@ -551,8 +560,8 @@ export function createGraphLabels(host: HTMLElement): GraphLabelLayer {
   };
 
   const flush = (): void => {
-    timer = null;
-    if (disposed || !pending) return;
+    cancelPendingTimer();
+    if (disposed || paused || !pending) return;
     const next = pending;
     pending = null;
     lastRenderAt = now();
@@ -560,27 +569,38 @@ export function createGraphLabels(host: HTMLElement): GraphLabelLayer {
   };
 
   const schedule = (): void => {
-    if (timer !== null || disposed) return;
+    if (timer !== null || disposed || paused) return;
     const wait = Math.max(0, GRAPH_LABEL_FRAME_MS - (now() - lastRenderAt));
-    timer = setTimeout(flush, wait);
+    const generation = timerGeneration;
+    timer = setTimeout(() => {
+      if (generation !== timerGeneration) return;
+      flush();
+    }, wait);
   };
 
   return {
     update(state: GraphLabelUpdate): void {
-      if (disposed) return;
+      if (disposed || paused) return;
       pending = state;
       const elapsed = now() - lastRenderAt;
       if (lastRenderAt === Number.NEGATIVE_INFINITY || elapsed >= GRAPH_LABEL_FRAME_MS) flush();
       else schedule();
     },
+    setPaused(value: boolean): void {
+      if (disposed || paused === value) return;
+      paused = value;
+      if (paused) {
+        cancelPendingTimer();
+        pending = null;
+      } else {
+        lastRenderAt = Number.NEGATIVE_INFINITY;
+      }
+    },
     dispose(): void {
       if (disposed) return;
       disposed = true;
       pending = null;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
+      cancelPendingTimer();
       entries.clear();
       layer.remove();
     },

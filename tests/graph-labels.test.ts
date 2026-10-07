@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import * as THREE from 'three';
 import {
   chineseMainName,
@@ -63,6 +64,139 @@ class FakeDocument {
     return tagName === 'canvas' ? new FakeCanvasElement(this) : new FakeElement(this);
   }
 }
+
+function controlledLabelTimers(context: TestContext) {
+  let sequence = 0;
+  let clock = 100;
+  const scheduled = new Map<number, () => void>();
+  const active = new Set<number>();
+  context.mock.method(performance, 'now', () => clock);
+  context.mock.method(globalThis, 'setTimeout', ((callback: () => void) => {
+    const id = ++sequence;
+    scheduled.set(id, callback);
+    active.add(id);
+    return id as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout);
+  context.mock.method(globalThis, 'clearTimeout', ((id: number) => {
+    active.delete(id);
+  }) as unknown as typeof clearTimeout);
+  return {
+    active,
+    latest: () => sequence,
+    advance(milliseconds: number) { clock += milliseconds; },
+    run(id: number) {
+      const callback = scheduled.get(id);
+      assert.ok(callback);
+      active.delete(id);
+      callback();
+    },
+  };
+}
+
+function syntheticLabelLayer() {
+  const host = new FakeElement(new FakeDocument());
+  const layer = createGraphLabels(host as unknown as HTMLElement);
+  const camera = new THREE.OrthographicCamera(-400, 400, 220, -220, 0.1, 1000);
+  camera.position.set(0, 0, 10);
+  camera.lookAt(0, 0, 0);
+  camera.updateProjectionMatrix();
+  return {
+    host,
+    layer,
+    update(title: string) {
+      layer.update({
+        nodes: [{ id: 'lifecycle-label', title, x: 0, y: 0, z: 0 }],
+        camera,
+        width: 800,
+        height: 440,
+        twoDimensional: true,
+      });
+    },
+  };
+}
+
+test('paused labels retain DOM, cancel pending updates, and resume with only fresh state', (context) => {
+  const timers = controlledLabelTimers(context);
+  const fixture = syntheticLabelLayer();
+  fixture.update('Original');
+  const label = fixture.host.children[0]?.children[0];
+  assert.ok(label);
+  fixture.update('Queued before pause');
+  const staleTimer = timers.latest();
+  assert.equal(timers.active.size, 1);
+
+  fixture.layer.setPaused(true);
+  fixture.layer.setPaused(true);
+  assert.equal(timers.active.size, 0);
+  fixture.update('Ignored during pause');
+  timers.run(staleTimer);
+  assert.equal(label.textContent, 'Original');
+  assert.equal(fixture.host.children[0]?.children[0], label);
+  assert.equal(timers.active.size, 0);
+
+  fixture.layer.setPaused(false);
+  assert.equal(label.textContent, 'Original', 'resuming alone must not flush discarded state');
+  fixture.update('Fresh after resume');
+  assert.equal(label.textContent, 'Fresh after resume', 'the first fresh update must render immediately');
+  fixture.update('Latest fresh state');
+  const freshTimer = timers.latest();
+  assert.equal(timers.active.size, 1);
+  timers.run(staleTimer);
+  assert.equal(label.textContent, 'Fresh after resume', 'a late old timer must not flush new pending state');
+  assert.equal(timers.active.size, 1);
+  timers.run(freshTimer);
+  assert.equal(label.textContent, 'Latest fresh state');
+  fixture.layer.dispose();
+});
+
+test('an immediate flush cancels its older timer without losing a later pending update', (context) => {
+  const timers = controlledLabelTimers(context);
+  const fixture = syntheticLabelLayer();
+  fixture.update('Original');
+  const label = fixture.host.children[0]?.children[0];
+  assert.ok(label);
+  fixture.update('Older queued state');
+  const staleTimer = timers.latest();
+  assert.deepEqual([...timers.active], [staleTimer]);
+
+  timers.advance(40);
+  fixture.update('Immediate fresh state');
+  assert.equal(label.textContent, 'Immediate fresh state');
+  assert.equal(timers.active.size, 0, 'the immediate flush must cancel the registered older timer');
+  fixture.update('Later pending state');
+  const freshTimer = timers.latest();
+  assert.deepEqual([...timers.active], [freshTimer]);
+  timers.run(staleTimer);
+  assert.equal(label.textContent, 'Immediate fresh state', 'a late old callback must not consume the new pending state');
+  assert.deepEqual([...timers.active], [freshTimer], 'the new timer must stay tracked');
+  fixture.layer.setPaused(true);
+  assert.equal(timers.active.size, 0, 'pause must still be able to cancel the tracked new timer');
+  timers.run(freshTimer);
+  assert.equal(label.textContent, 'Immediate fresh state');
+  fixture.layer.dispose();
+});
+
+test('disposal cancels pending timers and ignores late callbacks and pause changes', (context) => {
+  const timers = controlledLabelTimers(context);
+  const fixture = syntheticLabelLayer();
+  fixture.update('Rendered');
+  const label = fixture.host.children[0]?.children[0];
+  assert.ok(label);
+  fixture.update('Pending at dispose');
+  const staleTimer = timers.latest();
+  assert.equal(timers.active.size, 1);
+  fixture.layer.dispose();
+  fixture.layer.dispose();
+  assert.equal(timers.active.size, 0);
+  assert.equal(fixture.host.children.length, 0);
+  fixture.layer.setPaused(true);
+  fixture.layer.setPaused(false);
+  fixture.update('Ignored after dispose');
+  timers.run(staleTimer);
+  assert.equal(label.textContent, 'Rendered');
+  assert.equal(fixture.host.children.length, 0);
+  assert.equal(timers.active.size, 0);
+});
 
 function alternativeLabelTheme(): ThemePalette {
   return {
