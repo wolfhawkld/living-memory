@@ -79,6 +79,17 @@
   color: var(--ui-warning, #e6b873);
 }
 
+.graph-quality-control {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.graph-quality-select {
+  max-width: 100px;
+}
+
 .cross-domain-panel {
   min-width: 0;
   margin: 18px 24px 26px;

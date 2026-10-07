@@ -59,6 +59,8 @@ import { CrossDomainPanel, DomainPicker } from './DomainControls';
 import { summarizeDomainVisibility } from '../core/domain-visibility';
 import { GraphDisplayControls } from './GraphDisplayControls';
 import { graphDisplayPreferenceKey, readGraphLimitPreference, writeGraphLimitPreference, type GraphLimitPreference } from './graph-display-preference';
+import { GraphQualityControl } from './GraphQualityControl';
+import { graphRenderQualityKey, readGraphRenderQuality, writeGraphRenderQuality, type GraphRenderQuality } from './graph-render-quality';
 import { ConceptSearch } from './ConceptSearch';
 import { PendingWritesPanel } from './PendingWritesPanel';
 import { ConceptHistoryPanel } from './ConceptHistoryPanel';
@@ -237,6 +239,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   useEffect(() => {
     setGraphPreference({ key: graphPreferenceKey, value: readGraphLimitPreference(graphPreferenceKey) });
   }, [graphPreferenceKey]);
+  const renderQualityKey = useMemo(() => graphRenderQualityKey(account?.id, sourceId), [account?.id, sourceId]);
+  const [renderQualityPreference, setRenderQualityPreference] = useState<{ key: string | null; value: GraphRenderQuality }>({ key: null, value: 'standard' });
+  const renderQuality = renderQualityPreference.key === renderQualityKey ? renderQualityPreference.value : 'standard';
+  useEffect(() => {
+    setRenderQualityPreference({ key: renderQualityKey, value: readGraphRenderQuality(renderQualityKey) });
+  }, [renderQualityKey]);
   const [feishuBindingOpen, setFeishuBindingOpen] = useState(false);
   const [demoEnabled, setDemoEnabled] = useState(true);
   const [demoRecord, setDemoRecord] = useState<DemoRecord | null>(null);
@@ -799,6 +807,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       showNotice({ tone: 'info', text: '图谱显示范围已在本页生效；浏览器未允许记住这次选择。' });
     }
   }, [domainBusy, graphPreferenceKey, showNotice]);
+  const changeRenderQuality = useCallback((value: GraphRenderQuality) => {
+    if (domainBusy || listMode || !renderQualityKey) return;
+    setRenderQualityPreference({ key: renderQualityKey, value });
+    if (!writeGraphRenderQuality(renderQualityKey, value)) {
+      showNotice({ tone: 'info', text: '渲染清晰度已在本页生效；浏览器未允许记住这次选择。' });
+    }
+  }, [domainBusy, listMode, renderQualityKey, showNotice]);
   const dailyAllowance = useMemo(() => reviewPlan.response ? reviewAllowance(reviewPlan.response, pendingWrites) : null, [reviewPlan.response, pendingWrites]);
   const briefCandidates = useMemo(() => snapshot && domainId && !writeLocked && reviewPlan.response && dailyAllowance
     ? selectBriefReviewCandidates(snapshot, domainId, {
@@ -1903,6 +1918,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           <div className="graph-toolbar">
             <div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div>
             <div className="graph-tools">
+              <GraphQualityControl quality={renderQuality} disabled={domainBusy || listMode || !renderQualityKey} onChange={changeRenderQuality} />
               {selectedId ? <button type="button" className="tool-button" disabled={domainBusy} onClick={clearSelection}>取消选中</button> : null}
               <button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button>
               <button type="button" className={`tool-button${autoRotateEnabled ? ' active' : ''}`} aria-pressed={autoRotateEnabled} disabled={twoDimensional || listMode} title="手动开启后立即旋转；后续操作暂停 2 分钟。系统要求减少动态效果时默认关闭。" onClick={() => {
@@ -1927,7 +1943,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
               refreshHint={demoEnabled ? '请先点击「查看真实记录」，再刷新知识源。' : simulated ? '请先点击「恢复实时」，再刷新知识源。' : undefined}
               onRefresh={() => void refreshSource()}>
               {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-              {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={learningOverlayOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+              {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={learningOverlayOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} renderQuality={renderQuality} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
               <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown', ...(!demoEnabled ? ['retained' as const] : [])] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': `var(--memory-${status})` } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
               <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div>
             </GraphSourceContent>

@@ -14,6 +14,7 @@ import { readRotationStatus, rotateCameraClockwise, type IdleRotationClock, type
 import { themePalette, type ThemePalette } from './theme-palette';
 import { useTheme } from './ThemeProvider';
 import { applyNodeTheme, applySceneTheme, type GraphThemeResources, type NodeVisual } from './graph-theme';
+import { applyGraphPixelRatio, resolveGraphPixelRatio, type GraphRenderQuality } from './graph-render-quality';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -23,6 +24,7 @@ export interface GraphViewProps {
   paused?: boolean;
   twoDimensional: boolean;
   glowEnabled?: boolean;
+  renderQuality?: GraphRenderQuality;
   autoRotateEnabled?: boolean;
   rotationPaused?: boolean;
   onRotationStatusChange?: (status: RotationStatus) => void;
@@ -38,6 +40,7 @@ interface PostProcessingComposer {
   renderTarget1: THREE.WebGLRenderTarget;
   renderTarget2: THREE.WebGLRenderTarget;
   reset: () => void;
+  setPixelRatio: (ratio: number) => void;
 }
 
 interface GraphNode extends Concept {
@@ -264,6 +267,7 @@ function GraphViewInstance({
   paused = false,
   twoDimensional,
   glowEnabled = true,
+  renderQuality = 'standard',
   autoRotateEnabled = true,
   rotationPaused = false,
   onRotationStatusChange,
@@ -288,6 +292,8 @@ function GraphViewInstance({
   const onLayoutChangeRef = useRef(onLayoutChange);
   const simulatedRef = useRef(simulated);
   const glowEnabledRef = useRef(glowEnabled);
+  const renderQualityRef = useRef(renderQuality);
+  const refreshGraphPixelRatioRef = useRef<(() => void) | null>(null);
   const autoRotateEnabledRef = useRef(autoRotateEnabled);
   const rotationPausedRef = useRef(rotationPaused);
   const onRotationStatusRef = useRef(onRotationStatusChange);
@@ -305,6 +311,7 @@ function GraphViewInstance({
   onLayoutChangeRef.current = onLayoutChange;
   simulatedRef.current = simulated;
   glowEnabledRef.current = glowEnabled;
+  renderQualityRef.current = renderQuality;
   autoRotateEnabledRef.current = autoRotateEnabled;
   rotationPausedRef.current = rotationPaused;
   onRotationStatusRef.current = onRotationStatusChange;
@@ -501,6 +508,19 @@ function GraphViewInstance({
       themeResourcesRef.current = themeResources;
       applySceneTheme(graph, themeResources, themeRef.current, glowEnabledRef.current);
 
+      // Canvas and post-processing buffers use the same ratio. Logical sizes,
+      // label positions, camera and topology remain in CSS pixels / world units.
+      let appliedPixelRatio: number | null = null;
+      const refreshGraphPixelRatio = () => {
+        if (graphRef.current !== graph) return;
+        const ratio = resolveGraphPixelRatio(renderQualityRef.current, window.devicePixelRatio);
+        if (ratio === appliedPixelRatio) return;
+        applyGraphPixelRatio(graph.renderer(), composer, ratio);
+        appliedPixelRatio = ratio;
+      };
+      refreshGraphPixelRatioRef.current = refreshGraphPixelRatio;
+      refreshGraphPixelRatio();
+
       let width = host.clientWidth;
       let height = host.clientHeight;
       let frame = 0;
@@ -575,6 +595,7 @@ function GraphViewInstance({
         width = host.clientWidth;
         height = host.clientHeight;
         graph.width(width).height(height);
+        refreshGraphPixelRatio();
         // A hidden/zero-size host defers its first fit until it can be measured.
         // Later resizes preserve the user's chosen view.
         fitInitialView();
@@ -598,11 +619,14 @@ function GraphViewInstance({
       // Keep those nodes near the visible graph without inventing any edges.
       graph.d3Force('isolatedBoundary', createIsolatedNodeForce(graphData.links, twoDimensional));
       graph.graphData({ nodes: graphData.nodes, links: cloneLinks(graphData.links) });
+      window.addEventListener('resize', refreshGraphPixelRatio);
 
       return () => {
         window.cancelAnimationFrame(frame);
         labels.dispose();
         resizeObserver.disconnect();
+        window.removeEventListener('resize', refreshGraphPixelRatio);
+        if (refreshGraphPixelRatioRef.current === refreshGraphPixelRatio) refreshGraphPixelRatioRef.current = null;
         document.removeEventListener('visibilitychange', onVisibility);
         if (layoutTimerRef.current !== null) window.clearTimeout(layoutTimerRef.current);
         graph.pauseAnimation?.();
@@ -636,11 +660,16 @@ function GraphViewInstance({
     } catch {
       setGraphError('3D 图谱初始化失败，将使用文字列表继续工作。');
       graphRef.current = null;
+      refreshGraphPixelRatioRef.current = null;
       return undefined;
     }
     // graphData is the initial data for this graph instance; subsequent updates preserve node objects and positions below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    refreshGraphPixelRatioRef.current?.();
+  }, [renderQuality]);
 
   useEffect(() => {
     const graph = graphRef.current;
