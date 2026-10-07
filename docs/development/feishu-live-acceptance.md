@@ -1,6 +1,6 @@
 # 飞书专用应用接入与集中验收
 
-日期：2026-10-07。对应 FEISHU-04。用户已选择**新建 Living Memory 专用应用**。本页整理接入准备和本人操作步骤，应用创建、发布、真实连接及客户端验收仍待完成。
+日期：2026-10-07。对应 FEISHU-04。已使用**新建 Living Memory 专用应用**完成真实连接与本人绑定，并收到领域列表卡。点击领域项时报平台提示 `card callback isn't configured for this app yet.`，卡片回调配置 / 发布待核对；按钮往返与复习写回尚未验收。本人计划在通勤时继续试用，不阻塞其他独立开发任务。
 
 软件基线为 `develop` 提交 `bd9f19b85e17b9f653a0b03ab8e62fd5870901f9`：828/828 自动测试、生产构建和 8 项主题检查通过，对应 [GitHub CI](https://github.com/wolfhawkld/living-memory/actions/runs/37600388535) 成功。该证据覆盖合成账号、真实 SDK 离线解析、假发送器及隔离数据库，不证明目标飞书应用已经接通。
 
@@ -9,17 +9,17 @@
 | 项目 | 本轮状态 / 完成条件 |
 | --- | --- |
 | 应用选择 | 已确定新建 Living Memory 专用应用 |
-| 应用创建与管理 | 待本人创建，并确认具备配置、权限申请与发布能力 |
-| 事件接收归属 | 待确认新应用仅由 Living Memory 接收事件；既有 Hermes / OpenClaw 机器人及定时任务保持原设置 |
-| 机器人及消息能力 | 待在目标应用后台确认机器人能力、本人私聊消息发送 / 接收能力 |
-| 事件接收 | 实现注册 `im.message.receive_v1` 与 `card.action.trigger`；待在后台配置 SDK 长连接接收并核对对应订阅 |
-| 可用范围与发布 | 待确认本人飞书账号在可用范围内，所需配置已对目标版本生效 |
-| 应用 / 租户配置 | 待本人在服务端配置 app ID、secret 与匹配目标事件的 tenant key |
-| 账号与数据 | 待本人选定 Web 账号、已有知识源和私人数据目录，确认本次允许在聊天中查看的内容 |
+| 应用创建与管理 | 已创建专用应用并发布；卡片回调配置变更的版本仍待核对 |
+| 事件接收归属 | 当前由 Living Memory 单一服务接收；既有 Hermes / OpenClaw 机器人及定时任务保持原设置 |
+| 机器人及消息能力 | 本人私聊确认绑定、发送命令及接收领域卡已实际通过 |
+| 事件接收 | `im.message.receive_v1` 长连接订阅已实际接收；`card.action.trigger` 服务处理器已注册，平台回调配置尚未通过按钮验证 |
+| 可用范围与发布 | 当前版本已允许本人私聊；不推定后续卡片回调配置已发布 |
+| 应用 / 租户配置 | 已在忽略提交的私人启动配置中保存并真实接通，不在公开文档记录值 |
+| 账号与数据 | 保留既有 Web 账号、知识源及私人学习数据；本人已完成绑定 |
 
 平台设置名称和权限申请要求以目标应用当前后台及官方资料为准；这里列的是本项目的实现需求，不把消息发送成功当作按钮订阅成功。SDK 的同一应用长连接不是事件广播，应先确认接收归属，见[连接器说明](feishu-connector.md)。
 
-完成本表后才安排真实启用。本页不代替应用创建 / 发布，也不自动启用连接器、修改其他机器人或发送消息。
+本表区分真实通过与待验项目；应用配置由本人操作，未由 Agent 代发聊天消息。
 
 ## 2. 服务端配置
 
@@ -35,9 +35,11 @@
 
 完整长度限制和固定配置错误码见[配置规则](feishu-connector.md#配置与启用条件)。保持现有账号模式，不设置 `LM_AUTH_MODE=local`；飞书绑定需要已登录的 Web 浏览器会话。
 
-获取 tenant key：按官方[自建应用 tenant_access_token 接口](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)取得新应用的 token，再使用它调用[获取企业信息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/tenant-v2/tenant/query)的 `GET /open-apis/tenant/v2/tenant/query`，取响应 `data.tenant.tenant_key`。官方 SDK 的[请求定义](https://github.com/larksuite/oapi-sdk-go/blob/v3_main/service/tenant/v2/resource.go#L27)与[响应模型](https://github.com/larksuite/oapi-sdk-go/blob/v3_main/service/tenant/v2/model.go#L209)区分 `tenant_key` 和企业编号 `display_id`；此处需要前者，不填 token 或企业编号。实际调用前由本人核对接口的当前权限要求。本轮只核对官方定义，没有请求本人 token、调用真实应用 API 或保存凭据。
+获取 tenant key：按官方[自建应用 tenant_access_token 接口](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)取得新应用的 token，再使用它调用[获取企业信息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/tenant-v2/tenant/query)的 `GET /open-apis/tenant/v2/tenant/query`，取响应 `data.tenant.tenant_key`。官方 SDK 的[请求定义](https://github.com/larksuite/oapi-sdk-go/blob/v3_main/service/tenant/v2/resource.go#L27)与[响应模型](https://github.com/larksuite/oapi-sdk-go/blob/v3_main/service/tenant/v2/model.go#L209)区分 `tenant_key` 和企业编号 `display_id`；此处需要前者，不填 token 或企业编号。实际初始化在本人配置 `tenant:tenant:readonly` 后已通过；token 未写入仓库或验收记录。
 
-启动时沿用既有 `LM_KG_ROOT`、`LM_DATA_DIR`、端口和账号目录。未指定知识根目录会使用仓库演示知识，未指定私人数据目录会使用 `data/local`，不能把出现演示数据或新账号误当作个人数据丢失。成员使用其现有私人知识空间，不能借管理员身份代替成员绑定。运行方式见[首次运行](first-run.md)和[私人账号](private-accounts.md)。
+当前使用的消息应用权限为 `im:message.p2p_msg:readonly` 和 `im:message:send_as_bot`；初始化获取企业信息另需上述 `tenant:tenant:readonly`。权限名称与审批以平台当前后台为准。卡片按钮还需要单独配置回调：同一应用的「事件与回调 → 回调配置」选择使用长连接接收回调，添加新版 `card.action.trigger`（卡片回传交互），保存并发布包含变更的新版本。它与「事件配置」中的消息订阅是两处设置。官方[卡片回调说明](https://github.com/larksuite/cli/blob/main/skills/lark-im/references/lark-im-card-action-reply.md#setup-required)确认未启用时消费者也可能正常启动但收不到回调；启用后使用已有 WebSocket，不需要额外公开回调 URL。
+
+启动时沿用既有 `LM_KG_ROOT`、`LM_DATA_DIR`、`LM_KG_LIMIT`、端口和账号目录。未指定知识根目录会使用仓库演示知识，未指定私人数据目录会使用 `data/local`；漏掉显示上限可能截断图中节点及连线，不能误当作个人数据丢失。成员使用其现有私人知识空间，不能借管理员身份代替成员绑定。运行方式见[首次运行](first-run.md)和[私人账号](private-accounts.md)。
 
 实际启用由本人确认应用、事件接收归属和上述配置后进行；若已有服务运行，先核对它的启动环境及受控更新方式，避免另起进程竞争端口。仍保持桌面 `127.0.0.1` 访问与现有认证，不通过公开监听或放宽 CORS 完成此验收；飞书私聊长连接不要求手机能打开桌面网页。
 
@@ -103,6 +105,7 @@
 | `sdk-init-failed` / `sdk-start-failed` / `sdk-connection-error` | 根据实际阶段核对 SDK 启动环境或平台连接；固定码本身不能定位唯一原因 |
 | Web 无法生成绑定指令 | 核对浏览器登录、账号模式及 `connected`；接口可能返回 `FEISHU_UNAVAILABLE` |
 | Web 仍显示待确认 | 核对本人是否在正确机器人私聊发送完整、未过期指令，消息订阅和接收归属是否正确 |
+| `card callback isn't configured for this app yet.` | 在回调配置单独启用长连接和 `card.action.trigger`，保存并发布；重新发送领域命令，点击新卡。已绑定无需重新绑定 |
 | 有操作提示，但没有新卡 | 提示只确认接收；核对最新卡、绑定、卡片寿命、资料变化和投递状态，使用对应恢复命令 |
 | 待复习为零项 | 先核对时间起点、安排、完成数和剩余预算，不当作权限或连接失败 |
 | 自评已保存、重温未保存 | 两种记录独立；对照当前保存状态，不撤销已保存自评或重复生成事件 |
@@ -111,13 +114,13 @@
 
 ## 5. 本人验收记录模板
 
-初始真实结果均为「待验」，由实际操作者填写；本页准备完成不等于 FEISHU-04 已验收。
+按真实使用更新已覆盖项目，其余由实际操作者继续填写；本页准备完成不等于 FEISHU-04 已验收。
 
 | 项目 | 结果（通过 / 失败 / 未覆盖） | 脱敏现象 |
 | --- | --- | --- |
-| 新应用创建、配置、发布和接收归属 | 待验 | |
-| SDK 就绪与本人 Web / 飞书绑定 | 待验 | |
-| 领域、搜索、阅读、翻页及新卡往返 | 待验 | |
+| 新应用创建、消息配置、发布和接收归属 | 通过 | 专用应用与消息通道已实际使用；不包含卡片回调配置 |
+| SDK 就绪与本人 Web / 飞书绑定 | 通过 | 服务报告 connected；本人确认已绑定，状态与绑定存储吻合 |
+| 领域、搜索、阅读、翻页及新卡往返 | 部分覆盖 / 待修复 | 已收到领域卡，按钮报平台回调未配置；搜索、阅读、翻页待验 |
 | 浏览不新增学习记录 | 待验 | |
 | 候选数量、理由、日期与预算 | 待验 | |
 | 单条脑中自报与独立确认重温 | 待验 | |

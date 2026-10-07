@@ -56,6 +56,9 @@ import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
 import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
 import { CrossDomainPanel, DomainPicker } from './DomainControls';
+import { summarizeDomainVisibility } from '../core/domain-visibility';
+import { GraphDisplayControls } from './GraphDisplayControls';
+import { graphDisplayPreferenceKey, readGraphLimitPreference, writeGraphLimitPreference, type GraphLimitPreference } from './graph-display-preference';
 import { ConceptSearch } from './ConceptSearch';
 import { PendingWritesPanel } from './PendingWritesPanel';
 import { ConceptHistoryPanel } from './ConceptHistoryPanel';
@@ -228,6 +231,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const [layout, setLayout] = useState<Layout>({});
   const [writeToken, setWriteToken] = useState('');
   const [sourceId, setSourceId] = useState('');
+  const graphPreferenceKey = useMemo(() => graphDisplayPreferenceKey(account?.id, sourceId), [account?.id, sourceId]);
+  const [graphPreference, setGraphPreference] = useState<{ key: string | null; value: GraphLimitPreference }>({ key: null, value: 'server' });
+  const graphLimitPreference = graphPreference.key === graphPreferenceKey ? graphPreference.value : 'server';
+  useEffect(() => {
+    setGraphPreference({ key: graphPreferenceKey, value: readGraphLimitPreference(graphPreferenceKey) });
+  }, [graphPreferenceKey]);
   const [feishuBindingOpen, setFeishuBindingOpen] = useState(false);
   const [demoEnabled, setDemoEnabled] = useState(true);
   const [demoRecord, setDemoRecord] = useState<DemoRecord | null>(null);
@@ -775,11 +784,21 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const domains = useMemo(() => snapshot ? listDomains(snapshot) : [], [snapshot]);
   const domainId = useMemo(() => snapshot ? chooseDomain(snapshot, activeDomainId) : null, [activeDomainId, snapshot]);
   const viewSnapshot = useMemo(() => displaySnapshot && domainId
-    ? projectDomainView(displaySnapshot, domainId, { selectedId, expandedIds })
-    : displaySnapshot, [displaySnapshot, domainId, expandedIds, selectedId]);
+    ? projectDomainView(displaySnapshot, domainId, { selectedId, expandedIds,
+      limit: graphLimitPreference === 'server' ? undefined : graphLimitPreference })
+    : displaySnapshot, [displaySnapshot, domainId, expandedIds, selectedId, graphLimitPreference]);
+  const graphVisibility = useMemo(() => displaySnapshot && viewSnapshot && domainId
+    ? summarizeDomainVisibility(displaySnapshot, viewSnapshot, domainId) : null, [displaySnapshot, viewSnapshot, domainId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
   const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const changeGraphLimit = useCallback((value: GraphLimitPreference) => {
+    if (domainBusy || !graphPreferenceKey) return;
+    setGraphPreference({ key: graphPreferenceKey, value });
+    if (!writeGraphLimitPreference(graphPreferenceKey, value)) {
+      showNotice({ tone: 'info', text: '图谱显示范围已在本页生效；浏览器未允许记住这次选择。' });
+    }
+  }, [domainBusy, graphPreferenceKey, showNotice]);
   const dailyAllowance = useMemo(() => reviewPlan.response ? reviewAllowance(reviewPlan.response, pendingWrites) : null, [reviewPlan.response, pendingWrites]);
   const briefCandidates = useMemo(() => snapshot && domainId && !writeLocked && reviewPlan.response && dailyAllowance
     ? selectBriefReviewCandidates(snapshot, domainId, {
@@ -1828,7 +1847,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       </div>
       <div className="domain-view-bar">
         <DomainPicker domains={domains} value={domainId ?? ''} onChange={changeDomain} disabled={domainBusy} />
-        <span className="domain-view-summary">当前域 {domains.find((domain) => domain.id === domainId)?.conceptCount ?? 0} 个概念 · 图中 {visibleIds.length} 个节点{visibleExpandedIds.length > 0 ? `（含 ${visibleExpandedIds.length} 个跨域节点）` : ''}</span>
+        {graphVisibility ? <GraphDisplayControls preference={graphLimitPreference} serverLimit={displaySnapshot.source.limit}
+          summary={graphVisibility} disabled={domainBusy || !graphPreferenceKey} onChange={changeGraphLimit} /> : null}
         {visibleExpandedIds.length > 0 ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={() => {
           setExpandedIds([]);
           if (selectedConcept && domainIdOf(selectedConcept) !== domainId) {
