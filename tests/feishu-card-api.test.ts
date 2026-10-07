@@ -252,7 +252,11 @@ test('persistent receipts survive app reopening and failed sends never activate 
     await c.message({ ...message, eventId: 'different-event' });
     await c.click({ ...click, eventId: 'different-click-event' }); assert.equal(c.sent.length, 0);
     // A live, unchanged card also survives reopening and resolves to this user's source.
-    const latest = f.app.livingMemory.feishuCards.prepareMessage(input('知识 卡片', 'survive'))!;
+    const latest = f.app.livingMemory.feishuCards.prepareMessage(input('知识 卡片 搜索 MemberOnly0', 'survive'))!;
+    const latestContent = JSON.stringify(latest.card);
+    assert.match(latestContent, /1 个节点/);
+    assert.match(latestContent, /MemberOnly0/);
+    assert.doesNotMatch(latestContent, /MemberOnly1|OwnerOnly|Owner-private|owner-kg/);
     latest.settle({ status: 'platform-accepted', messageId: 'survive-platform', chatId: 'private-chat' });
     await c.connector.stop(); await f.reopen(); c = await channel(f);
     await c.click(action({ card: latest.card } as FeishuSendCard, 'survive-platform', '阅读 1'));
