@@ -1,6 +1,8 @@
 # 飞书一次性账号绑定
 
-日期：2026-10-02。对应 NEXT-06 / FEISHU-01C。已实现 Web 发起、官方 SDK 私聊事件确认、账号存储和状态查询的软件链；连接器默认关闭，真实应用配置与本人私聊确认尚待验收。后续 FEISHU-02A 已实现[私聊文本列表与阅读](feishu-knowledge-reading.md)，[点击式知识卡片与待复习查看](feishu-card-browsing.md)亦已实现，复习写回仍待开发；绑定成功不等于平台体验已验收。
+日期：2026-10-02。对应 NEXT-06 / FEISHU-01C。已实现 Web 发起、官方 SDK 私聊事件确认、账号存储和状态查询的软件链；连接器默认关闭，真实应用配置与本人私聊确认尚待验收。后续 FEISHU-02A 已实现[私聊文本列表与阅读](feishu-knowledge-reading.md)，[点击式知识卡片与待复习查看](feishu-card-browsing.md)亦已实现，后续 [单条复习](feishu-single-review.md)与[批次复习](feishu-batch-review.md)的软件写回已完成；绑定成功不等于平台体验已验收。
+
+本文保留 FEISHU-01C 一次性绑定阶段的范围与测试数量。当前已具备 03A / 03B 的显式脑中自评和独立确认重温写回；绑定操作及 02 只读浏览本身仍不写学习记录。用户已选择新建 Living Memory 专用应用，真实配置、本人绑定及客户端操作按 [FEISHU-04 验收步骤](feishu-live-acceptance.md)核对。
 
 连接器配置与生命周期见[连接器说明](feishu-connector.md)，账号隔离见[私人账号](private-accounts.md)，完整任务见[飞书通道 TODO](../planning/feishu-review-channel-todo-2026-10-02.md)。本轮未启用飞书连接、重启个人服务、修改既有定时任务或发送真实消息。
 
@@ -34,7 +36,7 @@ SDK 只在认证后的长连接内处理 `im.message.receive_v1`。输入必须�
 
 沿用私人数据目录中的 `accounts.sqlite`，以加法方式创建 `feishu_bindings`、`feishu_binding_requests` 两表。部分唯一索引约束每个用户和每个飞书身份只有一条有效绑定；一次性请求、确认与撤销在事务中完成。
 
-不修改 `living-memory.sqlite`、知识节点、JSON 学习交换格式、时间模型、重温起点或长期保持记录。飞书关联属于账号数据，不包含在当前学习 JSON 导出中；后续读取回执及卡片 metadata 同样保存在账号库，不属于学习导出。完整恢复须按[私人账号备份边界](private-accounts.md#cli-与-progressive-kg-钩子)保留账号数据库及其私人目录。旧版本没有绑定管理能力，回退不能当作已撤销这些关联。
+FEISHU-01C 的绑定操作本身不修改 `living-memory.sqlite`、知识节点、JSON 学习交换格式、时间模型、重温起点或长期保持记录。飞书关联属于账号数据，不包含在当前学习 JSON 导出中；后续读取回执及卡片 metadata 同样保存在账号库，不属于学习导出。完整恢复须按[私人账号备份边界](private-accounts.md#cli-与-progressive-kg-钩子)保留账号数据库及其私人目录。旧版本没有绑定管理能力，回退不能当作已撤销这些关联。
 
 ## 平台配置与待验项
 
@@ -42,7 +44,7 @@ SDK 只在认证后的长连接内处理 `im.message.receive_v1`。输入必须�
 
 同一应用多个官方长连接客户端的事件由其中一个随机消费者接收，不能作为广播使用。优先使用独立 Living Memory 应用，或先确认既有 Hermes / OpenClaw 消费者归属。本轮不改动它们的配置、订阅或定时推送。
 
-FEISHU-01C 的首轮连接器只获得狭窄账号确认能力；后续 FEISHU-02A 增加经绑定授权的只读知识能力和本人私聊文本发送，详情见[阅读边界](feishu-knowledge-reading.md)。当前仍不调用 LLM、不建立投递 outbox、不写学习记录。FEISHU-02B 后续导航只读取固定 kind / cardId / actionId，实际账号来自 SDK 身份与当前绑定；卡片内容不能选择账号。点击先回执、再核验并投递新卡，详见[卡片边界](feishu-card-browsing.md)。
+FEISHU-01C 的首轮连接器只获得狭窄账号确认能力；后续 FEISHU-02A 增加经绑定授权的只读知识能力和本人私聊文本发送，详情见[阅读边界](feishu-knowledge-reading.md)。这些绑定 / 只读能力不写学习记录；当前也不调用 LLM 或建立投递 outbox。后续 03A / 03B 的显式自评与确认重温使用独立受限复习能力写入共用 Store。FEISHU-02B 后续导航只读取固定 kind / cardId / actionId，实际账号来自 SDK 身份与当前绑定；卡片内容不能选择账号。点击先回执、再核验并投递新卡，详见[卡片边界](feishu-card-browsing.md)。
 
 软件验证使用合成账号、临时数据库、注入 driver 和合成消息，覆盖范围隔离、过期 / 替换、撤销、会话与账号状态、重复事件及 UI 异步边界。真实 SDK 的 EventDispatcher 离线解析测试将原始消息转换为平铺输入，经连接器确认能力写入临时 Accounts，再由 Web API 查询绑定结果；不构造或启动 WSClient。`needCheck: false` 仅验证离线结构转换，不提供平台鉴权证据。
 
@@ -50,6 +52,6 @@ FEISHU-01C 的首轮连接器只获得狭窄账号确认能力；后续 FEISHU-0
 
 最终架构审查通过，范围仅为默认关闭的一次性绑定软件链。账号隔离、确认事务、旧 ID 重试、账号版本失效、弹窗异步清理与深浅主题均已复核，没有剩余必修项。
 
-真实握手、应用发布 / 可用范围和本人私聊指令往返仍需人工验收；后续文本阅读见[FEISHU-02A](feishu-knowledge-reading.md)，点击式只读卡片见[FEISHU-02B](feishu-card-browsing.md)，卡片复习写回仍需开发。
+真实握手、应用发布 / 可用范围和本人私聊指令往返仍需人工验收；后续文本阅读见[FEISHU-02A](feishu-knowledge-reading.md)，点击式只读卡片见[FEISHU-02B](feishu-card-browsing.md)，卡片复习的软件写回见 [FEISHU-03A](feishu-single-review.md)和 [FEISHU-03B](feishu-batch-review.md)，真实接入与客户端验收见 [FEISHU-04](feishu-live-acceptance.md)。
 
 官方证据入口：[SDK 固定发布包](https://registry.npmjs.org/@larksuiteoapi/node-sdk/-/node-sdk-1.74.0.tgz)、[首轮协议与官方文档差异](feishu-offline-probe.md#官方证据与文档差异)。实际平台配置以飞书开放平台当前控制台与官方文档为准。

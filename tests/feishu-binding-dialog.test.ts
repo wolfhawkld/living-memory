@@ -12,13 +12,15 @@ function status(overrides: Partial<FeishuBindingStatus> = {}): FeishuBindingStat
     request: { id: 'request-test', status: 'pending', expiresAt: new Date(now + 10_000).toISOString(), confirmedAt: null }, ...overrides };
 }
 
-test('binding dialog SSR is accessible, names current account, and makes the limited scope explicit', () => {
+test('binding dialog SSR is accessible, names current account, and describes current browsing and review entry points', () => {
   const html = renderToStaticMarkup(createElement(FeishuBindingDialog, {
     accountLabel: 'synthetic-user', sourceId: 'synthetic-space', writeToken: 'secret-session-token', onClose: () => undefined,
   }));
   assert.match(html, /<dialog[^>]*aria-labelledby=/);
   assert.match(html, /synthetic-user/);
-  assert.match(html, /「知识 卡片」点击浏览，或「知识 待复习」查看候选；复习记录写回尚未接入/);
+  assert.match(html, /「知识 卡片」点击浏览，或「知识 待复习」查看候选/);
+  assert.match(html, /「知识 复习 3」或「知识 复习 5」开始小批次复习/);
+  assert.match(html, /脑中自评可保存，单独确认已重温才更新记忆时间/);
   assert.match(html, /读取绑定状态中/);
   assert.doesNotMatch(html, /secret-session-token|synthetic-space|textarea|LM-/);
 });

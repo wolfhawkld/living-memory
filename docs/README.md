@@ -50,6 +50,7 @@
 - [飞书知识卡片与待复习查看](development/feishu-card-browsing.md)：FEISHU-02B 点击式浏览、正文分页和候选已实现；默认关闭、平台待验，只读不扣预算、不写学习记录。
 - [飞书单条脑中回忆与确认重温](development/feishu-single-review.md)：FEISHU-03A 回忆正面、显式翻卡、脑中自评、独立重温及持久暂停 / 恢复；使用共用学习记录；保留单条入口，批次推进见后续 03B，真实平台验收仍待本人完成。
 - [飞书少量批次复习](development/feishu-batch-review.md)：FEISHU-03B 固定 3 / 5 项队列、逐项冻结、显式推进 / 跳过与本轮汇总；软件实现与 828 项回归已完成；真实平台仍待本人集中验收，见说明。
+- [飞书专用应用接入与集中验收](development/feishu-live-acceptance.md)：FEISHU-04 准备清单、服务端配置、本人绑定 / 浏览 / 复习 / Web 核对及结果模板；已选新建专用应用，真实接入待验。
 - [飞书接入离线探针](development/feishu-offline-probe.md)：官方 V2 卡片 / 回调证据、合成身份范围及协议回执检查；无联网或私人记录操作，真实应用接入仍待验证。
 
 ## 路线、主题与验证进度

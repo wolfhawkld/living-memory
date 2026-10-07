@@ -1,6 +1,8 @@
 # 飞书连接器基础：默认关闭的官方 SDK 长连接
 
-日期：2026-10-02。对应 NEXT-06 / FEISHU-01B。已实现官方 SDK transport、配置校验、卡片事件投影及服务生命周期接线；默认关闭。FEISHU-01C 已补齐[一次性身份绑定](feishu-account-binding.md)，FEISHU-02A 已实现[私聊文本列表与阅读](feishu-knowledge-reading.md)。FEISHU-02B 已实现[知识卡片与待复习查看](feishu-card-browsing.md)。真实应用发布、连接与私聊 / 按钮往返尚未验收；当前不保存飞书学习记录。
+日期：2026-10-02。对应 NEXT-06 / FEISHU-01B。已实现官方 SDK transport、配置校验、卡片事件投影及服务生命周期接线；默认关闭。FEISHU-01C 已补齐[一次性身份绑定](feishu-account-binding.md)，FEISHU-02A 已实现[私聊文本列表与阅读](feishu-knowledge-reading.md)。FEISHU-02B 已实现[知识卡片与待复习查看](feishu-card-browsing.md)。真实应用发布、连接与私聊 / 按钮往返尚未验收。连接器基础和 02 阶段的浏览路径本身不保存学习记录，后续显式复习写回见下方当前进展。
+
+2026-10-07 当前进展：本文保留 FEISHU-01B 的历史范围与检查记录。[单条复习](feishu-single-review.md)和[3 / 5 项批次复习](feishu-batch-review.md)的软件实现与回归已经完成；仅明确进入复习后，本人自评与独立确认重温才写入共用学习 Store。用户已选择新建 Living Memory 专用应用，真实配置、连接与客户端集中验收仍待完成，按 [FEISHU-04 实际接入与验收](feishu-live-acceptance.md)推进；软件完成不等于通道已经启用。
 
 此前的[离线探针](feishu-offline-probe.md)继续独立运行，其执行路径不加载 SDK、不联网。任务拆分见[飞书通道 TODO](../planning/feishu-review-channel-todo-2026-10-02.md)。
 
@@ -32,13 +34,13 @@ SDK dispatcher、WSClient 与文本 / 卡片发送 Client 的 `error`、`warn`�
 
 ## 当前卡片处理边界
 
-注册 `card.action.trigger` 和 `im.message.receive_v1`。后者投影本人私聊绑定指令及知识查看指令，分别进入狭窄的账号确认与只读知识能力；详细身份与一次性请求约束见[账号绑定说明](feishu-account-binding.md)。卡片路径如下。内部适配函数接收经过官方 WebSocket transport 的 SDK handler 平铺输入，校验 `event_type`、`event_id`、`app_id`、`tenant_key`、`operator.open_id`、可选 `operator.tenant_key`、`context.open_message_id` / `open_chat_id` 和 `action.tag = button`。应用及租户必须与服务端配置一致，operator 租户如存在也必须一致；必要字符串为空、类型错误或长度超过 256 时拒绝。SDK 平铺输入保留的 `schema: "2.0"` 可接受，缺省 schema 也兼容接受；其他 schema 值及嵌套 header / event 拒绝。原始 schema envelope 不能直接传给此适配器。
+注册 `card.action.trigger` 和 `im.message.receive_v1`。后者投影本人私聊绑定、知识查看及明确复习指令，分别进入狭窄的账号确认、只读知识与复习会话能力；详细身份与一次性请求约束见[账号绑定说明](feishu-account-binding.md)。卡片路径如下。内部适配函数接收经过官方 WebSocket transport 的 SDK handler 平铺输入，校验 `event_type`、`event_id`、`app_id`、`tenant_key`、`operator.open_id`、可选 `operator.tenant_key`、`context.open_message_id` / `open_chat_id` 和 `action.tag = button`。应用及租户必须与服务端配置一致，operator 租户如存在也必须一致；必要字符串为空、类型错误或长度超过 256 时拒绝。SDK 平铺输入保留的 `schema: "2.0"` 可接受，缺省 schema 也兼容接受；其他 schema 值及嵌套 header / event 拒绝。原始 schema envelope 不能直接传给此适配器。
 
 基础身份适配成功只投影 `eventId`、`appId`、`tenantKey`、`openId`、`messageId`、`chatId` 六个字段。`token`、正文、元数据及权限声明均丢弃，该基础身份适配不读取 `action.value`；其中的 accountId、sourceId、用户名或 owner 声明不能决定账号。结构校验本身不提供平台鉴权或账号授权，此函数只能在已认证官方 WS transport 内部使用，不能挂公开 HTTP 路由。
 
 FEISHU-02B 在基础身份适配后增加独立导航适配，只接受 `action.value` 中精确的 `kind = lm.nav.v1`、32 位小写十六进制 `cardId` 与 `a0`～`a15` 的 `actionId` 三个字段。按钮没有账号或来源权限声明，实际目标视图由服务器卡片 metadata 查找。
 
-结构有效且通过进程接纳限制的导航先返回 info toast「已收到操作；无新卡时请发送『知识 卡片』。」；异步能力再核验当前账号 / 绑定、平台聊天及消息上下文、卡片 TTL 与资料指纹，向同一 openId 发新卡。toast 不表示授权或发送成功，旧卡 / 重复 / 过期操作可能无新卡。其他卡片事件返回固定拒绝或尚未接入提示，不进入学习写入。
+结构有效且通过进程接纳限制的导航先返回 info toast「已收到操作；无新卡时请发送『知识 卡片』。」；异步能力再核验当前账号 / 绑定、平台聊天及消息上下文、卡片 TTL 与资料指纹，向同一 openId 发新卡。toast 不表示授权或发送成功，旧卡 / 重复 / 过期操作可能无新卡。后续 FEISHU-03 的复习按钮仍使用同一身份 / 导航边界，进入已授权的持久会话后，明确自评或独立确认重温才写学习记录。只读导航本身不写；无效或不识别的卡片事件返回固定拒绝或未接入提示。
 
 FEISHU-02A 文本入口保持只读，FEISHU-02B 增加点击式列表、正文分页与待复习查看；详情见[卡片说明](feishu-card-browsing.md)。默认关闭，真实按钮往返仍待人工验收。
 
@@ -56,4 +58,4 @@ FEISHU-01B 新增配置 7 个、事件 8 个、连接器 14 个、SDK adapter 7 
 
 FEISHU-01B 最终架构审查通过，范围仅为 默认关闭的连接器基础。发布包事件转换、应用 ID 校验、启动失败清理和服务停机顺序均已复核；没有把真实连接或账号绑定标为完成。
 
-FEISHU-01C 已按 `(appId, tenantKey, openId)` 关联现有账号 UUID：已认证 Web 账号发起一次性请求，飞书本人发送私聊指令确认，补齐过期、重复、停用与撤销边界；全软件链已实现，真实平台验收待进行。该轮完整软件检查与最终审查结果在[账号绑定说明](feishu-account-binding.md)补记，不沿用上一轮 626 项数字。FEISHU-02A 文本列表 / 阅读的软件链已补齐，FEISHU-02B 点击式列表 / 正文分页与待复习查看的软件链已实现，随后是 FEISHU-03 卡片复习 / 共用记录和 FEISHU-04 失败恢复与真实客户端集中验收。
+FEISHU-01C 已按 `(appId, tenantKey, openId)` 关联现有账号 UUID：已认证 Web 账号发起一次性请求，飞书本人发送私聊指令确认，补齐过期、重复、停用与撤销边界；全软件链已实现，真实平台验收待进行。该轮完整软件检查与最终审查结果在[账号绑定说明](feishu-account-binding.md)补记，不沿用上一轮 626 项数字。FEISHU-02A 文本列表 / 阅读的软件链已补齐，FEISHU-02B 点击式列表 / 正文分页与待复习查看的软件链已实现，后续 FEISHU-03A / 03B 已完成单条与批次复习 / 共用记录的软件实现；FEISHU-04 的合成恢复已有覆盖，真实接入与客户端集中验收仍待完成，见[验收步骤](feishu-live-acceptance.md)。
