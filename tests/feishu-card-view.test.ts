@@ -176,6 +176,8 @@ test('due candidates offer opaque recall entry points within the five-row and lo
     const rendered = render(view, context, plan());
     checkBudgets(view, rendered);
     const starts = rendered.actions.filter(action => action.target.kind === 'review-start');
+    assert.ok(rendered.actions.some(action => action.target.kind === 'review-batch-start'));
+    assert.deepEqual(rendered.actions.find(action => action.target.kind === 'review-batch-start')!.target, { kind: 'review-batch-start' });
     assert.ok(starts.length > 0, 'at least the first candidate must offer recall');
     if (domain === 'Math') assert.equal(starts.length, 5);
     for (const concept of concepts) assert.match(text(rendered), new RegExp(concept.title));

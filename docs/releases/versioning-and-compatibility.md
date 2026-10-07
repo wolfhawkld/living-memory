@@ -52,6 +52,8 @@ JSON 不包含知识正文、关系、附件、账号密码或浏览器草稿，
 
 同日 FEISHU-03A 为 `accounts.sqlite` 加法增加 `feishu_review_sessions`、`feishu_review_operations` 及单个未结束会话的索引，不重建原账号、绑定或学习表。会话 / 固定待写请求不在学习 JSON 中，完整恢复需要匹配的账号库和学习库；24 小时会话与 30 分钟卡片清理分开。部分库恢复时不能假设聊天待写已收敛或旧操作已去重；先关闭连接器并核对，再按[单条复习说明](../development/feishu-single-review.md)显式恢复。
 
+同日 FEISHU-03B 的队列使用可选 `state.batch`，旧单条 session JSON 不重写。操作表按 `PRAGMA table_info` 检查，在 `BEGIN IMMEDIATE` 锁内再次复核后事务重建，增加 `item_id NOT NULL` 并将唯一约束改为 `(session_id, item_id, kind)`。旧行的 `item_id` 取原 session ID，原事件 ID、原始 intent JSON、状态与时间保持原样；外键检查开启，失败回滚原表。新账号库直接创建目标结构。学习 JSON 仍为 v1，不包含会话 / 队列 / 操作 journal。旧 FEISHU-03A 程序不保证可写迁移后的账号库，回退必须使用匹配版本的完整备份，不能仅换回程序；使用与恢复边界见[批次说明](../development/feishu-batch-review.md)。
+
 2026-10-02 的场景卡更新为两张练习表增加可空 `scenario_json`。从之前只允许 `detail / comparison` 的已知练习卡表升级时，在单一事务中重建卡片及其来源引用表，保留各 namespace、原 rowid 顺序、版本链、来源及精确请求载荷；回答表增加列。失败回滚并恢复外键检查，原概念观察 / 重温 / 参数记录不因此改写。备份与回退仍按[完整恢复步骤](upgrade-and-recovery.md)执行；新 JSON 内的阶段提示与两项自评需要本轮或更新版本恢复，不用旧程序直接打开迁移后的数据库。
 
 同日的 FEISHU-01C 在 `accounts.sqlite` 以 `CREATE TABLE IF NOT EXISTS` 新增 `feishu_bindings`、`feishu_binding_requests` 和有效绑定的两个唯一索引。原账号 UUID、密码、会话和学习库不重建；绑定码只存哈希，发码 / 确认 / 撤销在账号库事务内处理。学习 JSON 仍为 v1，不包含飞书授权或绑定请求。已有未绑定的账号库由合成旧库测试验证升级及重复初始化；没有通用降级或旧程序管理新授权的保证。回退使用匹配版本的完整备份，见[绑定说明](../development/feishu-account-binding.md)。

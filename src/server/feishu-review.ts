@@ -3,8 +3,9 @@ import type { FeishuActor } from '../shared/feishu-binding.js';
 import type { FeishuReadAuthorization } from '../shared/feishu-reading.js';
 import type {
   FeishuReviewCommand, FeishuReviewMutation, FeishuReviewOperation, FeishuReviewSession,
-  FeishuReviewState, FeishuReviewTarget, FeishuReviewTrigger, FeishuReviewWriteIntent,
+  FeishuReviewState, FeishuReviewTarget, FeishuReviewResolvedTarget, FeishuReviewTrigger, FeishuReviewWriteIntent,
 } from '../shared/feishu-review.js';
+import { feishuReviewCurrentOperations, feishuReviewEventId, feishuReviewItemId, withFeishuReviewFrozen } from '../shared/feishu-review.js';
 import type { Snapshot } from '../shared/types.js';
 import { reviewDayKey } from '../shared/review-plan.js';
 import type { Accounts } from './accounts.js';
@@ -50,9 +51,21 @@ export function createFeishuReviewController(options: ReviewOptions) {
       dayKey: reviewDayKey(asOf, timeZone), plan: store.getReviewPlan(),
       completedConceptIds: store.getCompletedConceptIds(asOf, timeZone) }, domainId, 5).candidates;
   }
-  function create(context: FeishuReviewContext, target: FeishuReviewTarget | null): FeishuReviewMutation {
-    const domainId = target?.kind === 'review-start' ? target.domainId : null;
+  function create(context: FeishuReviewContext, target: FeishuReviewResolvedTarget | null, command?: FeishuReviewCommand): FeishuReviewMutation {
+    const domainId = target?.kind === 'review-start' || target?.kind === 'review-batch-start' ? target.domainId : null;
     const eligible = candidates(context, domainId);
+    const limit = target?.kind === 'review-batch-start' ? target.limit : command?.kind === 'start' ? command.limit : undefined;
+    if (limit) {
+      const items = eligible.slice(0, limit).flatMap(candidate => {
+        const concept = context.source.index.concepts.find(item => item.id === candidate.conceptId);
+        return concept ? [{ id: randomUUID().replaceAll('-', ''), conceptId: concept.id,
+          sourceRevision: concept.source.revision, frozen: null, disposition: 'open' as const }] : [];
+      });
+      if (!items.length) return { kind: 'none' };
+      return { kind: 'create', id: randomUUID().replaceAll('-', ''), state: { domainId,
+        conceptId: items[0].conceptId, sourceRevision: items[0].sourceRevision, phase: 'front', paused: false,
+        page: 1, frozen: null, batch: { requestedSize: limit, cursor: 0, items } } };
+    }
     const concept = target?.kind === 'review-start'
       ? context.source.index.concepts.find(item => digest(item.id).startsWith(target.reference)
         && digest(item.source.revision).slice(0, 12) === target.revision
@@ -65,19 +78,31 @@ export function createFeishuReviewController(options: ReviewOptions) {
     return { kind: 'create', id: randomUUID().replaceAll('-', ''), state: { domainId,
       conceptId: concept.id, sourceRevision: concept.source.revision, phase: 'front', paused: false, page: 1, frozen: null } };
   }
-  function mutate(session: FeishuReviewSession, operations: FeishuReviewOperation[], target: FeishuReviewTarget | null,
+  function mutate(session: FeishuReviewSession, operations: FeishuReviewOperation[], target: FeishuReviewResolvedTarget | null,
     command: FeishuReviewCommand | undefined, context: FeishuReviewContext): FeishuReviewMutation | null {
     let verb: Extract<FeishuReviewTarget, { kind: 'review' }>['verb'] = target?.kind === 'review' ? target.verb : 'resume';
     if (command?.kind === 'pause') verb = 'pause';
     if (command?.kind === 'finish') verb = 'finish';
     const state: FeishuReviewState = { ...session.state };
     const pending = operations.some(operation => operation.status === 'pending');
-    const conflict = operations.some(operation => operation.status === 'conflict');
-    const ready = availability(session, context) === 'ready';
+    const currentOperations = feishuReviewCurrentOperations(session, operations);
+    const conflict = currentOperations.some(operation => operation.status === 'conflict');
+    const status = availability(session, context);
+    const ready = status === 'ready';
     if (verb === 'pause') return { kind: 'update', state: { ...state, paused: true } };
     if (verb === 'resume') return { kind: 'update', state: { ...state, paused: false } };
-    if (verb === 'finish') return { kind: 'update', state: pending ? state : { ...state, phase: 'finished' } };
+    if (verb === 'finish') return pending ? { kind: 'update', state } : { kind: 'finish' };
     if (verb === 'retry') return { kind: 'update', state };
+    if (verb === 'next' || verb === 'skip') {
+      // Recover the original request first; even successful recovery needs another explicit advance.
+      if (pending) return { kind: 'update', state };
+      if (!state.batch || state.paused || (status !== 'ready' && status !== 'ineligible')) return null;
+      if (verb === 'next') return state.phase === 'saved' && !conflict
+        ? { kind: 'advance', disposition: 'completed' } : null;
+      if (conflict) return { kind: 'advance', disposition: 'conflict' };
+      if (currentOperations.length || !['front', 'revealed'].includes(state.phase)) return null;
+      return { kind: 'advance', disposition: status === 'ineligible' ? 'ineligible' : 'skipped' };
+    }
     if (verb === 'show') {
       if (!ready || state.paused || pending || conflict) return { kind: 'update', state };
       return { kind: 'update', state: { ...state, page: target?.kind === 'review' ? target.page : state.page } };
@@ -88,16 +113,16 @@ export function createFeishuReviewController(options: ReviewOptions) {
       if (state.phase !== 'front' || state.frozen) return null;
       const observedAt = now().toISOString(); const config = context.store.getConfig();
       const anchor = context.store.getAnchor(state.conceptId, observedAt);
-      return { kind: 'update', state: { ...state, phase: 'revealed', page: 1, frozen: {
+      return { kind: 'update', state: { ...withFeishuReviewFrozen(state, {
         observedAt, configRevision: config.revision, halfLifeDays: config.halfLifeDays,
         anchorEventId: anchor?.sourceRevision === state.sourceRevision ? anchor.eventId : null,
-      } } };
+      }), phase: 'revealed', page: 1 } };
     }
     let intent: FeishuReviewWriteIntent;
     if (verb.startsWith('rate-')) {
-      if (state.phase !== 'revealed' || !state.frozen || operations.some(operation => operation.intent.kind === 'observation')) return null;
+      if (state.phase !== 'revealed' || !state.frozen || currentOperations.some(operation => operation.intent.kind === 'observation')) return null;
       const rating = verb === 'rate-clear' ? 'clear' : verb === 'rate-partial' ? 'partial' : 'blank';
-      intent = { kind: 'observation', request: { eventId: `feishu-observation:${session.id}`,
+      intent = { kind: 'observation', request: { eventId: feishuReviewEventId(session, 'observation'),
         conceptId: state.conceptId, sourceRevision: state.sourceRevision,
         observedAt: state.frozen.observedAt, configRevision: state.frozen.configRevision,
         anchorEventId: state.frozen.anchorEventId, answer: '', evidenceMode: 'mental', rating,
@@ -105,9 +130,9 @@ export function createFeishuReviewController(options: ReviewOptions) {
         learning: { task: 'concept', cue: 'unknown', outcome: 'unverified', basis: 'self-check', confidence: null, confidenceAt: null },
       } };
     } else if (verb === 'confirm-review') {
-      if (state.phase !== 'saved' || operations.some(operation => operation.intent.kind === 'review')
-        || !operations.some(operation => operation.intent.kind === 'observation' && operation.status === 'applied')) return null;
-      intent = { kind: 'review', request: { eventId: `feishu-review:${session.id}`, conceptId: state.conceptId,
+      if (state.phase !== 'saved' || currentOperations.some(operation => operation.intent.kind === 'review')
+        || !currentOperations.some(operation => operation.intent.kind === 'observation' && operation.status === 'applied')) return null;
+      intent = { kind: 'review', request: { eventId: feishuReviewEventId(session, 'review'), conceptId: state.conceptId,
         sourceRevision: state.sourceRevision, kind: 'review', occurredAt: now().toISOString() } };
     } else return null;
     return { kind: 'update', state, intent };
@@ -117,6 +142,7 @@ export function createFeishuReviewController(options: ReviewOptions) {
     let current = session;
     for (const operation of accounts.getFeishuReviewOperations(session.id, actor, authorization)) {
       if (operation.status !== 'pending') continue;
+      if (operation.itemId !== feishuReviewItemId(current)) continue;
       if (!accounts.isFeishuReviewVersionAuthorized(current.id, current.version, actor, authorization)
         || current.namespace !== context.source.namespace || context.store.namespace !== current.namespace) break;
       let receipt;
@@ -161,7 +187,7 @@ export function createFeishuReviewController(options: ReviewOptions) {
       }, ({ session, operations, target }) => {
         if (!session) {
           if (target?.kind === 'review' || (command && command.kind !== 'start')) return { kind: 'none' };
-          return create(context, target);
+          return create(context, target, command);
         }
         return mutate(session, operations, target, command, context);
       });

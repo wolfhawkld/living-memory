@@ -15,7 +15,7 @@ function verbs(value: FeishuReviewRenderInput) { return render(value).actions.fl
 function operation(status: FeishuReviewOperation['status'], kind: 'observation' | 'review' = 'observation'): FeishuReviewOperation {
   const request = kind === 'review' ? { eventId: 'feishu-review:' + 'a'.repeat(32), conceptId: concept.id, sourceRevision: concept.source.revision, occurredAt: '2026-10-07T00:00:00Z' }
     : { eventId: 'feishu-observation:' + 'a'.repeat(32), conceptId: concept.id, sourceRevision: concept.source.revision, observedAt: '2026-10-07T00:00:00Z', configRevision: 0, halfLifeDays: 7, anchorEventId: null, answer: '', evidenceMode: 'mental' as const, rating: 'clear' as const, exposure: 'unknown' as const, observedExposure: false };
-  return { id: request.eventId, sessionId: 'a'.repeat(32), intent: { kind, request } as FeishuReviewOperation['intent'], status, errorCode: null, createdAt: '2026-10-07T00:00:00Z', settledAt: null };
+  return { id: request.eventId, sessionId: 'a'.repeat(32), itemId: 'a'.repeat(32), intent: { kind, request } as FeishuReviewOperation['intent'], status, errorCode: null, createdAt: '2026-10-07T00:00:00Z', settledAt: null };
 }
 
 test('recall front excludes summaries, bodies, private metadata, history and write actions', () => {
@@ -128,4 +128,84 @@ test('revealed safe Unicode pages retain complete body and satisfy all wire/meta
   value.session!.state.page = 100000;
   assert.match(wire(value), /页码超出范围/);
   assert.deepEqual(verbs(value), ['show']);
+});
+
+function batchInput(size: 3 | 5 = 3): FeishuReviewRenderInput {
+  const value = input();
+  value.session!.state.batch = { requestedSize: size, cursor: 0, items: Array.from({ length: size }, (_, index) => ({
+    id: (index + 1).toString().repeat(32), conceptId: index ? `private-next-${index}` : concept.id,
+    sourceRevision: index ? `private-revision-${index}` : concept.source.revision, frozen: null, disposition: 'open' as const,
+  })) };
+  return value;
+}
+function batchOperation(value: FeishuReviewRenderInput, index: number, status: FeishuReviewOperation['status'], kind: 'observation' | 'review' = 'observation') {
+  const item = value.session!.state.batch!.items[index]; const result = operation(status, kind);
+  result.itemId = item.id; result.id += ':' + item.id;
+  result.intent.request = { ...result.intent.request, eventId: result.id, conceptId: item.conceptId, sourceRevision: item.sourceRevision };
+  return result;
+}
+
+test('batch fronts show fixed progress with explicit skipping and saved items offer independent next and rewarm', () => {
+  const value = batchInput();
+  assert.match(wire(value), /本轮第 1\/3 项/); assert.ok(verbs(value).includes('skip'));
+  assert.doesNotMatch(wire(value), /BODY_SECRET|SUMMARY_SECRET|private-next-/);
+  value.session!.state.phase = 'saved'; value.operations = [batchOperation(value, 0, 'applied')];
+  assert.deepEqual(verbs(value), ['confirm-review', 'next', 'finish']);
+  assert.match(wire(value), /"content":"下一条"/); assert.doesNotMatch(wire(value), /掌握率/);
+  const batch = value.session!.state.batch!; batch.cursor = 2;
+  value.session!.state.conceptId = batch.items[2].conceptId; value.session!.state.sourceRevision = batch.items[2].sourceRevision;
+  value.operations = [batchOperation(value, 2, 'applied')];
+  assert.match(wire(value), /"content":"完成本轮"/);
+  const short = batchInput(5); short.session!.state.batch!.items.splice(1);
+  assert.match(wire(short), /第 1\/1 项.*请求 5 项.*候选或预算不足/);
+});
+
+test('batch pending writes suppress advancing, while earlier-item conflicts never block the current grade', () => {
+  const value = batchInput(); value.session!.state.phase = 'revealed';
+  value.operations = [batchOperation(value, 0, 'pending')];
+  assert.deepEqual(verbs(value), ['retry', 'pause']); assert.doesNotMatch(wire(value), /BODY_SECRET/);
+  value.session!.state.paused = true; assert.deepEqual(verbs(value), ['resume']);
+  value.session!.state.paused = false;
+  const batch = value.session!.state.batch!; batch.cursor = 1;
+  value.session!.state.conceptId = batch.items[1].conceptId; value.session!.state.sourceRevision = batch.items[1].sourceRevision;
+  value.operations = [batchOperation(value, 0, 'conflict')];
+  assert.ok(verbs(value).includes('rate-clear')); assert.match(wire(value), /BODY_SECRET/);
+  assert.doesNotMatch(wire(value), /写入冲突|未保存\(冲突\)/);
+  value.operations.push(batchOperation(value, 1, 'conflict'));
+  assert.deepEqual(verbs(value), ['skip', 'finish']); assert.doesNotMatch(wire(value), /BODY_SECRET/);
+});
+
+test('batch ending summary distinguishes saved reports from skipped, conflicted and unstarted items without old content', () => {
+  const value = batchInput(5); const batch = value.session!.state.batch!;
+  batch.items[0].disposition = 'conflict'; batch.items[1].disposition = 'completed'; batch.items[2].disposition = 'skipped';
+  batch.items[3].disposition = 'ended'; batch.cursor = 3;
+  value.session!.state.conceptId = batch.items[3].conceptId; value.session!.state.sourceRevision = batch.items[3].sourceRevision;
+  value.session!.state.phase = 'finished';
+  value.operations = [batchOperation(value, 0, 'applied'), batchOperation(value, 0, 'conflict', 'review'),
+    batchOperation(value, 1, 'applied'), batchOperation(value, 1, 'applied', 'review')];
+  for (const availability of ['ready', 'expired', 'source-changed'] as const) {
+    value.availability = availability; value.concept = null;
+    assert.match(wire(value), /脑中自评已保存 2 项/); assert.match(wire(value), /明确确认重温已保存 1 项/);
+    assert.match(wire(value), /确认重温未保存\(冲突\) 1 项/);
+    assert.match(wire(value), /主动跳过 1 项.*冲突 1 项.*提前结束未完成 1 项.*未开始 1 项/);
+    assert.match(wire(value), /不是掌握率/); assert.match(wire(value), /不代表今日完成数/);
+    assert.deepEqual(verbs(value), []); assert.equal(render(value).actions[0].target.kind, 'due');
+    assert.doesNotMatch(wire(value), /BODY_SECRET|SUMMARY_SECRET|private-next-|private-revision|会话已过期/);
+  }
+});
+
+test('batch ineligible fronts can skip explicitly but expired or changed sources only allow ending', () => {
+  const value = batchInput(); value.availability = 'ineligible'; value.concept = null;
+  assert.deepEqual(verbs(value), ['skip', 'finish']); assert.doesNotMatch(wire(value), /BODY_SECRET/);
+  value.session!.state.paused = true; assert.deepEqual(verbs(value), ['resume', 'finish']);
+  value.session!.state.paused = false;
+  for (const availability of ['expired', 'source-changed'] as const) {
+    value.availability = availability; assert.deepEqual(verbs(value), ['finish']);
+  }
+  value.session!.state.phase = 'saved'; value.operations = [batchOperation(value, 0, 'applied')];
+  value.session!.state.domainId = '\u0001'.repeat(512);
+  const plan = render(value);
+  assert.ok(Buffer.byteLength(JSON.stringify({ view: plan.view, actions: plan.actions })) <= 12 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(plan.build('c'.repeat(64)))) <= 20 * 1024);
+  assert.ok(plan.actions.length <= 16);
 });

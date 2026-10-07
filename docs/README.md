@@ -1,6 +1,6 @@
 # Living Memory 文档导航
 
-更新：2026-10-02。当前使用从[新人运行指南](development/first-run.md)开始，项目概览见[仓库首页](../README.md)。这里保留功能、设计、研究和历史入口；有日期的测试数量与待实现描述只反映对应阶段，不代表今天的完整状态。
+更新：2026-10-07。当前使用从[新人运行指南](development/first-run.md)开始，项目概览见[仓库首页](../README.md)。这里保留功能、设计、研究和历史入口；有日期的测试数量与待实现描述只反映对应阶段，不代表今天的完整状态。
 
 ## 快速开始
 
@@ -48,7 +48,8 @@
 - [飞书账号绑定](development/feishu-account-binding.md)：FEISHU-01C 浏览器发起、本人机器人私聊确认及账号存储已实现；默认关闭、真实往返待验。
 - [飞书知识列表与正文阅读](development/feishu-knowledge-reading.md)：FEISHU-02A 本人私聊文本命令、领域 / 搜索 / 排序和纯文本分页已实现；读取不写学习记录，点击式浏览见 FEISHU-02B。
 - [飞书知识卡片与待复习查看](development/feishu-card-browsing.md)：FEISHU-02B 点击式浏览、正文分页和候选已实现；默认关闭、平台待验，只读不扣预算、不写学习记录。
-- [飞书单条脑中回忆与确认重温](development/feishu-single-review.md)：FEISHU-03A 回忆正面、显式翻卡、脑中自评、独立重温及持久暂停 / 恢复；使用共用学习记录，批次推进和真实平台验收留待后续。
+- [飞书单条脑中回忆与确认重温](development/feishu-single-review.md)：FEISHU-03A 回忆正面、显式翻卡、脑中自评、独立重温及持久暂停 / 恢复；使用共用学习记录；保留单条入口，批次推进见后续 03B，真实平台验收仍待本人完成。
+- [飞书少量批次复习](development/feishu-batch-review.md)：FEISHU-03B 固定 3 / 5 项队列、逐项冻结、显式推进 / 跳过与本轮汇总；软件实现与 828 项回归已完成；真实平台仍待本人集中验收，见说明。
 - [飞书接入离线探针](development/feishu-offline-probe.md)：官方 V2 卡片 / 回调证据、合成身份范围及协议回执检查；无联网或私人记录操作，真实应用接入仍待验证。
 
 ## 路线、主题与验证进度

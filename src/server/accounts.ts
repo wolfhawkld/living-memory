@@ -7,7 +7,8 @@ import type { FeishuActor, FeishuScope, FeishuBindingView, FeishuBindingRequestV
 import { StoreError } from './store.js';
 import type { FeishuCardDraftInput, FeishuCardStored, FeishuCardNavAction, FeishuCardView } from '../shared/feishu-cards.js';
 import type { FeishuDeliveryResult, FeishuReadAuthorization } from '../shared/feishu-reading.js';
-import type { FeishuReviewState, FeishuReviewSession, FeishuReviewOperation, FeishuReviewWriteIntent, FeishuReviewTrigger, FeishuReviewMutation, FeishuReviewTransitionContext, FeishuReviewTransitionResult, FeishuReviewTarget } from '../shared/feishu-review.js';
+import { feishuReviewItemId, feishuReviewEventId, feishuReviewCurrentOperations } from '../shared/feishu-review.js';
+import type { FeishuReviewState, FeishuReviewSession, FeishuReviewOperation, FeishuReviewWriteIntent, FeishuReviewTrigger, FeishuReviewMutation, FeishuReviewTransitionContext, FeishuReviewTransitionResult, FeishuReviewTarget, FeishuReviewResolvedTarget } from '../shared/feishu-review.js';
 
 const PASSWORD_MIN_LENGTH = 12;
 const PASSWORD_MAX_LENGTH = 256;
@@ -110,12 +111,13 @@ function validCardView(value: unknown, allowRead = true): value is FeishuCardVie
 function validReviewTarget(value: unknown): value is FeishuReviewTarget {
   if (!value || typeof value !== 'object') return false;
   const target = value as Record<string, unknown>;
+  if (target.kind === 'review-batch-start') return strictKeys(value,['kind']);
   if (target.kind === 'review-start') return strictKeys(value, ['kind','reference','revision','domainId'])
     && typeof target.reference === 'string' && /^[a-f0-9]{12,64}$/.test(target.reference)
     && typeof target.revision === 'string' && /^[a-f0-9]{12}$/.test(target.revision) && cardDomain(target.domainId);
   return target.kind === 'review' && strictKeys(value, ['kind','sessionId','version','verb','page'])
     && validCardId(target.sessionId) && positiveInteger(target.version) && cardPage(target.page)
-    && ['show','reveal','rate-clear','rate-partial','rate-blank','confirm-review','pause','resume','finish','retry'].includes(target.verb as string);
+    && ['show','reveal','rate-clear','rate-partial','rate-blank','confirm-review','pause','resume','finish','retry','next','skip'].includes(target.verb as string);
 }
 function positiveInteger(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) > 0; }
 function reviewInstant(value: unknown): value is string {
@@ -125,16 +127,40 @@ function reviewInstant(value: unknown): value is string {
 function metadataBudget(value: unknown): boolean {
   try { return Buffer.byteLength(JSON.stringify(value), 'utf8') <= 16 * 1024; } catch { return false; }
 }
+function validReviewFrozen(value: unknown): boolean {
+  return value === null || (strictKeys(value,['observedAt','configRevision','halfLifeDays','anchorEventId'])
+    && reviewInstant(value.observedAt) && positiveInteger(value.configRevision) && typeof value.halfLifeDays === 'number'
+    && Number.isFinite(value.halfLifeDays) && value.halfLifeDays > 0
+    && (value.anchorEventId === null || validFeishuText(value.anchorEventId)));
+}
 function validReviewState(value: unknown): value is FeishuReviewState {
-  if (!strictKeys(value,['domainId','conceptId','sourceRevision','phase','paused','page','frozen'])
-      || !cardDomain(value.domainId) || !validFeishuText(value.conceptId) || !validFeishuText(value.sourceRevision)
+  const fields = ['domainId','conceptId','sourceRevision','phase','paused','page','frozen'];
+  if (value && typeof value === 'object' && Object.hasOwn(value,'batch')) fields.push('batch');
+  if (!strictKeys(value,fields) || !cardDomain(value.domainId) || !validFeishuText(value.conceptId) || !validFeishuText(value.sourceRevision)
       || !['front','revealed','saved','finished'].includes(value.phase as string) || typeof value.paused !== 'boolean'
-      || !cardPage(value.page) || !metadataBudget(value)) return false;
-  const f = value.frozen;
-  return f === null || (strictKeys(f,['observedAt','configRevision','halfLifeDays','anchorEventId'])
-    && reviewInstant(f.observedAt) && positiveInteger(f.configRevision) && typeof f.halfLifeDays === 'number'
-    && Number.isFinite(f.halfLifeDays) && f.halfLifeDays > 0
-    && (f.anchorEventId === null || validFeishuText(f.anchorEventId)));
+      || !cardPage(value.page) || !metadataBudget(value) || !validReviewFrozen(value.frozen)) return false;
+  if (!Object.hasOwn(value,'batch')) return true;
+  const batch = value.batch;
+  if (!strictKeys(batch,['requestedSize','cursor','items']) || ![3,5].includes(batch.requestedSize as number)
+      || !Array.isArray(batch.items) || batch.items.length < 1 || batch.items.length > (batch.requestedSize as number)
+      || !Number.isSafeInteger(batch.cursor) || (batch.cursor as number) < 0 || (batch.cursor as number) >= batch.items.length) return false;
+  const ids = new Set<string>(); const concepts = new Set<string>();
+  for (const [index,item] of batch.items.entries()) {
+    if (!strictKeys(item,['id','conceptId','sourceRevision','frozen','disposition']) || !validCardId(item.id)
+        || !validFeishuText(item.conceptId) || !validFeishuText(item.sourceRevision) || ids.has(item.id) || concepts.has(item.conceptId)
+        || !validReviewFrozen(item.frozen) || !['open','completed','skipped','ineligible','conflict','ended'].includes(item.disposition as string)) return false;
+    ids.add(item.id); concepts.add(item.conceptId);
+    if (index < (batch.cursor as number) && item.disposition === 'open') return false;
+    if (index > (batch.cursor as number) && (item.disposition !== 'open' || item.frozen !== null)) return false;
+    if (index === batch.cursor) {
+      if (item.conceptId !== value.conceptId || item.sourceRevision !== value.sourceRevision
+          || stableReviewJson(item.frozen) !== stableReviewJson(value.frozen)) return false;
+      if ((value.phase === 'finished') === (item.disposition === 'open')) return false;
+      if (value.phase === 'front' && item.frozen !== null) return false;
+      if (['revealed','saved'].includes(value.phase as string) && item.frozen === null) return false;
+    }
+  }
+  return true;
 }
 function stableReviewJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -149,7 +175,7 @@ function validReviewIntent(value: unknown, session: FeishuReviewSession): value 
   if (value.kind === 'observation') {
     if (!strictKeys(r,['eventId','conceptId','sourceRevision','observedAt','configRevision','anchorEventId','answer','evidenceMode','rating','exposure','observedExposure','learning'])
         || state.phase !== 'revealed' || state.paused || !state.frozen
-        || r.eventId !== `feishu-observation:${session.id}` || r.conceptId !== state.conceptId || r.sourceRevision !== state.sourceRevision
+        || r.eventId !== feishuReviewEventId(session,'observation') || r.conceptId !== state.conceptId || r.sourceRevision !== state.sourceRevision
         || r.observedAt !== state.frozen.observedAt || r.configRevision !== state.frozen.configRevision || r.anchorEventId !== state.frozen.anchorEventId
         || r.answer !== '' || r.evidenceMode !== 'mental' || !['clear','partial','blank'].includes(r.rating as string)
         || r.exposure !== 'unknown' || r.observedExposure !== false) return false;
@@ -158,7 +184,7 @@ function validReviewIntent(value: unknown, session: FeishuReviewSession): value 
       && r.learning.basis === 'self-check' && r.learning.confidence === null && r.learning.confidenceAt === null;
   }
   return value.kind === 'review' && strictKeys(r,['eventId','conceptId','sourceRevision','kind','occurredAt'])
-    && state.phase === 'saved' && !state.paused && r.eventId === `feishu-review:${session.id}`
+    && state.phase === 'saved' && !state.paused && r.eventId === feishuReviewEventId(session,'review')
     && r.conceptId === state.conceptId && r.sourceRevision === state.sourceRevision && r.kind === 'review' && reviewInstant(r.occurredAt);
 }
 
@@ -353,16 +379,17 @@ export class Accounts {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS feishu_review_current ON feishu_review_sessions(binding_id, namespace) WHERE phase != 'finished';
       CREATE TABLE IF NOT EXISTS feishu_review_operations (
-        id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES feishu_review_sessions(id),
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES feishu_review_sessions(id), item_id TEXT NOT NULL,
         kind TEXT NOT NULL CHECK(kind IN ('observation','review')), intent_json TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('pending','applied','conflict')),
         error_code TEXT, created_at TEXT NOT NULL, settled_at TEXT,
-        UNIQUE(session_id, kind)
+        UNIQUE(session_id, item_id, kind)
       );
       CREATE INDEX IF NOT EXISTS feishu_cards_by_user ON feishu_card_views(user_id);
       CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id);
       CREATE INDEX IF NOT EXISTS sessions_by_expiry ON sessions(expires_at);
     `);
+    this.migrateFeishuReviewItems();
     chmodSync(this.dbPath, 0o600);
     this.purgeExpiredSessions(iso(nowDate(this.now)));
   }
@@ -887,6 +914,34 @@ export class Accounts {
     });
   }
 
+  /** Add per-item journals without rewriting legacy session state or immutable intents. */
+  private migrateFeishuReviewItems(): void {
+    const columns = this.db.prepare('PRAGMA table_info(feishu_review_operations)').all();
+    if (columns.some(column => column.name === 'item_id')) return;
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      if (this.db.prepare('PRAGMA table_info(feishu_review_operations)').all().some(column=>column.name === 'item_id')) {
+        this.db.exec('COMMIT');
+        return;
+      }
+      this.db.exec(`ALTER TABLE feishu_review_operations RENAME TO feishu_review_operations_legacy_03b;
+        CREATE TABLE feishu_review_operations (
+          id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES feishu_review_sessions(id), item_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('observation','review')), intent_json TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('pending','applied','conflict')),
+          error_code TEXT, created_at TEXT NOT NULL, settled_at TEXT,
+          UNIQUE(session_id,item_id,kind)
+        );
+        INSERT INTO feishu_review_operations(id,session_id,item_id,kind,intent_json,status,error_code,created_at,settled_at)
+          SELECT id,session_id,session_id,kind,intent_json,status,error_code,created_at,settled_at FROM feishu_review_operations_legacy_03b;
+        DROP TABLE feishu_review_operations_legacy_03b;
+        COMMIT;`);
+    } catch {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve fixed migration error */ }
+      throw accountError('WRITE_FAILED','飞书复习记录迁移暂时无法完成。',503);
+    }
+  }
+
   private reviewSessionById(id: string): FeishuReviewSession | null {
     const row = this.db.prepare('SELECT * FROM feishu_review_sessions WHERE id = ?').get(id);
     if (!row) return null;
@@ -908,7 +963,7 @@ export class Accounts {
 
   private reviewOperations(sessionId: string): FeishuReviewOperation[] {
     return this.db.prepare('SELECT * FROM feishu_review_operations WHERE session_id = ? ORDER BY created_at, id').all(sessionId).map(row => ({
-      id: row.id as string, sessionId: row.session_id as string, intent: JSON.parse(row.intent_json as string) as FeishuReviewWriteIntent,
+      id: row.id as string, sessionId: row.session_id as string, itemId: (row.item_id ?? row.session_id) as string, intent: JSON.parse(row.intent_json as string) as FeishuReviewWriteIntent,
       status: row.status as FeishuReviewOperation['status'], errorCode: row.error_code as string | null,
       createdAt: row.created_at as string, settledAt: row.settled_at as string | null,
     }));
@@ -958,7 +1013,7 @@ export class Accounts {
       const session = this.getFeishuReviewSession(actor, auth, scope.namespace);
       if (session && session.originChatId !== scope.originChatId) return null;
       const operations = session ? this.reviewOperations(session.id) : [];
-      let target: FeishuReviewTarget | null = null;
+      let target: FeishuReviewResolvedTarget | null = null;
       let card: FeishuCardStored | null = null;
       if (trigger.kind === 'card') {
         card = this.getFeishuCardForAction(trigger.action);
@@ -966,7 +1021,10 @@ export class Accounts {
             || card.sourceFingerprint !== scope.sourceFingerprint || card.originChatId !== scope.originChatId) return null;
         const candidate = card.actions.find(action => action.id === trigger.action.actionId)?.target;
         if (!validReviewTarget(candidate)) return null;
-        target = candidate;
+        if (candidate.kind === 'review-batch-start') {
+          if (card.view.kind !== 'due') return null;
+          target = { ...candidate,domainId:card.view.domainId,limit:card.view.limit };
+        } else target = candidate;
         if (target.kind === 'review' && (!session || target.sessionId !== session.id || target.version !== session.version)) return null;
       }
       const operationId = trigger.kind === 'message'
@@ -986,6 +1044,7 @@ export class Accounts {
       if (mutation.kind === 'create') {
         if (!strictKeys(mutation,['kind','id','state']) || session || !validCardId(mutation.id) || !validReviewState(mutation.state)
             || mutation.state.phase !== 'front' || mutation.state.paused || mutation.state.page !== 1 || mutation.state.frozen !== null
+            || (mutation.state.batch && mutation.state.batch.cursor !== 0)
             || this.db.prepare('SELECT 1 FROM feishu_review_sessions WHERE id = ?').get(mutation.id)) return null;
         next = { id: mutation.id, actor: { ...actor }, authorization: { ...auth }, ...scope, createdAt: now,
           expiresAt: iso(new Date(Date.parse(now) + 24 * 60 * 60_000)), version: 1, state: mutation.state };
@@ -995,6 +1054,14 @@ export class Accounts {
         const before = session.state; const after = mutation.state;
         if (after.domainId !== before.domainId || after.conceptId !== before.conceptId || after.sourceRevision !== before.sourceRevision) return null;
         if (before.frozen !== null && stableReviewJson(after.frozen) !== stableReviewJson(before.frozen)) return null;
+        if (!!before.batch !== !!after.batch) return null;
+        if (before.batch && after.batch) {
+          if (before.batch.cursor !== after.batch.cursor || before.batch.requestedSize !== after.batch.requestedSize
+              || after.phase === 'finished') return null;
+          const unchanged = { ...after.batch,items:after.batch.items.map((item,index)=>index === before.batch!.cursor
+            ? { ...item,frozen:before.batch!.items[index]!.frozen } : item) };
+          if (stableReviewJson(unchanged) !== stableReviewJson(before.batch)) return null;
+        }
         const reveal = before.phase === 'front' && after.phase === 'revealed';
         if (before.frozen === null && after.frozen !== null && !reveal) return null;
         if (reveal && (before.paused || after.paused || !after.frozen || after.frozen.observedAt > now
@@ -1006,12 +1073,39 @@ export class Accounts {
           if (!validReviewIntent(mutation.intent,next)) return null;
           if (mutation.intent.kind === 'observation' && before.phase !== 'revealed') return null;
           if (mutation.intent.kind === 'review' && (before.phase !== 'saved'
-              || !operations.some(operation => operation.intent.kind === 'observation' && operation.status === 'applied'))) return null;
-          const existing = operations.find(operation => operation.intent.kind === mutation.intent!.kind);
+              || !feishuReviewCurrentOperations(session,operations).some(operation => operation.intent.kind === 'observation' && operation.status === 'applied'))) return null;
+          const existing = feishuReviewCurrentOperations(session,operations).find(operation => operation.intent.kind === mutation.intent!.kind);
           if (existing && stableReviewJson(existing.intent) !== stableReviewJson(mutation.intent)) return null;
-          if (!existing && (session.expiresAt <= now || session.sourceFingerprint !== scope.sourceFingerprint)) return null;
+          if (!existing && (session.expiresAt <= now || session.sourceFingerprint !== scope.sourceFingerprint
+              || operations.some(operation=>operation.status === 'pending'))) return null;
           if (!existing) newIntent = mutation.intent;
         }
+      } else if (mutation.kind === 'advance' || mutation.kind === 'finish') {
+        const advance = mutation.kind === 'advance';
+        if (!strictKeys(mutation,advance ? ['kind','disposition'] : ['kind']) || !session
+            || session.version >= Number.MAX_SAFE_INTEGER || operations.some(operation=>operation.status === 'pending')) return null;
+        const state = session.state; const current = feishuReviewCurrentOperations(session,operations);
+        const conflict = current.some(operation=>operation.status === 'conflict');
+        const completed = current.some(operation=>operation.intent.kind === 'observation' && operation.status === 'applied');
+        if (advance) {
+          if (!state.batch || state.paused || session.expiresAt <= now || session.sourceFingerprint !== scope.sourceFingerprint
+              || !['completed','skipped','ineligible','conflict'].includes(mutation.disposition)) return null;
+          if (mutation.disposition === 'completed' && (state.phase !== 'saved' || !completed || conflict)) return null;
+          if (mutation.disposition === 'skipped' && (!['front','revealed'].includes(state.phase) || current.length !== 0)) return null;
+          if (mutation.disposition === 'ineligible' && (state.phase !== 'front' || state.frozen !== null || current.length !== 0)) return null;
+          if (mutation.disposition === 'conflict' && !conflict) return null;
+          const last = state.batch.cursor === state.batch.items.length - 1;
+          const items = state.batch.items.map((item,index)=>index === state.batch!.cursor ? { ...item,disposition:mutation.disposition } : item);
+          const cursor = last ? state.batch.cursor : state.batch.cursor + 1;
+          const item = items[cursor]!;
+          next = { ...session,version:session.version+1,state:{ ...state,conceptId:item.conceptId,sourceRevision:item.sourceRevision,
+            frozen:item.frozen,phase:last ? 'finished' : 'front',page:1,batch:{ ...state.batch,cursor,items } } };
+        } else {
+          const disposition = conflict ? 'conflict' : completed ? 'completed' : 'ended';
+          next = { ...session,version:session.version+1,state:{ ...state,phase:'finished',...(state.batch ? { batch:{ ...state.batch,
+            items:state.batch.items.map((item,index)=>index === state.batch!.cursor ? { ...item,disposition } : item) } } : {}) } };
+        }
+        if (!validReviewState(next.state)) return null;
       } else if (mutation.kind !== 'none' || !strictKeys(mutation,['kind'])) return null;
       const receipt = this.db.prepare("INSERT OR IGNORE INTO feishu_read_receipts(operation_id,user_id,created_at,status) VALUES(?,?,?,'attempted')")
         .run(operationId,auth.userId,now);
@@ -1022,13 +1116,13 @@ export class Accounts {
           namespace,source_fingerprint,origin_chat_id,created_at,expires_at,version,phase,state_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
           .run(next.id,auth.userId,auth.accessRevision,auth.bindingId,actor.appId,actor.tenantKey,actor.openId,
             next.namespace,next.sourceFingerprint,next.originChatId,next.createdAt,next.expiresAt,next.version,next.state.phase,JSON.stringify(next.state));
-      } else if (mutation.kind === 'update' && next && session) {
+      } else if (['update','advance','finish'].includes(mutation.kind) && next && session) {
         const changed = this.db.prepare('UPDATE feishu_review_sessions SET version = ?, phase = ?, state_json = ? WHERE id = ? AND version = ?')
           .run(next.version,next.state.phase,JSON.stringify(next.state),next.id,session.version);
         if (changed.changes !== 1) throw new Error('Review version changed');
       }
-      if (newIntent && next) this.db.prepare(`INSERT INTO feishu_review_operations(id,session_id,kind,intent_json,status,created_at)
-        VALUES(?,?,?,?,'pending',?)`).run(newIntent.request.eventId,next.id,newIntent.kind,stableReviewJson(newIntent),now);
+      if (newIntent && next) this.db.prepare(`INSERT INTO feishu_review_operations(id,session_id,item_id,kind,intent_json,status,created_at)
+        VALUES(?,?,?,?,?,'pending',?)`).run(newIntent.request.eventId,next.id,feishuReviewItemId(next),newIntent.kind,stableReviewJson(newIntent),now);
       return { operationId, session: next ? this.reviewSessionById(next.id) : null, operations: next ? this.reviewOperations(next.id) : [] };
     });
   }
@@ -1037,7 +1131,7 @@ export class Accounts {
     result: { status: 'applied' | 'conflict'; errorCode?: string }): FeishuReviewSession | null {
     const safeCodes = ['EVENT_CONFLICT','ANCHOR_CONFLICT','CONFIG_REVISION_UNKNOWN','SOURCE_CHANGED','WRITE_FAILED','SESSION_EXPIRED',
       'STATE_CONFLICT','CONFIG_CONFLICT','SOURCE_MISMATCH','FUTURE_OBSERVATION','FUTURE_EVENT'];
-    if (typeof operationId !== 'string' || !/^feishu-(?:observation|review):[a-f0-9]{32}$/.test(operationId) || !result
+    if (typeof operationId !== 'string' || !/^feishu-(?:observation|review):[a-f0-9]{32}(?::[a-f0-9]{32})?$/.test(operationId) || !result
         || !strictKeys(result,Object.hasOwn(result,'errorCode') ? ['status','errorCode'] : ['status'])
         || !['applied','conflict'].includes(result.status)) return null;
     if (result.status === 'applied' && result.errorCode != null) return null;
@@ -1050,7 +1144,7 @@ export class Accounts {
       if (!session || !this.sameReviewOwner(session,actor,auth)) return null;
       const operation = this.reviewOperations(session.id).find(item => item.id === operationId)!;
       if (operation.status !== 'pending') return operation.status === result.status && operation.errorCode === errorCode ? session : null;
-      if (session.version >= Number.MAX_SAFE_INTEGER || session.state.phase === 'finished') return null;
+      if (session.version >= Number.MAX_SAFE_INTEGER || session.state.phase === 'finished' || operation.itemId !== feishuReviewItemId(session)) return null;
       if (operation.intent.kind === 'observation' && session.state.phase !== 'revealed') return null;
       if (operation.intent.kind === 'review' && session.state.phase !== 'saved') return null;
       const state = { ...session.state, ...(result.status === 'applied' && operation.intent.kind === 'observation' ? { phase: 'saved' as const } : {}) };

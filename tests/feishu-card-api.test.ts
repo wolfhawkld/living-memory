@@ -318,6 +318,39 @@ test('private SDK review writes the member learning Store visible to Web without
   } finally { await c?.connector.stop(); await f.close(); }
 });
 
+test('private SDK batch shares both item records with member Web while owner data remains isolated', async () => {
+  const f = await fixture(); let c: Awaited<ReturnType<typeof channel>> | undefined;
+  try {
+    const users = await f.users(); const snapshot = (await f.send('/api/snapshot?scope=all', users.member)).body;
+    assert.equal(snapshot.concepts.length, 2);
+    for (const concept of snapshot.concepts as Concept[]) assert.equal((await f.send('/api/reviews', { ...users.member, method: 'POST', body: {
+      eventId: `member-batch-anchor-${concept.title}`, conceptId: concept.id, sourceRevision: concept.source.revision,
+      kind: 'review', occurredAt: '2026-09-01T00:00:00Z',
+    } })).status, 201);
+    const ownerBefore = (await f.send('/api/export', users.owner)).body;
+    c = await channel(f); await c.message(input('知识 复习 3', 'shared-batch'));
+    assert.match(JSON.stringify(c.sent.at(-1)!.card), /第 1\/2 项/);
+    assert.doesNotMatch(JSON.stringify(c.sent.at(-1)!.card), /Member-private|OwnerOnly/);
+    for (const index of [0, 1]) {
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '查看资料'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, index ? '脑中回忆模糊' : '脑中回忆清楚'));
+      if (!index) await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '确认已重温，更新时间'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, index ? '完成本轮' : '下一条'));
+    }
+    const after = (await f.send('/api/export', users.member)).body;
+    assert.equal(after.observations.length, 2); assert.equal(after.anchors.length, 3);
+    assert.equal(new Set(after.observations.map((entry: { conceptId: string }) => entry.conceptId)).size, 2);
+    assert.ok(after.observations.every((entry: { eventId: string; evidenceMode: string; answer: string }) =>
+      /^feishu-observation:[a-f0-9]{32}:[a-f0-9]{32}$/.test(entry.eventId) && entry.evidenceMode === 'mental' && entry.answer === ''));
+    const progress = (await f.send('/api/review-plan', users.member)).body;
+    assert.equal(progress.completedConceptIds.length, 2);
+    assert.match(JSON.stringify(c.sent.at(-1)!.card), /脑中自评已保存 2 项/);
+    assert.match(JSON.stringify(c.sent.at(-1)!.card), /明确确认重温已保存 1 项/);
+    const ownerAfter = (await f.send('/api/export', users.owner)).body;
+    for (const key of learningKeys) assert.deepEqual(ownerAfter[key], ownerBefore[key], `private member batch ${key}`);
+  } finally { await c?.connector.stop(); await f.close(); }
+});
+
 test('card capabilities reject unconfigured, local-only and invalid-time-zone modes', async () => {
   for (const options of [{ configured: false }, { accountsEnabled: false }, { timeZone: 'not/a-zone' }]) {
     const f = await fixture(options);

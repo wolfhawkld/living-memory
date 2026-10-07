@@ -152,7 +152,7 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
         const sourceFingerprint = feishuCardSourceFingerprint(context.source);
         if (stored.namespace !== context.source.namespace || stored.sourceFingerprint !== sourceFingerprint) return null;
         const target = stored.actions.find(entry => entry.id === action.actionId)!.target;
-        if (target.kind === 'review' || target.kind === 'review-start') {
+        if (target.kind === 'review' || target.kind === 'review-start' || target.kind === 'review-batch-start') {
           const reviewed = reviews!.prepare(action, authorization, { kind: 'card', action }, context);
           return reviewed ? preparePlan(action, authorization, context, reviewed.plan.view, reviewed.plan,
             stored.originChatId, reviewed.operationId, reviewed.stillAuthorized) : null;
@@ -160,7 +160,7 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
         const claimed = accounts!.claimFeishuCardAction(action, authorization,
           { cardId: stored.id, namespace: context.source.namespace, sourceFingerprint });
         if (!claimed) return null;
-        if (claimed.target.kind === 'review' || claimed.target.kind === 'review-start') return null;
+        if (claimed.target.kind === 'review' || claimed.target.kind === 'review-start' || claimed.target.kind === 'review-batch-start') return null;
         return prepare({ appId: action.appId, tenantKey: action.tenantKey, openId: action.openId }, authorization,
           context, claimed.target, stored.originChatId, claimed.operationId);
       } catch { return null; }
