@@ -39,15 +39,16 @@
 
 ## 数据、历史衔接与日常通道
 
-- [回忆作答方式与回归结果](development/observation-evidence-mode.md)：脑中自报 / 书面记录 / 旧缺失方式的证据区别、迁移与恢复兼容；飞书复习写回尚未接入。
+- [回忆作答方式与回归结果](development/observation-evidence-mode.md)：脑中自报 / 书面记录 / 旧缺失方式的证据区别、迁移与恢复兼容。
 - [学习数据导入恢复](development/learning-data-import.md)：JSON 预览、来源/版本对应、重复与冲突检查、事务恢复及导入前备份。
 - [概念改名与移动后的历史衔接](development/concept-identity.md)：人工预览确认路径对应，保留原学习时间与稳定身份，支持连续移动、冲突诊断和绑定前备份。
 - [待同步协调与超时恢复](development/pending-sync.md)：按知识空间协调多个页面的队列；参数请求可按历史版本重复确认；请求超时保留原记录并释放同步锁。更新后需刷新所有项目页面。
 - [CLI 与 KG 日常触发](development/cli-and-kg-triggers.md)：查询、明确确认重温、重试、Agent 收尾钩子与页面变化通知。
 - [飞书连接器基础](development/feishu-connector.md)：FEISHU-01B 官方 SDK 长连接默认关闭，配置、readiness、固定回执和停止边界已接入；已补齐一次性账号绑定，真实平台接入待验。
 - [飞书账号绑定](development/feishu-account-binding.md)：FEISHU-01C 浏览器发起、本人机器人私聊确认及账号存储已实现；默认关闭、真实往返待验。
-- [飞书知识列表与正文阅读](development/feishu-knowledge-reading.md)：FEISHU-02A 本人私聊文本命令、领域 / 搜索 / 排序和纯文本分页已实现；读取不写学习记录；点击式浏览见 FEISHU-02B，复习写回仍待开发。
+- [飞书知识列表与正文阅读](development/feishu-knowledge-reading.md)：FEISHU-02A 本人私聊文本命令、领域 / 搜索 / 排序和纯文本分页已实现；读取不写学习记录，点击式浏览见 FEISHU-02B。
 - [飞书知识卡片与待复习查看](development/feishu-card-browsing.md)：FEISHU-02B 点击式浏览、正文分页和候选已实现；默认关闭、平台待验，只读不扣预算、不写学习记录。
+- [飞书单条脑中回忆与确认重温](development/feishu-single-review.md)：FEISHU-03A 回忆正面、显式翻卡、脑中自评、独立重温及持久暂停 / 恢复；使用共用学习记录，批次推进和真实平台验收留待后续。
 - [飞书接入离线探针](development/feishu-offline-probe.md)：官方 V2 卡片 / 回调证据、合成身份范围及协议回执检查；无联网或私人记录操作，真实应用接入仍待验证。
 
 ## 路线、主题与验证进度

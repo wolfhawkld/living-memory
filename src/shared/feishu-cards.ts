@@ -1,14 +1,16 @@
 import type { FeishuActor } from './feishu-binding.js';
 import type { FeishuReadAuthorization } from './feishu-reading.js';
+import type { FeishuReviewTarget } from './feishu-review.js';
 
 export const FEISHU_CARD_NAV_KIND = 'lm.nav.v1' as const;
 export type FeishuCardCollection =
   | { kind: 'domains'; page: number }
   | { kind: 'list'; domainId: string | null; query: string; sort: 'elapsed' | 'title'; page: number }
   | { kind: 'due'; domainId: string | null; limit: 3 | 5 };
-export type FeishuCardView = FeishuCardCollection
+export type FeishuBrowseView = FeishuCardCollection
   | { kind: 'help' }
   | { kind: 'read'; reference: string; page: number; revision: string; back: Exclude<FeishuCardCollection, { kind: 'domains' }> };
+export type FeishuCardView = FeishuBrowseView | FeishuReviewTarget;
 
 export interface FeishuCardNavAction extends FeishuActor {
   eventId: string;

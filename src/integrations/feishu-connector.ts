@@ -3,6 +3,7 @@ import { parseFeishuConfig, type FeishuConfigErrorCode } from './feishu-config.j
 import { normalizeFeishuSdkCardAction } from './feishu-events.js';
 import { normalizeFeishuCardNavigation } from './feishu-card-actions.js';
 import { parseFeishuCardCommand } from './feishu-card-commands.js';
+import { parseFeishuReviewCommand } from './feishu-review-commands.js';
 import { normalizeFeishuBindingMessage, normalizeFeishuReadMessage } from './feishu-messages.js';
 import type { FeishuActor, FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuChannelState } from '../shared/feishu-binding.js';
 import type { FeishuDeliveryResult, FeishuReadMessage } from '../shared/feishu-reading.js';
@@ -48,7 +49,7 @@ function bindingNotReady(): FeishuCardResponse {
   return { toast: { type: 'info', content: '知识卡片操作尚未接入，请等待后续功能。' } };
 }
 
-/** Authenticated binding and bounded read capabilities; no learning-write capability. */
+/** Authenticated binding, browsing and explicit single-review capabilities. */
 export function createFeishuConnector(options: FeishuConnectorOptions): FeishuConnector {
   const configuration = parseFeishuConfig(options.env);
   const factory = options.driverFactory ?? createFeishuSdkDriverFactory();
@@ -170,7 +171,8 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
       }
       const input = normalizeFeishuReadMessage(event, configuration.value);
       if (!input) return;
-      const isCard = options.prepareCardMessage && parseFeishuCardCommand(input.text) !== null;
+      const isCard = options.prepareCardMessage
+        && (parseFeishuCardCommand(input.text) !== null || parseFeishuReviewCommand(input.text) !== null);
       if (!isCard && !options.prepareReading) return;
       const entry = admit(input);
       if (!entry) return;

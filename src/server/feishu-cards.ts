@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto';
 import type { FeishuActor, FeishuScope } from '../shared/feishu-binding.js';
-import type { FeishuCardDelivery, FeishuCardNavAction, FeishuCardPayload, FeishuCardStored, FeishuCardView } from '../shared/feishu-cards.js';
+import type { FeishuBrowseView, FeishuCardDelivery, FeishuCardNavAction, FeishuCardPayload, FeishuCardStored, FeishuCardView } from '../shared/feishu-cards.js';
 import type { FeishuReadAuthorization, FeishuReadMessage } from '../shared/feishu-reading.js';
 import type { Accounts } from './accounts.js';
 import type { KnowledgeSource } from './kg.js';
 import type { Store } from './store.js';
 import { reviewDayKey } from '../shared/review-plan.js';
 import { parseFeishuCardCommand } from '../integrations/feishu-card-commands.js';
-import { planFeishuCardView } from './feishu-card-view.js';
+import { parseFeishuReviewCommand } from '../integrations/feishu-review-commands.js';
+import { planFeishuCardView, type FeishuCardViewPlan } from './feishu-card-view.js';
+import { createFeishuReviewController } from './feishu-review.js';
 import { feishuReadOperationId } from './feishu-reading.js';
 
 export interface PreparedFeishuCardReply {
@@ -19,7 +21,7 @@ export interface PreparedFeishuCardReply {
   settle: (delivery: FeishuCardDelivery) => void;
 }
 
-interface CardContext { source: KnowledgeSource; store: Store }
+interface CardContext { source: KnowledgeSource; store: Store; publish?: (reason: 'observation' | 'review') => void }
 interface CardCapabilitiesOptions {
   accounts: Accounts | null;
   scope: FeishuScope | null;
@@ -55,6 +57,7 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
   let zoneValid = false;
   try { zoneValid = typeof timeZone === 'string' && timeZone.length <= 128
     && !!new Intl.DateTimeFormat('en-CA', { timeZone }).format(new Date(0)); } catch { /* Disabled card capability. */ }
+  const reviews = accounts ? createFeishuReviewController({ accounts, now, timeZone, fingerprint: feishuCardSourceFingerprint }) : null;
   function authorized(actor: FeishuActor): FeishuReadAuthorization | null {
     if (!accounts || !scope || !zoneValid || !actor || actor.appId !== scope.appId || actor.tenantKey !== scope.tenantKey || !validId(actor.openId)) return null;
     const user = accounts.resolveFeishuAccount(actor);
@@ -67,15 +70,20 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
     return !!current && current.userId === expected.userId && current.accessRevision === expected.accessRevision && current.bindingId === expected.bindingId;
   }
   function prepare(actor: FeishuActor, authorization: FeishuReadAuthorization, context: CardContext,
-    view: FeishuCardView, originChatId: string, operationId: string): PreparedFeishuCardReply | null {
+    view: FeishuBrowseView, originChatId: string, operationId: string): PreparedFeishuCardReply | null {
+    const source = context.source; const asOf = now().toISOString();
+    const plan = planFeishuCardView(view, { concepts: source.index.concepts,
+      states: context.store.getStates(source.index.concepts, asOf), anchors: context.store.getAnchors(), asOf },
+    { sourceId: source.namespace, asOf, timeZone, dayKey: reviewDayKey(asOf, timeZone),
+      plan: context.store.getReviewPlan(), completedConceptIds: context.store.getCompletedConceptIds(asOf, timeZone) });
+    return preparePlan(actor, authorization, context, view, plan, originChatId, operationId);
+  }
+  function preparePlan(actor: FeishuActor, authorization: FeishuReadAuthorization, context: CardContext,
+    view: FeishuCardView, plan: FeishuCardViewPlan, originChatId: string, operationId: string,
+    reviewGuard: () => boolean = () => true): PreparedFeishuCardReply | null {
     let draft: FeishuCardStored | null = null;
     try {
       const source = context.source;
-      const asOf = now().toISOString();
-      const plan = planFeishuCardView(view, { concepts: source.index.concepts,
-        states: context.store.getStates(source.index.concepts, asOf), anchors: context.store.getAnchors(), asOf },
-      { sourceId: source.namespace, asOf, timeZone, dayKey: reviewDayKey(asOf, timeZone),
-        plan: context.store.getReviewPlan(), completedConceptIds: context.store.getCompletedConceptIds(asOf, timeZone) });
       draft = accounts!.createFeishuCardDraft(actor, authorization, { namespace: source.namespace,
         sourceFingerprint: feishuCardSourceFingerprint(source), originChatId, view, actions: plan.actions });
       if (!draft) throw new Error('Feishu card unavailable');
@@ -84,7 +92,7 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
       const cardId = draft.id;
       const stillAuthorized = () => {
         try { return context.source === source && sameAuthorization(actor, authorization)
-          && accounts!.isFeishuCardDraftAuthorized(cardId, actor, authorization); }
+          && reviewGuard() && accounts!.isFeishuCardDraftAuthorized(cardId, actor, authorization); }
         catch { return false; }
       };
       return { operationId, actor, card, expectedChatId: originChatId, stillAuthorized,
@@ -112,14 +120,21 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
       if (!message || ![message.eventId, message.messageId, message.chatId].every(validId)
         || typeof message.text !== 'string' || message.text.length > 4096) return null;
       try {
-        const view = parseFeishuCardCommand(message.text);
-        if (!view) return null;
+        const command = parseFeishuReviewCommand(message.text);
+        const view = command?.kind === 'help' ? { kind: 'help' as const } : parseFeishuCardCommand(message.text);
+        if (!command && !view) return null;
         const actor = { appId: message.appId, tenantKey: message.tenantKey, openId: message.openId };
         const authorization = authorized(actor);
         if (!authorization) return null;
+        const context = contextForUser(authorization.userId);
+        if (command && command.kind !== 'help') {
+          const reviewed = reviews!.prepare(actor, authorization, { kind: 'message', message }, context, command);
+          return reviewed ? preparePlan(actor, authorization, context, reviewed.plan.view, reviewed.plan,
+            message.chatId, reviewed.operationId, reviewed.stillAuthorized) : null;
+        }
         const operationId = feishuReadOperationId(actor, message.messageId);
         if (!accounts!.claimFeishuRead(operationId, actor, authorization)) return null;
-        try { return prepare(actor, authorization, contextForUser(authorization.userId), view, message.chatId, operationId); }
+        try { return prepare(actor, authorization, context, view!, message.chatId, operationId); }
         catch { accounts!.finishFeishuRead(operationId, authorization.userId, 'failed-or-unknown'); return null; }
       } catch { return null; }
     },
@@ -130,12 +145,22 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
         if (!authorization) return null;
         const stored = accounts!.getFeishuCardForAction(action);
         if (!stored) return null;
+        // A resumed session invalidates the entire old review card, including its browse controls.
+        if (stored.view.kind === 'review' && !accounts!.isFeishuReviewVersionAuthorized(
+          stored.view.sessionId, stored.view.version, action, authorization)) return null;
         const context = contextForUser(authorization.userId);
         const sourceFingerprint = feishuCardSourceFingerprint(context.source);
         if (stored.namespace !== context.source.namespace || stored.sourceFingerprint !== sourceFingerprint) return null;
+        const target = stored.actions.find(entry => entry.id === action.actionId)!.target;
+        if (target.kind === 'review' || target.kind === 'review-start') {
+          const reviewed = reviews!.prepare(action, authorization, { kind: 'card', action }, context);
+          return reviewed ? preparePlan(action, authorization, context, reviewed.plan.view, reviewed.plan,
+            stored.originChatId, reviewed.operationId, reviewed.stillAuthorized) : null;
+        }
         const claimed = accounts!.claimFeishuCardAction(action, authorization,
           { cardId: stored.id, namespace: context.source.namespace, sourceFingerprint });
         if (!claimed) return null;
+        if (claimed.target.kind === 'review' || claimed.target.kind === 'review-start') return null;
         return prepare({ appId: action.appId, tenantKey: action.tenantKey, openId: action.openId }, authorization,
           context, claimed.target, stored.originChatId, claimed.operationId);
       } catch { return null; }

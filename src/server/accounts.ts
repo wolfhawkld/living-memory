@@ -7,6 +7,7 @@ import type { FeishuActor, FeishuScope, FeishuBindingView, FeishuBindingRequestV
 import { StoreError } from './store.js';
 import type { FeishuCardDraftInput, FeishuCardStored, FeishuCardNavAction, FeishuCardView } from '../shared/feishu-cards.js';
 import type { FeishuDeliveryResult, FeishuReadAuthorization } from '../shared/feishu-reading.js';
+import type { FeishuReviewState, FeishuReviewSession, FeishuReviewOperation, FeishuReviewWriteIntent, FeishuReviewTrigger, FeishuReviewMutation, FeishuReviewTransitionContext, FeishuReviewTransitionResult, FeishuReviewTarget } from '../shared/feishu-review.js';
 
 const PASSWORD_MIN_LENGTH = 12;
 const PASSWORD_MAX_LENGTH = 256;
@@ -94,6 +95,7 @@ function cardDomain(value: unknown): boolean { return value === null || (typeof 
 function validCardView(value: unknown, allowRead = true): value is FeishuCardView {
   if (!value || typeof value !== 'object') return false;
   const view = value as Record<string, unknown>;
+  if (validReviewTarget(view)) return true;
   if (view.kind === 'help') return strictKeys(view,['kind']);
   if (view.kind === 'domains') return strictKeys(view,['kind','page']) && cardPage(view.page);
   if (view.kind === 'list') return strictKeys(view,['kind','domainId','query','sort','page']) && cardDomain(view.domainId)
@@ -105,6 +107,61 @@ function validCardView(value: unknown, allowRead = true): value is FeishuCardVie
     && !!view.back && ['list','due'].includes((view.back as Record<string,unknown>).kind as string) && validCardView(view.back,false);
   return false;
 }
+function validReviewTarget(value: unknown): value is FeishuReviewTarget {
+  if (!value || typeof value !== 'object') return false;
+  const target = value as Record<string, unknown>;
+  if (target.kind === 'review-start') return strictKeys(value, ['kind','reference','revision','domainId'])
+    && typeof target.reference === 'string' && /^[a-f0-9]{12,64}$/.test(target.reference)
+    && typeof target.revision === 'string' && /^[a-f0-9]{12}$/.test(target.revision) && cardDomain(target.domainId);
+  return target.kind === 'review' && strictKeys(value, ['kind','sessionId','version','verb','page'])
+    && validCardId(target.sessionId) && positiveInteger(target.version) && cardPage(target.page)
+    && ['show','reveal','rate-clear','rate-partial','rate-blank','confirm-review','pause','resume','finish','retry'].includes(target.verb as string);
+}
+function positiveInteger(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) > 0; }
+function reviewInstant(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+    && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+function metadataBudget(value: unknown): boolean {
+  try { return Buffer.byteLength(JSON.stringify(value), 'utf8') <= 16 * 1024; } catch { return false; }
+}
+function validReviewState(value: unknown): value is FeishuReviewState {
+  if (!strictKeys(value,['domainId','conceptId','sourceRevision','phase','paused','page','frozen'])
+      || !cardDomain(value.domainId) || !validFeishuText(value.conceptId) || !validFeishuText(value.sourceRevision)
+      || !['front','revealed','saved','finished'].includes(value.phase as string) || typeof value.paused !== 'boolean'
+      || !cardPage(value.page) || !metadataBudget(value)) return false;
+  const f = value.frozen;
+  return f === null || (strictKeys(f,['observedAt','configRevision','halfLifeDays','anchorEventId'])
+    && reviewInstant(f.observedAt) && positiveInteger(f.configRevision) && typeof f.halfLifeDays === 'number'
+    && Number.isFinite(f.halfLifeDays) && f.halfLifeDays > 0
+    && (f.anchorEventId === null || validFeishuText(f.anchorEventId)));
+}
+function stableReviewJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableReviewJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${stableReviewJson(record[key])}`).join(',')}}`;
+}
+function validReviewIntent(value: unknown, session: FeishuReviewSession): value is FeishuReviewWriteIntent {
+  if (!strictKeys(value,['kind','request']) || !metadataBudget(value)) return false;
+  const r = value.request;
+  const state = session.state;
+  if (value.kind === 'observation') {
+    if (!strictKeys(r,['eventId','conceptId','sourceRevision','observedAt','configRevision','anchorEventId','answer','evidenceMode','rating','exposure','observedExposure','learning'])
+        || state.phase !== 'revealed' || state.paused || !state.frozen
+        || r.eventId !== `feishu-observation:${session.id}` || r.conceptId !== state.conceptId || r.sourceRevision !== state.sourceRevision
+        || r.observedAt !== state.frozen.observedAt || r.configRevision !== state.frozen.configRevision || r.anchorEventId !== state.frozen.anchorEventId
+        || r.answer !== '' || r.evidenceMode !== 'mental' || !['clear','partial','blank'].includes(r.rating as string)
+        || r.exposure !== 'unknown' || r.observedExposure !== false) return false;
+    return strictKeys(r.learning,['task','cue','outcome','basis','confidence','confidenceAt'])
+      && r.learning.task === 'concept' && r.learning.cue === 'unknown' && r.learning.outcome === 'unverified'
+      && r.learning.basis === 'self-check' && r.learning.confidence === null && r.learning.confidenceAt === null;
+  }
+  return value.kind === 'review' && strictKeys(r,['eventId','conceptId','sourceRevision','kind','occurredAt'])
+    && state.phase === 'saved' && !state.paused && r.eventId === `feishu-review:${session.id}`
+    && r.conceptId === state.conceptId && r.sourceRevision === state.sourceRevision && r.kind === 'review' && reviewInstant(r.occurredAt);
+}
+
 function validCardDraft(value: unknown): value is FeishuCardDraftInput {
   if (!strictKeys(value,['namespace','sourceFingerprint','originChatId','view','actions'])
       || !validFeishuText(value.namespace) || !validFingerprint(value.sourceFingerprint) || !validFeishuText(value.originChatId)
@@ -285,6 +342,22 @@ export class Accounts {
         created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
         message_id TEXT, chat_id TEXT,
         status TEXT NOT NULL CHECK(status IN ('draft','active','consumed'))
+      );
+      CREATE TABLE IF NOT EXISTS feishu_review_sessions (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES accounts(id),
+        account_access_revision INTEGER NOT NULL, binding_id TEXT NOT NULL,
+        app_id TEXT NOT NULL, tenant_key TEXT NOT NULL, open_id TEXT NOT NULL,
+        namespace TEXT NOT NULL, source_fingerprint TEXT NOT NULL, origin_chat_id TEXT NOT NULL,
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL, version INTEGER NOT NULL,
+        phase TEXT NOT NULL CHECK(phase IN ('front','revealed','saved','finished')), state_json TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS feishu_review_current ON feishu_review_sessions(binding_id, namespace) WHERE phase != 'finished';
+      CREATE TABLE IF NOT EXISTS feishu_review_operations (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES feishu_review_sessions(id),
+        kind TEXT NOT NULL CHECK(kind IN ('observation','review')), intent_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','applied','conflict')),
+        error_code TEXT, created_at TEXT NOT NULL, settled_at TEXT,
+        UNIQUE(session_id, kind)
       );
       CREATE INDEX IF NOT EXISTS feishu_cards_by_user ON feishu_card_views(user_id);
       CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id);
@@ -811,6 +884,184 @@ export class Accounts {
       if (!receipt.changes) return null;
       this.db.prepare("UPDATE feishu_card_views SET status = 'consumed' WHERE id = ?").run(card.id);
       return { card, target, operationId };
+    });
+  }
+
+  private reviewSessionById(id: string): FeishuReviewSession | null {
+    const row = this.db.prepare('SELECT * FROM feishu_review_sessions WHERE id = ?').get(id);
+    if (!row) return null;
+    const state: unknown = JSON.parse(row.state_json as string);
+    if (!validReviewState(state) || state.phase !== row.phase || !positiveInteger(row.version)) throw new Error('Invalid review state');
+    return { id: row.id as string,
+      actor: { appId: row.app_id as string, tenantKey: row.tenant_key as string, openId: row.open_id as string },
+      authorization: { userId: row.user_id as string, bindingId: row.binding_id as string, accessRevision: row.account_access_revision as number },
+      namespace: row.namespace as string, sourceFingerprint: row.source_fingerprint as string,
+      originChatId: row.origin_chat_id as string, createdAt: row.created_at as string, expiresAt: row.expires_at as string,
+      version: row.version as number, state };
+  }
+
+  private sameReviewOwner(session: FeishuReviewSession, actor: FeishuActor, auth: FeishuReadAuthorization): boolean {
+    return !!actor && !!auth && session.actor.appId === actor.appId && session.actor.tenantKey === actor.tenantKey
+      && session.actor.openId === actor.openId && session.authorization.userId === auth.userId
+      && session.authorization.bindingId === auth.bindingId && session.authorization.accessRevision === auth.accessRevision;
+  }
+
+  private reviewOperations(sessionId: string): FeishuReviewOperation[] {
+    return this.db.prepare('SELECT * FROM feishu_review_operations WHERE session_id = ? ORDER BY created_at, id').all(sessionId).map(row => ({
+      id: row.id as string, sessionId: row.session_id as string, intent: JSON.parse(row.intent_json as string) as FeishuReviewWriteIntent,
+      status: row.status as FeishuReviewOperation['status'], errorCode: row.error_code as string | null,
+      createdAt: row.created_at as string, settledAt: row.settled_at as string | null,
+    }));
+  }
+
+  getFeishuReviewSession(actor: FeishuActor, auth: FeishuReadAuthorization, namespace: string): FeishuReviewSession | null {
+    if (!validFeishuText(namespace)) return null;
+    try {
+      if (!this.cardAuthorization(actor, auth)) return null;
+      const row = this.db.prepare("SELECT id FROM feishu_review_sessions WHERE binding_id = ? AND namespace = ? AND phase != 'finished'")
+        .get(auth.bindingId, namespace);
+      const session = row ? this.reviewSessionById(row.id as string) : null;
+      return session && this.sameReviewOwner(session, actor, auth) ? session : null;
+    } catch { throw accountError('WRITE_FAILED', '飞书复习状态暂时无法读取，请稍后重试。', 503); }
+  }
+
+  getFeishuReviewOperations(sessionId: string, actor: FeishuActor, auth: FeishuReadAuthorization): FeishuReviewOperation[] {
+    if (!validCardId(sessionId)) return [];
+    try {
+      const session = this.reviewSessionById(sessionId);
+      return session && this.sameReviewOwner(session, actor, auth) && this.cardAuthorization(actor, auth)
+        ? this.reviewOperations(sessionId) : [];
+    } catch { throw accountError('WRITE_FAILED', '飞书复习状态暂时无法读取，请稍后重试。', 503); }
+  }
+
+  isFeishuReviewVersionAuthorized(sessionId: string, version: number, actor: FeishuActor, auth: FeishuReadAuthorization): boolean {
+    if (!validCardId(sessionId) || !positiveInteger(version)) return false;
+    try {
+      const session = this.reviewSessionById(sessionId);
+      return !!session && session.version === version && this.sameReviewOwner(session, actor, auth) && this.cardAuthorization(actor, auth);
+    } catch { throw accountError('WRITE_FAILED', '飞书复习状态暂时无法读取，请稍后重试。', 503); }
+  }
+
+  claimFeishuReviewTransition(actor: FeishuActor, auth: FeishuReadAuthorization, trigger: FeishuReviewTrigger,
+    scope: { namespace: string; sourceFingerprint: string; originChatId: string },
+    reduce: (input: FeishuReviewTransitionContext) => FeishuReviewMutation | null): FeishuReviewTransitionResult | null {
+    if (!scope || !validFeishuText(scope.namespace) || !validFingerprint(scope.sourceFingerprint)
+        || !validFeishuText(scope.originChatId) || typeof reduce !== 'function' || !trigger
+        || !['message','card'].includes(trigger.kind)) return null;
+    const incoming = trigger.kind === 'message' ? trigger.message : trigger.action;
+    if (!incoming || !actor || incoming.appId !== actor.appId || incoming.tenantKey !== actor.tenantKey || incoming.openId !== actor.openId
+        || ![incoming.eventId,incoming.messageId,incoming.chatId].every(validFeishuText) || incoming.chatId !== scope.originChatId
+        || (trigger.kind === 'message' && (typeof trigger.message.text !== 'string' || trigger.message.text.length > 4096))
+        || (trigger.kind === 'card' && !validCardAction(trigger.action))) return null;
+    return this.cardTransaction(() => {
+      if (!this.cardAuthorization(actor, auth)) return null;
+      const session = this.getFeishuReviewSession(actor, auth, scope.namespace);
+      if (session && session.originChatId !== scope.originChatId) return null;
+      const operations = session ? this.reviewOperations(session.id) : [];
+      let target: FeishuReviewTarget | null = null;
+      let card: FeishuCardStored | null = null;
+      if (trigger.kind === 'card') {
+        card = this.getFeishuCardForAction(trigger.action);
+        if (!card || !this.sameCardOwner(card, actor, auth) || card.namespace !== scope.namespace
+            || card.sourceFingerprint !== scope.sourceFingerprint || card.originChatId !== scope.originChatId) return null;
+        const candidate = card.actions.find(action => action.id === trigger.action.actionId)?.target;
+        if (!validReviewTarget(candidate)) return null;
+        target = candidate;
+        if (target.kind === 'review' && (!session || target.sessionId !== session.id || target.version !== session.version)) return null;
+      }
+      const operationId = trigger.kind === 'message'
+        ? tokenHash(JSON.stringify(['feishu-read-v1',actor.appId,actor.tenantKey,actor.openId,incoming.messageId])).slice(0,32)
+        : tokenHash(JSON.stringify(['feishu-card-click-v1',trigger.action.cardId,trigger.action.actionId])).slice(0,32);
+      if (this.db.prepare('SELECT 1 FROM feishu_read_receipts WHERE operation_id = ?').get(operationId)) return null;
+      const mutation = reduce(structuredClone({ session, operations, target }));
+      if (mutation && typeof (mutation as unknown as { then?: unknown }).then === 'function') {
+        // Reject asynchronous reducers; suppress a rejected promise without awaiting it.
+        Promise.resolve(mutation).catch(() => {});
+        return null;
+      }
+      if (!mutation || typeof mutation !== 'object') return null;
+      const now = iso(nowDate(this.now));
+      let next = session;
+      let newIntent: FeishuReviewWriteIntent | null = null;
+      if (mutation.kind === 'create') {
+        if (!strictKeys(mutation,['kind','id','state']) || session || !validCardId(mutation.id) || !validReviewState(mutation.state)
+            || mutation.state.phase !== 'front' || mutation.state.paused || mutation.state.page !== 1 || mutation.state.frozen !== null
+            || this.db.prepare('SELECT 1 FROM feishu_review_sessions WHERE id = ?').get(mutation.id)) return null;
+        next = { id: mutation.id, actor: { ...actor }, authorization: { ...auth }, ...scope, createdAt: now,
+          expiresAt: iso(new Date(Date.parse(now) + 24 * 60 * 60_000)), version: 1, state: mutation.state };
+      } else if (mutation.kind === 'update') {
+        const keys = Object.hasOwn(mutation,'intent') ? ['kind','state','intent'] : ['kind','state'];
+        if (!strictKeys(mutation,keys) || !session || !validReviewState(mutation.state) || session.version >= Number.MAX_SAFE_INTEGER) return null;
+        const before = session.state; const after = mutation.state;
+        if (after.domainId !== before.domainId || after.conceptId !== before.conceptId || after.sourceRevision !== before.sourceRevision) return null;
+        if (before.frozen !== null && stableReviewJson(after.frozen) !== stableReviewJson(before.frozen)) return null;
+        const reveal = before.phase === 'front' && after.phase === 'revealed';
+        if (before.frozen === null && after.frozen !== null && !reveal) return null;
+        if (reveal && (before.paused || after.paused || !after.frozen || after.frozen.observedAt > now
+            || session.expiresAt <= now || session.sourceFingerprint !== scope.sourceFingerprint)) return null;
+        if (after.phase !== before.phase && !reveal && after.phase !== 'finished') return null;
+        if (after.phase === 'finished' && operations.some(operation => operation.status === 'pending')) return null;
+        next = { ...session, version: session.version + 1, state: after };
+        if (mutation.intent !== undefined) {
+          if (!validReviewIntent(mutation.intent,next)) return null;
+          if (mutation.intent.kind === 'observation' && before.phase !== 'revealed') return null;
+          if (mutation.intent.kind === 'review' && (before.phase !== 'saved'
+              || !operations.some(operation => operation.intent.kind === 'observation' && operation.status === 'applied'))) return null;
+          const existing = operations.find(operation => operation.intent.kind === mutation.intent!.kind);
+          if (existing && stableReviewJson(existing.intent) !== stableReviewJson(mutation.intent)) return null;
+          if (!existing && (session.expiresAt <= now || session.sourceFingerprint !== scope.sourceFingerprint)) return null;
+          if (!existing) newIntent = mutation.intent;
+        }
+      } else if (mutation.kind !== 'none' || !strictKeys(mutation,['kind'])) return null;
+      const receipt = this.db.prepare("INSERT OR IGNORE INTO feishu_read_receipts(operation_id,user_id,created_at,status) VALUES(?,?,?,'attempted')")
+        .run(operationId,auth.userId,now);
+      if (receipt.changes !== 1) return null;
+      if (card) this.db.prepare("UPDATE feishu_card_views SET status = 'consumed' WHERE id = ? AND status = 'active'").run(card.id);
+      if (mutation.kind === 'create' && next) {
+        this.db.prepare(`INSERT INTO feishu_review_sessions(id,user_id,account_access_revision,binding_id,app_id,tenant_key,open_id,
+          namespace,source_fingerprint,origin_chat_id,created_at,expires_at,version,phase,state_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(next.id,auth.userId,auth.accessRevision,auth.bindingId,actor.appId,actor.tenantKey,actor.openId,
+            next.namespace,next.sourceFingerprint,next.originChatId,next.createdAt,next.expiresAt,next.version,next.state.phase,JSON.stringify(next.state));
+      } else if (mutation.kind === 'update' && next && session) {
+        const changed = this.db.prepare('UPDATE feishu_review_sessions SET version = ?, phase = ?, state_json = ? WHERE id = ? AND version = ?')
+          .run(next.version,next.state.phase,JSON.stringify(next.state),next.id,session.version);
+        if (changed.changes !== 1) throw new Error('Review version changed');
+      }
+      if (newIntent && next) this.db.prepare(`INSERT INTO feishu_review_operations(id,session_id,kind,intent_json,status,created_at)
+        VALUES(?,?,?,?,'pending',?)`).run(newIntent.request.eventId,next.id,newIntent.kind,stableReviewJson(newIntent),now);
+      return { operationId, session: next ? this.reviewSessionById(next.id) : null, operations: next ? this.reviewOperations(next.id) : [] };
+    });
+  }
+
+  settleFeishuReviewOperation(operationId: string, actor: FeishuActor, auth: FeishuReadAuthorization,
+    result: { status: 'applied' | 'conflict'; errorCode?: string }): FeishuReviewSession | null {
+    const safeCodes = ['EVENT_CONFLICT','ANCHOR_CONFLICT','CONFIG_REVISION_UNKNOWN','SOURCE_CHANGED','WRITE_FAILED','SESSION_EXPIRED',
+      'STATE_CONFLICT','CONFIG_CONFLICT','SOURCE_MISMATCH','FUTURE_OBSERVATION','FUTURE_EVENT'];
+    if (typeof operationId !== 'string' || !/^feishu-(?:observation|review):[a-f0-9]{32}$/.test(operationId) || !result
+        || !strictKeys(result,Object.hasOwn(result,'errorCode') ? ['status','errorCode'] : ['status'])
+        || !['applied','conflict'].includes(result.status)) return null;
+    if (result.status === 'applied' && result.errorCode != null) return null;
+    const errorCode = result.status === 'applied' ? null : result.errorCode ?? 'STATE_CONFLICT';
+    if (errorCode !== null && !safeCodes.includes(errorCode)) return null;
+    return this.cardTransaction(() => {
+      if (!this.cardAuthorization(actor,auth)) return null;
+      const row = this.db.prepare('SELECT session_id FROM feishu_review_operations WHERE id = ?').get(operationId);
+      const session = row ? this.reviewSessionById(row.session_id as string) : null;
+      if (!session || !this.sameReviewOwner(session,actor,auth)) return null;
+      const operation = this.reviewOperations(session.id).find(item => item.id === operationId)!;
+      if (operation.status !== 'pending') return operation.status === result.status && operation.errorCode === errorCode ? session : null;
+      if (session.version >= Number.MAX_SAFE_INTEGER || session.state.phase === 'finished') return null;
+      if (operation.intent.kind === 'observation' && session.state.phase !== 'revealed') return null;
+      if (operation.intent.kind === 'review' && session.state.phase !== 'saved') return null;
+      const state = { ...session.state, ...(result.status === 'applied' && operation.intent.kind === 'observation' ? { phase: 'saved' as const } : {}) };
+      const now = iso(nowDate(this.now));
+      const changed = this.db.prepare("UPDATE feishu_review_operations SET status = ?, error_code = ?, settled_at = ? WHERE id = ? AND status = 'pending'")
+        .run(result.status,errorCode,now,operationId);
+      if (changed.changes !== 1) return null;
+      const advanced = this.db.prepare('UPDATE feishu_review_sessions SET version = ?, phase = ?, state_json = ? WHERE id = ? AND version = ?')
+        .run(session.version + 1,state.phase,JSON.stringify(state),session.id,session.version);
+      if (advanced.changes !== 1) throw new Error('Review settlement version changed');
+      return this.reviewSessionById(session.id);
     });
   }
 

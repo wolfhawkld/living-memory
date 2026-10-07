@@ -91,6 +91,28 @@ test('card message entry bypasses plain reading while recognized invalid card sy
   } finally { await connector.stop(); }
 });
 
+test('explicit review lifecycle commands use the private card capability through authenticated message projection', async () => {
+  let hooks!: FeishuDriverCallbacks; let instant = 0; let reads = 0;
+  const received: string[] = []; const sent: FeishuSendCard[] = [];
+  const connector = createFeishuConnector({ env, now: () => instant,
+    prepareCardMessage(input) { received.push(input.text); return prepared(input); },
+    prepareReading() { reads++; return null; },
+    driverFactory: async (_config, callbacks) => { hooks = callbacks; return { start() {}, close() {},
+      async sendCard(input) { sent.push(input); return accepted; } }; } });
+  try {
+    await connector.start();
+    const commands = ['知识 复习', '知识 暂停复习', '知识 继续复习', '知识 结束复习', '知识 复习 conceptId=forged'];
+    for (const [index, text] of commands.entries()) {
+      instant += 1100; hooks.onMessage!(message('review-user', text, `review-${index}`));
+      await setImmediate();
+    }
+    assert.deepEqual(received, commands); assert.equal(reads, 0); assert.equal(sent.length, commands.length);
+    const otherTenant = { ...message('review-user', '知识 复习', 'wrong-tenant'), tenant_key: 'other' };
+    instant += 1100; hooks.onMessage!(otherTenant); await setImmediate();
+    assert.equal(received.length, commands.length);
+  } finally { await connector.stop(); }
+});
+
 test('revocation, actor mismatch, absent sender and thrown/failed sends settle safely without changing connection state', async () => {
   for (const mode of ['revoked', 'wrong-actor', 'wrong-scope', 'no-sender', 'send-throw', 'send-failed', 'settle-throw']) {
     let hooks!: FeishuDriverCallbacks; let sends = 0; const settled: FeishuCardDelivery[] = [];

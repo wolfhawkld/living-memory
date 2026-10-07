@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { selectFeishuReviewCandidates as select } from '../src/server/feishu-card-view.js';
 import { planFeishuCardView as render, type FeishuCardViewPlan } from '../src/server/feishu-card-view.js';
 import { createHash } from 'node:crypto';
-import type { FeishuCardView } from '../src/shared/feishu-cards.js';
+import type { FeishuBrowseView } from '../src/shared/feishu-cards.js';
 import type { FeishuReadContext } from '../src/server/feishu-read-view.js';
 import type { Concept, MemoryState, Snapshot } from '../src/shared/types.js';
 import type { ReviewPlanResponse } from '../src/shared/review-plan.js';
@@ -102,11 +102,11 @@ function readContext(input: Snapshot): FeishuReadContext { return { concepts: in
 function sha(value: string) { return createHash('sha256').update(value).digest('hex'); }
 function card(plan: FeishuCardViewPlan) { return plan.build('synthetic-card-id'); }
 function text(plan: FeishuCardViewPlan): string { return JSON.stringify(card(plan)); }
-function next(plan: FeishuCardViewPlan, kind: FeishuCardView['kind'], page: number): FeishuCardView {
+function next(plan: FeishuCardViewPlan, kind: FeishuBrowseView['kind'], page: number): FeishuBrowseView {
   const action = plan.actions.find((action) => action.target.kind === kind && 'page' in action.target && action.target.page === page);
-  assert.ok(action); return action.target;
+  assert.ok(action); return action.target as FeishuBrowseView;
 }
-function checkBudgets(view: FeishuCardView, rendered: FeishuCardViewPlan) {
+function checkBudgets(view: FeishuBrowseView, rendered: FeishuCardViewPlan) {
   const payload = card(rendered);
   assert.ok(Buffer.byteLength(JSON.stringify(payload)) <= 20 * 1024);
   assert.ok(Buffer.byteLength(JSON.stringify({ content: JSON.stringify(payload) })) <= 23 * 1024);
@@ -143,7 +143,7 @@ test('list/read navigation restores the complete original filters, sort and page
   const rendered = render(view, context, plan());
   assert.equal(rendered.actions.filter((action) => action.target.kind === 'read').length, 5);
   assert.deepEqual(next(rendered, 'list', 3), { ...view, page: 3 });
-  const read = rendered.actions.find((action) => action.target.kind === 'read')!.target;
+  const read = rendered.actions.find((action) => action.target.kind === 'read')!.target as Extract<FeishuBrowseView, {kind:'read'}>;
   assert.equal(read.kind, 'read');
   const opened = render(read, context, plan());
   assert.ok(opened.actions.some((action) => JSON.stringify(action.target) === JSON.stringify(view)));
@@ -163,9 +163,35 @@ test('due fronts contain names and time hints without summary/body answers and p
   assert.doesNotMatch(contents, /SUMMARY_ANSWER_SECRET|BODY_ANSWER_SECRET/);
   assert.match(contents, /Asia\/Hong_Kong/); assert.match(contents, /2026-10-02/);
   assert.match(contents, /浏览器待同步/);
-  const read = rendered.actions.find((action) => action.target.kind === 'read')!.target;
+  const read = rendered.actions.find((action) => action.target.kind === 'read')!.target as Extract<FeishuBrowseView, {kind:'read'}>;
   assert.ok(render(read, context, plan()).actions.some((action) => JSON.stringify(action.target) === JSON.stringify(view)));
   assert.ok(rendered.actions.some((action) => action.target.kind === 'due' && action.target.limit === 5));
+});
+
+test('due candidates offer opaque recall entry points within the five-row and long-domain budgets', () => {
+  for (const domain of ['Math', '中'.repeat(512), '\u0001'.repeat(512)]) {
+    const concepts = Array.from({ length: 5 }, (_, index) => node(`recall-${index}`, domain));
+    const context = readContext(snapshot(concepts));
+    const view = { kind: 'due', domainId: domain, limit: 5 } as const;
+    const rendered = render(view, context, plan());
+    checkBudgets(view, rendered);
+    const starts = rendered.actions.filter(action => action.target.kind === 'review-start');
+    assert.ok(starts.length > 0, 'at least the first candidate must offer recall');
+    if (domain === 'Math') assert.equal(starts.length, 5);
+    for (const concept of concepts) assert.match(text(rendered), new RegExp(concept.title));
+    const reads = rendered.actions.filter(action => action.target.kind === 'read');
+    assert.ok(reads.length > 0);
+    for (const action of reads) if (action.target.kind === 'read') assert.deepEqual(action.target.back, view);
+    assert.ok(rendered.actions.some(action => action.target.kind === 'domains'));
+    assert.ok(rendered.actions.some(action => action.target.kind === 'due' && action.target.domainId === null));
+    for (const action of starts) if (action.target.kind === 'review-start') {
+      assert.match(action.target.reference, /^[a-f0-9]{12,64}$/);
+      assert.match(action.target.revision, /^[a-f0-9]{12}$/);
+      assert.equal(action.target.domainId, domain);
+    }
+    assert.equal(render(listView, context, plan()).actions.some(action => action.target.kind === 'review-start'), false);
+    assert.doesNotMatch(JSON.stringify(card(rendered)), /recall-0.*conceptId/);
+  }
 });
 
 test('safe card Markdown fully paginates Unicode and inert attachments without sending active at or link markup', () => {
@@ -174,7 +200,7 @@ test('safe card Markdown fully paginates Unicode and inert attachments without s
   concept.body = '# 标题\n' + ('中文😀e\u0301 <at id=all> [危险](javascript:alert) ![图](file://private)\n```mermaid\na-->b\n```\n').repeat(220);
   const context = readContext(snapshot([concept]));
   const before = JSON.stringify(context);
-  let view: FeishuCardView = { kind: 'read', reference: sha(concept.id).slice(0, 12), page: 1, revision: sha(concept.source.revision).slice(0, 12), back: listView };
+  let view: FeishuBrowseView = { kind: 'read', reference: sha(concept.id).slice(0, 12), page: 1, revision: sha(concept.source.revision).slice(0, 12), back: listView };
   let joined = ''; let pages = 0;
   while (view.kind === 'read') {
     const rendered = render(view, context, plan()); checkBudgets(view, rendered);
@@ -186,7 +212,7 @@ test('safe card Markdown fully paginates Unicode and inert attachments without s
     joined += body; pages++;
     const nextAction = rendered.actions.find((action) => action.target.kind === 'read' && action.target.page === (view as { page: number }).page + 1);
     if (!nextAction) break;
-    view = nextAction.target;
+    view = nextAction.target as FeishuBrowseView;
   }
   assert.ok(pages > 2);
   assert.equal(joined, concept.body.replaceAll('<', '＜').replaceAll('>', '＞').replaceAll('[', '［').replaceAll(']', '］'));
@@ -211,7 +237,7 @@ test('adaptive collection pages preserve maximum domain/query targets within per
     concept.title = '"\\'.repeat(300); concept.aliases = [query]; return concept;
   }));
   const context = readContext(input);
-  let view: FeishuCardView = { ...listView, domainId: domain, query };
+  let view: FeishuBrowseView = { ...listView, domainId: domain, query };
   const seen = new Set<string>();
   while (view.kind === 'list') {
     const rendered = render(view, context, plan()); checkBudgets(view, rendered);
@@ -224,7 +250,7 @@ test('adaptive collection pages preserve maximum domain/query targets within per
       }
     }
     const nextAction = rendered.actions.find((action) => action.target.kind === 'list' && action.target.page === (view as { page: number }).page + 1);
-    if (!nextAction) break; view = nextAction.target;
+    if (!nextAction) break; view = nextAction.target as FeishuBrowseView;
   }
   assert.equal(seen.size, input.concepts.length);
 });
@@ -232,7 +258,7 @@ test('adaptive collection pages preserve maximum domain/query targets within per
 test('long-domain card navigation retains complete targets and supported domains remain selectable', () => {
   const concepts = Array.from({ length: 11 }, (_, index) => node(`domain-${index}`, `${'中'.repeat(509)}${String(index).padStart(3, '0')}`));
   const context = readContext(snapshot(concepts));
-  const seen = new Set<string>(); let view: FeishuCardView = { kind: 'domains', page: 1 };
+  const seen = new Set<string>(); let view: FeishuBrowseView = { kind: 'domains', page: 1 };
   while (view.kind === 'domains') {
     const rendered = render(view, context, plan()); checkBudgets(view, rendered);
     for (const action of rendered.actions) if (action.target.kind === 'list' && action.target.domainId !== null) {
@@ -240,7 +266,7 @@ test('long-domain card navigation retains complete targets and supported domains
       assert.match(text(render(action.target, context, plan())), /1 个节点/);
     }
     const nextAction = rendered.actions.find((action) => action.target.kind === 'domains' && action.target.page === (view as { page: number }).page + 1);
-    if (!nextAction) break; view = nextAction.target;
+    if (!nextAction) break; view = nextAction.target as FeishuBrowseView;
   }
   assert.equal(seen.size, concepts.length);
 });
@@ -260,7 +286,7 @@ test('control-heavy body pages and maximum back filters satisfy final card budge
   concept.title = '"\\'.repeat(500); concept.body = '"\\\n\t\r\b\f'.repeat(1600);
   const context = readContext(snapshot([concept]));
   const back = { ...listView, domainId: domain, query };
-  let view: FeishuCardView = { kind: 'read', reference: sha(concept.id).slice(0, 12), revision: sha(concept.source.revision).slice(0, 12), page: 1, back };
+  let view: FeishuBrowseView = { kind: 'read', reference: sha(concept.id).slice(0, 12), revision: sha(concept.source.revision).slice(0, 12), page: 1, back };
   let joined = '';
   while (view.kind === 'read') {
     const rendered = render(view, context, plan()); checkBudgets(view, rendered);
@@ -269,7 +295,7 @@ test('control-heavy body pages and maximum back filters satisfy final card budge
     assert.ok(Buffer.byteLength(body) <= 3000); joined += body;
     assert.ok(rendered.actions.some((action) => JSON.stringify(action.target) === JSON.stringify(back)));
     const nextAction = rendered.actions.find((action) => action.target.kind === 'read' && action.target.page === (view as { page: number }).page + 1);
-    if (!nextAction) break; view = nextAction.target;
+    if (!nextAction) break; view = nextAction.target as FeishuBrowseView;
   }
   assert.equal(joined, concept.body);
 });

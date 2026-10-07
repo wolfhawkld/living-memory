@@ -285,6 +285,39 @@ test('source fingerprints are deterministic across ordering and include namespac
   } finally { await f.close(); }
 });
 
+test('private SDK review writes the member learning Store visible to Web without changing the owner records', async () => {
+  const f = await fixture(); let c: Awaited<ReturnType<typeof channel>> | undefined;
+  try {
+    const users = await f.users();
+    const snapshot = (await f.send('/api/snapshot', users.member)).body;
+    const concept = snapshot.concepts.find((item: Concept) => item.title === 'MemberOnly0') as Concept;
+    assert.ok(concept);
+    assert.equal((await f.send('/api/reviews', { ...users.member, method: 'POST', body: {
+      eventId: 'member-web-anchor', conceptId: concept.id, sourceRevision: concept.source.revision,
+      kind: 'review', occurredAt: '2026-09-01T00:00:00Z',
+    } })).status, 201);
+    const ownerBefore = (await f.send('/api/export', users.owner)).body;
+    c = await channel(f);
+    await c.message(input('知识 复习', 'shared-review'));
+    assert.match(JSON.stringify(c.sent.at(-1)!.card), /MemberOnly0/);
+    assert.doesNotMatch(JSON.stringify(c.sent.at(-1)!.card), /Member-private-first|OwnerOnly/);
+    await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '查看资料'));
+    await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '脑中回忆清楚'));
+    const graded = (await f.send('/api/export', users.member)).body;
+    assert.equal(graded.observations.length, 1); assert.equal(graded.anchors.length, 1);
+    assert.equal(graded.observations[0].conceptId, concept.id);
+    assert.equal(graded.observations[0].evidenceMode, 'mental'); assert.equal(graded.observations[0].answer, '');
+    assert.equal((await f.send('/api/review-plan', users.member)).body.completedConceptIds.includes(concept.id), true);
+    await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '确认已重温，更新时间'));
+    const after = (await f.send('/api/export', users.member)).body;
+    assert.equal(after.anchors.length, 2); assert.equal(after.observations.length, 1);
+    const web = (await f.send('/api/snapshot', users.member)).body;
+    assert.match(web.states[concept.id].anchor.eventId, /^feishu-review:/);
+    const ownerAfter = (await f.send('/api/export', users.owner)).body;
+    for (const key of learningKeys) assert.deepEqual(ownerAfter[key], ownerBefore[key], `private member review ${key}`);
+  } finally { await c?.connector.stop(); await f.close(); }
+});
+
 test('card capabilities reject unconfigured, local-only and invalid-time-zone modes', async () => {
   for (const options of [{ configured: false }, { accountsEnabled: false }, { timeZone: 'not/a-zone' }]) {
     const f = await fixture(options);

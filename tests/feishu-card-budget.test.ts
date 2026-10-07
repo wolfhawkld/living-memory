@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Accounts } from '../src/server/accounts.js';
 import { planFeishuCardView } from '../src/server/feishu-card-view.js';
-import type { FeishuCardActionDefinition, FeishuCardDraftInput, FeishuCardView } from '../src/shared/feishu-cards.js';
+import type { FeishuCardActionDefinition, FeishuCardDraftInput, FeishuBrowseView } from '../src/shared/feishu-cards.js';
 import type { FeishuReadContext } from '../src/server/feishu-read-view.js';
 import type { ReviewPlanResponse } from '../src/shared/review-plan.js';
 import type { Concept } from '../src/shared/types.js';
@@ -37,7 +37,7 @@ for (const envelope of [
       assert.equal(accounts.confirmFeishuBinding({ ...actor,code:request.command.split(' ')[1],eventId:'synthetic-bind',
         messageId:'synthetic-bind-message',chatId:'synthetic-bind-chat' }).status,'confirmed');
       const auth={userId:user.id,accessRevision:user.accessRevision,bindingId:accounts.getFeishuBindingState(user.id).binding!.id};
-      const persist=(view:FeishuCardView) => {
+      const persist=(view:FeishuBrowseView) => {
         const plan=planFeishuCardView(view,context,reviewPlan);
         const input:FeishuCardDraftInput={namespace:envelope.namespace,sourceFingerprint:'c'.repeat(64),
           originChatId:envelope.originChatId,view,actions:plan.actions};
@@ -55,12 +55,12 @@ for (const envelope of [
         accounts.discardFeishuCard(stored.id,actor,auth);
         return plan;
       };
-      let view:FeishuCardView={kind:'list',domainId:domain,query,sort:'title',page:1};
+      let view:FeishuBrowseView={kind:'list',domainId:domain,query,sort:'title',page:1};
       const references=new Set<string>();
       let pages=0;
       while(view.kind==='list') {
         assert.ok(++pages<=20,'list traversal must terminate');
-        const current:Extract<FeishuCardView,{kind:'list'}>=view;
+        const current:Extract<FeishuBrowseView,{kind:'list'}>=view;
         const rendered=persist(current);
         const reads=rendered.actions.filter(action=>action.target.kind==='read');
         assert.ok(reads.length>0,'every collection page must retain accessible concepts');
@@ -68,7 +68,7 @@ for (const envelope of [
           if(action.target.kind!=='read')continue;
           assert.deepEqual(action.target.back,current);
           references.add(action.target.reference);
-          let read:FeishuCardView=action.target;
+          let read:FeishuBrowseView=action.target;
           let bodyPages=0;
           while(read.kind==='read') {
             assert.ok(++bodyPages<=10,'body traversal must terminate');
@@ -79,14 +79,14 @@ for (const envelope of [
             persist(back.target);
             const next=body.actions.find(action=>action.target.kind==='read'&&action.target.page===(read as {page:number}).page+1);
             if(!next)break;
-            read=next.target;
+            read=next.target as FeishuBrowseView;
           }
           assert.ok(bodyPages>1,'read next/back must be exercised, not just a one-page body');
         }
         const next:FeishuCardActionDefinition|undefined=rendered.actions.find(action=>action.target.kind==='list'&&action.target.sort==='title'
           &&action.target.domainId===domain&&action.target.query===query&&action.target.page===current.page+1);
         if(!next)break;
-        view=next.target;
+        view=next.target as FeishuBrowseView;
       }
       assert.ok(pages>2,'exercise full metadata at several intermediate pages');
       assert.equal(references.size,concepts.length,'all matching concepts remain reachable');

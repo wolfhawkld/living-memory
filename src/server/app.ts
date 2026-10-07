@@ -842,7 +842,12 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       },
     },
     feishuCards: createFeishuCardCapabilities({ accounts, scope: feishuScope, now,
-      timeZone: options.feishuTimeZone ?? 'UTC', contextForUser }),
+      timeZone: options.feishuTimeZone ?? 'UTC', contextForUser: (userId) => {
+        const context = contextForUser(userId);
+        // Keep the live source pointer so token-time guards observe later refreshes.
+        return { get source() { return context.source; }, store: context.store,
+          publish: (reason) => context.changes.publish(reason) };
+      } }),
     close: () => {
       initialContext.changes.close();
       store.close();

@@ -1,8 +1,8 @@
 import { parseFeishuReadCommand } from './feishu-read-commands.js';
-import type { FeishuCardView } from '../shared/feishu-cards.js';
+import type { FeishuBrowseView } from '../shared/feishu-cards.js';
 
 /** Explicit card entry points only; text commands never create learning evidence. */
-export function parseFeishuCardCommand(text: string): FeishuCardView | null {
+export function parseFeishuCardCommand(text: string): FeishuBrowseView | null {
   if (typeof text !== 'string' || text.length > 4096) return null;
   const input = text.trim();
   if (/^知识\s+卡片(?:\s|$)/.test(input)) {
