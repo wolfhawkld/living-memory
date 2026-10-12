@@ -55,6 +55,9 @@ test('initial loading fails closed, with stable explicit select label and no inf
   assert.match(html, /<select[^>]*aria-labelledby="([^"]+)"[^>]*disabled/);
   const label = html.match(/aria-labelledby="([^"]+)"/)![1];
   assert.ok(html.includes(`id="${label}"`)); assert.match(html, /<textarea[^>]*disabled/);
+  const noteLabel = html.match(/<textarea[^>]*aria-labelledby="([^"]+)"/)![1];
+  assert.notEqual(noteLabel, label);
+  assert.ok(html.includes(`<span id="${noteLabel}">关系处理说明（可选）</span>`));
   assert.match(html, /不修改知识源、学习表现或记忆时间/);
   assert.equal(panel({ application: { ...application(), relationSuggestion: undefined } }), '');
 });

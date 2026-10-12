@@ -31,6 +31,7 @@ export function RelationReviewBasisPreview({ basis, label }: { basis: RelationRe
 
 export function ApplicationRelationReviewPanel({ application, sourceId, refreshKey, loadReview, onSave, disabled, pending, onEditingChange, onRefreshHistory }: ApplicationRelationReviewPanelProps) {
   const labelId = useId();
+  const noteLabelId = useId();
   const [response, setResponse] = useState<RelationReviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -147,7 +148,7 @@ export function ApplicationRelationReviewPanel({ application, sourceId, refreshK
       <option value="open">待处理 / 重新打开</option><option value="resolved">人工确认已采纳</option><option value="dismissed">暂不采用</option>
     </select></label>
     {decision === 'resolved' ? <><label className="relation-review-check"><input type="checkbox" checked={confirmed} disabled={controlsLocked || !matching} onChange={(event) => { beginEdit(); setConfirmed(event.target.checked); }} /><span>我已核对当前知识源，确认该关系建议已采纳</span></label>{!matching ? <p className="relation-review-warning">当前精确关系未符合建议结果或端点缺失，暂不能确认采纳。</p> : null}</> : null}
-    <label className="relation-review-field"><span>关系处理说明（可选）</span><textarea rows={3} maxLength={4000} value={note} disabled={controlsLocked} onChange={(event) => { beginEdit(); setNote(event.target.value); }} /></label>
+    <label className="relation-review-field"><span id={noteLabelId}>关系处理说明（可选）</span><textarea aria-labelledby={noteLabelId} rows={3} maxLength={4000} value={note} disabled={controlsLocked} onChange={(event) => { beginEdit(); setNote(event.target.value); }} /></label>
     {saveError ? <p className="relation-review-error" role="alert">{saveError}</p> : null}
     {!onSave ? <p className="relation-review-help">未连接关系决定保存服务。</p> : null}
     <div className="relation-review-actions"><button type="button" onClick={() => void submit()} disabled={submissionMode === 'blocked'}>{state === 'saving' ? '保存中…' : state === 'failed' ? '重试原关系决定' : '保存关系决定'}</button>
