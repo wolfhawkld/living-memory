@@ -115,7 +115,7 @@ test('revealed safe Unicode pages retain complete body and satisfy all wire/meta
     assert.ok(Buffer.byteLength(JSON.stringify({ content: JSON.stringify(card) })) <= 24 * 1024);
     assert.ok(Buffer.byteLength(JSON.stringify({ view: plan.view, actions: plan.actions })) <= 12 * 1024);
     assert.ok(plan.actions.length <= 16);
-    const body = cardElements(card).filter(element => element.tag === 'markdown')[1].content as string;
+    const body = cardElements(card).find(element => element.tag === 'markdown' && element.text_size === 'normal' && element.text_align === 'left')!.content as string;
     assert.ok(Buffer.byteLength(body) <= 3000); assert.doesNotMatch(body, /<at|\[危险\]|!\[图\]/);
     joined += body; pages++;
     assert.ok(verbs(value).includes('rate-clear'));
@@ -147,7 +147,7 @@ function batchOperation(value: FeishuReviewRenderInput, index: number, status: F
 
 test('batch fronts show fixed progress with explicit skipping and saved items offer independent next and rewarm', () => {
   const value = batchInput();
-  assert.match(wire(value), /本轮第 1\/3 项/); assert.ok(verbs(value).includes('skip'));
+  assert.match(wire(value), /第 1\/3 项/); assert.ok(verbs(value).includes('skip'));
   assert.doesNotMatch(wire(value), /BODY_SECRET|SUMMARY_SECRET|private-next-/);
   value.session!.state.phase = 'saved'; value.operations = [batchOperation(value, 0, 'applied')];
   assert.deepEqual(verbs(value), ['confirm-review', 'next', 'finish']);
@@ -228,7 +228,7 @@ test('review cards show step and actual queue progress with equal self-report bu
   const columns = cardElements(revealed).find(element => element.tag === 'column_set' && JSON.stringify(element).includes('清楚'));
   assert.ok(columns); assert.equal(columns.columns.length, 3);
   assert.equal(new Set(columns.columns.map((column: Record<string, unknown>) => JSON.stringify([column.width, column.weight]))).size, 1);
-  assert.match(JSON.stringify(revealed), /评价查看资料前的脑中回忆/);
+  assert.match(JSON.stringify(revealed), /对照下方资料后，评价打开资料前的脑中回忆/);
   assert.equal(cardButtons(revealed).some(button => button.type === 'primary_filled'), false);
   value.session!.state.phase = 'saved'; value.operations = [batchOperation(value, 0, 'applied')];
   const saved = render(value).build('c'.repeat(64));
@@ -281,4 +281,45 @@ test('an earlier batch conflict colors the finished summary red but never the ac
   assert.deepEqual(verbs(value), []);
   assert.match(JSON.stringify(finished), /脑中自评未保存\(冲突\) 1 项/);
   assert.doesNotMatch(JSON.stringify(finished), /BODY_SECRET/);
+});
+
+
+test('minimal learning layout centers the concept and puts equal reports before complete source with original callback IDs', () => {
+  const value = batchInput();
+  value.concept = { ...concept, body: 'complete original source '.repeat(300) };
+  const front = render(value).build('c'.repeat(64));
+  assert.equal((front.header as { title: { content: string } }).title.content, '先回忆');
+  const heading = cardElements(front).find(element => element.tag === 'markdown' && element.text_size === 'heading-1');
+  assert.ok(heading); assert.equal(heading.text_align, 'center');
+  assert.equal(cardElements(front).filter(element => element.tag === 'markdown' && element.content === heading.content).length, 1);
+  assert.match(JSON.stringify(front), /想想它的原理，以及会用在哪个场景/);
+  assert.doesNotMatch(JSON.stringify(front), /complete original source/);
+  value.session!.state.phase = 'revealed'; value.session!.state.page = 2;
+  const plan = render(value); const revealed = plan.build('c'.repeat(64)); const elements = cardElements(revealed);
+  const headingIndex = elements.findIndex(element => element.tag === 'markdown' && element.text_size === 'heading-2');
+  const guideIndex = elements.findIndex(element => element.tag === 'markdown' && element.content === '对照下方资料后，评价打开资料前的脑中回忆');
+  const firstRatingIndex = elements.findIndex(element => element.tag === 'button' && element.text.content === '清楚');
+  const pageIndex = elements.findIndex(element => element.tag === 'markdown' && /^资料 2\//.test(element.content));
+  const sourceIndex = elements.findIndex(element => element.tag === 'markdown' && element.text_size === 'normal' && element.text_align === 'left');
+  assert.ok(headingIndex < guideIndex && guideIndex < firstRatingIndex && firstRatingIndex < pageIndex && pageIndex < sourceIndex);
+  assert.equal(elements[headingIndex].text_align, 'center');
+  const actionById = new Map(plan.actions.map(action => [action.id, action.target]));
+  const captionVerb = new Map([['清楚', 'rate-clear'], ['模糊', 'rate-partial'], ['想不起', 'rate-blank'], ['上一页', 'show'], ['下一页', 'show'], ['暂停复习', 'pause'], ['结束复习', 'finish'], ['跳过本条', 'skip']]);
+  for (const button of cardButtons(revealed)) {
+    const callback = button.behaviors[0].value;
+    assert.equal(callback.kind, 'lm.nav.v1'); assert.equal(callback.cardId, 'c'.repeat(64));
+    const target = actionById.get(callback.actionId);
+    assert.ok(target && target.kind === 'review');
+    assert.equal(target.verb, captionVerb.get(button.text.content));
+    if (button.text.content === '上一页') assert.equal(target.page, 1);
+    if (button.text.content === '下一页') assert.equal(target.page, 3);
+  }
+  // Original controls put page navigation first, even though ratings are displayed first.
+  assert.equal(plan.actions[0].target.kind === 'review' && plan.actions[0].target.verb, 'show');
+  assert.equal(cardButtons(revealed)[0].text.content, '清楚');
+  assert.notEqual(cardButtons(revealed)[0].behaviors[0].value.actionId, plan.actions[0].id);
+  const progress = cardElements(revealed).filter(element => element.tag === 'markdown' && /第 1\/3 项/.test(element.content));
+  assert.equal(progress.length, 0);
+  const queueNote = elements.find(element => element.tag === 'markdown' && element.content.includes('队列固定'));
+  assert.equal(queueNote!.text_size, 'notation');
 });

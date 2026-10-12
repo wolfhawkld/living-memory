@@ -10,8 +10,10 @@ export interface NativeCardButton extends NativeCardElement {
 }
 export type FeishuCardTheme = 'blue' | 'turquoise' | 'green' | 'orange' | 'red' | 'grey';
 
-export function cardMarkdown(content: string, size: 'normal' | 'notation' | 'heading' = 'normal'): NativeCardElement {
-  return { tag: 'markdown', content, text_size: size, text_align: 'left', margin: '0px' };
+export function cardMarkdown(content: string,
+  size: 'normal' | 'notation' | 'heading' | 'heading-1' | 'heading-2' = 'normal',
+  align: 'left' | 'center' = 'left'): NativeCardElement {
+  return { tag: 'markdown', content, text_size: size, text_align: align, margin: '0px' };
 }
 
 export function cardDivider(): NativeCardElement {

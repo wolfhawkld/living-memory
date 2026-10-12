@@ -12,7 +12,7 @@ export interface FeishuReviewRenderInput {
   availability: 'ready' | 'source-changed' | 'expired' | 'no-candidate' | 'no-session' | 'ineligible';
 }
 interface Control { caption: string; target: FeishuCardView }
-const FOOTER = '脑中回忆为自报，不记录原答，不计入独立成功或信心校准。阅读不会更新记忆时间；只有明确确认重温才更新锚点。仅最新卡可操作，未收到新卡请发送“知识 继续复习”。';
+const FOOTER = '脑中回忆为自报，不记录原答，不计入独立成功或信心校准。阅读和脑中自报均不会更新记忆时间；只有明确确认重温才更新锚点。仅最新卡可操作，未收到新卡请发送“知识 继续复习”。';
 
 /** Pure transient rendering. Only the local transition handler may change state. */
 export function planFeishuReviewView(input: FeishuReviewRenderInput): {
@@ -32,6 +32,8 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
   let template: FeishuCardTheme = 'turquoise';
   let content = '';
   let body: string | null = null;
+  let layout: 'default' | 'front' | 'revealed' | 'saved' = 'default';
+  let recoveryNote = '';
   const pending = input.operations.some((operation) => operation.status === 'pending');
   const conflict = operations.some((operation) => operation.status === 'conflict');
   if (session?.state.phase === 'finished') {
@@ -73,9 +75,9 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
     content = '记录尚未确认写入，请重试同步。不要重复提交新的记录。待写操作恢复保存后，可再次结束本条。';
     add('重试同步', 'retry'); add('暂停复习', 'pause');
   } else if (session.state.phase === 'front') {
-    step = '先回忆';
+    step = '先回忆'; layout = 'front';
     title = metadata(concept.title, 200);
-    content = `先在脑中尝试解释“${metadata(concept.title)}”的原理和应用场景，再查看资料。\n本轮不输入原答，不预测信心，后续清楚/模糊/想不起均为脑中自报。`;
+    content = '想想它的原理，以及会用在哪个场景';
     add('查看资料', 'reveal'); add('暂停复习', 'pause'); add('结束复习', 'finish');
     if (batch) add('跳过本条', 'skip');
   } else if (session.state.phase === 'revealed') {
@@ -85,7 +87,8 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
     if (session.state.page > chunks.length || session.state.page < 1) {
       content = '正文页码超出范围，请返回第一页。'; add('正文第一页', 'show', 1);
     } else {
-      content = `资料 ${session.state.page}/${chunks.length} 页。附件、链接以文字展示；公式与 Mermaid 不保证渲染。`;
+      layout = 'revealed';
+      content = `资料 ${session.state.page}/${chunks.length} 页`;
       body = chunks[session.state.page - 1] || '（正文为空）';
       if (session.state.page > 1) add('上一页', 'show', session.state.page - 1);
       if (session.state.page < chunks.length) add('下一页', 'show', session.state.page + 1);
@@ -96,52 +99,64 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
       if (batch) add('跳过本条', 'skip');
     }
   } else {
-    step = '回忆记录回执';
+    step = '回忆记录回执'; layout = 'saved';
     const reviewed = operations.some((operation) => operation.intent.kind === 'review' && operation.status === 'applied');
-    content = reviewed ? '脑中回忆记录已保存；本次明确确认的重温时间已保存。' : '脑中回忆记录已保存，记忆时间尚未更新。是否已完成重温由你另行确认。';
+    content = reviewed ? '脑中回忆记录已保存。\n确认重温：已保存，本次明确确认的重温时间已保存。' : '脑中回忆记录已保存。\n记忆时间尚未更新；是否已完成重温由你另行确认。';
     if (!operations.some((operation) => operation.intent.kind === 'review')) add('确认已重温，更新时间', 'confirm-review');
     if (batch) add(batch.cursor === batch.items.length - 1 ? '完成本轮' : '下一条', 'next');
     add('结束复习', 'finish');
-    content += batch ? '\n如刚恢复待写操作，请再次点击下一条或结束本轮。' : '\n如刚恢复待写操作，请再次点击结束本条。';
+    recoveryNote = batch ? '如刚恢复待写操作，请再次点击下一条或结束本轮。' : '如刚恢复待写操作，请再次点击结束本条。';
   }
-  if (batch && session?.state.phase !== 'finished') {
-    content = `本轮第 ${batch.cursor + 1}/${batch.items.length} 项（请求 ${batch.requestedSize} 项${batch.items.length < batch.requestedSize ? '，候选或预算不足，按实际数量进行' : ''}）。队列固定，继续不会补位或重排。\n${content}`;
-  }
+  const batchNote = batch && session?.state.phase !== 'finished'
+    ? `请求 ${batch.requestedSize} 项${batch.items.length < batch.requestedSize ? '，候选或预算不足，按实际数量进行' : ''}。队列固定，继续不会补位或重排。` : '';
   for (const [kind, label] of [['observation', '脑中自评'], ['review', '确认重温']] as const) {
     const operation = operations.find((entry) => entry.intent.kind === kind);
-    if (operation) content += `\n${label}：${operation.status === 'applied' ? '已保存' : operation.status === 'pending' ? '待保存' : '未保存(冲突)'}`;
+    if (operation && layout !== 'saved') content += `\n${label}：${operation.status === 'applied' ? '已保存' : operation.status === 'pending' ? '待保存' : '未保存(冲突)'}`;
   }
   const actions = controls.map((control, index) => ({ id: `a${index}`, target: control.target }));
   const subtitle = batch
     ? session?.state.phase === 'finished' ? `实际 ${batch.items.length} 项 · 本轮已结束` : `第 ${batch.cursor + 1}/${batch.items.length} 项 · 固定队列`
     : '少量脑中回忆 · 自主确认重温';
   const build = (cardId: string): FeishuCardPayload => {
-    const elements = [cardMarkdown(content)];
-    if (body !== null) elements.push(cardDivider(), cardMarkdown(body));
+    const elements: ReturnType<typeof cardMarkdown>[] = [];
+    // Callback IDs stay bound to the original action order, independently of visual grouping.
     const buttons = controls.map((control, index) => ({
       control,
       button: cardButton(cardId, actions[index].id, control.caption,
-        control.target.kind === 'review' && control.target.verb === 'reveal' ? 'primary_filled' : 'default'),
+        control.target.kind === 'review' && (control.target.verb === 'reveal' || control.target.verb === 'next') ? 'primary_filled' : 'default'),
     }));
-    if (buttons.length) elements.push(cardDivider());
-    // Keep original control/callback ordering while giving the three self-reports equal weight.
-    let ordinary: ReturnType<typeof cardButton>[] = [];
-    const flush = () => { elements.push(...cardButtonRows(ordinary)); ordinary = []; };
-    for (let index = 0; index < buttons.length; index++) {
-      const { control, button } = buttons[index];
-      if (control.target.kind === 'review' && control.target.verb === 'rate-clear') {
-        flush();
-        elements.push(cardMarkdown('评价查看资料前的脑中回忆', 'heading'));
-        elements.push(...cardButtonRows(buttons.slice(index, index + 3).map(entry => entry.button), 3));
-        index += 2;
-      } else if (control.target.kind === 'review' && control.target.verb === 'confirm-review') {
-        flush();
-        elements.push(button);
-      } else ordinary.push(button);
+    const hasVerb = (entry: typeof buttons[number], verbs: readonly string[]) => entry.control.target.kind === 'review' && verbs.includes(entry.control.target.verb);
+    const showControls = (entries: typeof buttons) => {
+      let ordinary: ReturnType<typeof cardButton>[] = [];
+      const flush = () => { elements.push(...cardButtonRows(ordinary)); ordinary = []; };
+      for (const entry of entries) {
+        if (hasVerb(entry, ['confirm-review'])) { flush(); elements.push(entry.button); }
+        else ordinary.push(entry.button);
+      }
+      flush();
+    };
+    if (layout === 'front') {
+      elements.push(cardMarkdown(title, 'heading-1', 'center'), cardMarkdown(content, 'notation', 'center'));
+      showControls(buttons);
+    } else if (layout === 'revealed') {
+      elements.push(cardMarkdown(title, 'heading-2', 'center'),
+        cardMarkdown('对照下方资料后，评价打开资料前的脑中回忆', 'notation', 'center'));
+      elements.push(...cardButtonRows(buttons.filter(entry => hasVerb(entry, ['rate-clear', 'rate-partial', 'rate-blank'])).map(entry => entry.button), 3));
+      elements.push(cardDivider(), cardMarkdown(content, 'notation'));
+      showControls(buttons.filter(entry => hasVerb(entry, ['show'])));
+      elements.push(cardMarkdown(body!, 'normal', 'left'));
+      elements.push(cardDivider());
+      showControls(buttons.filter(entry => !hasVerb(entry, ['show', 'rate-clear', 'rate-partial', 'rate-blank'])));
+      elements.push(cardMarkdown('附件、链接以文字展示；公式与 Mermaid 不保证渲染。', 'notation'));
+    } else {
+      elements.push(cardMarkdown(content));
+      if (buttons.length) elements.push(cardDivider());
+      showControls(buttons);
     }
-    flush();
+    if (batchNote) elements.push(cardMarkdown(batchNote, 'notation'));
+    if (recoveryNote) elements.push(cardMarkdown(recoveryNote, 'notation'));
     elements.push(cardDivider(), cardMarkdown(FOOTER, 'notation'));
-    return styledFeishuCard({ title: metadata(`${step} · ${title}`, 200), subtitle, template, elements });
+    return styledFeishuCard({ title: step, subtitle, template, elements });
   };
   return { view, actions, build };
 }
