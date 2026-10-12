@@ -256,6 +256,8 @@ export interface ExportData {
   retentions?: RetentionEvent[];
   applications?: ApplicationRecord[];
   corrections?: import('./corrections.js').CorrectionEvent[];
+  /** Human follow-up of relation suggestions, separate from text corrections. */
+  relationReviews?: import('./relation-reviews.js').RelationReviewEvent[];
   /** Versioned private questions and answers; independent of concept recall scores. */
   practice?: import('./practice.js').PracticeData;
   reviewPlan?: import('./review-plan.js').ReviewPlan;

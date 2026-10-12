@@ -11,6 +11,8 @@ import type {
   RetentionEvent,
   ReviewRequest,
 } from '../shared/types.js';
+import { parseRelationReviewRequest, relationReviewMatches, validateRelationReviewBasis } from '../shared/relation-reviews.js';
+import type { RelationReviewEvent } from '../shared/relation-reviews.js';
 import type { CorrectionEvent } from '../shared/corrections.js';
 import type { PracticeAttempt, PracticeCardEvent } from '../shared/practice.js';
 import {
@@ -68,6 +70,7 @@ export interface PreparedImport {
   newRetentions: RetentionEvent[];
   newApplications: ApplicationRecord[];
   newCorrections: CorrectionEvent[];
+  newRelationReviews: RelationReviewEvent[];
   newPracticeCards: PracticeCardEvent[];
   newPracticeAttempts: PracticeAttempt[];
   newConfigs: PreparedConfig[];
@@ -84,13 +87,13 @@ const MAX_EVENTS = 50_000;
 const MAX_LAYOUT = 10_000;
 const MAX_ISSUE_OUTPUT = 100;
 const EVENT_KINDS = ['anchors', 'observations', 'retentions', 'applications', 'corrections'] as const;
-const ALL_EVENT_KINDS = [...EVENT_KINDS, 'practiceCards', 'practiceAttempts'] as const;
+const ALL_EVENT_KINDS = [...EVENT_KINDS, 'relationReviews', 'practiceCards', 'practiceAttempts'] as const;
 const RECALL_RATINGS = ['clear', 'partial', 'blank'] as const;
 const EXPOSURES = ['unexposed', 'exposed', 'unknown'] as const;
 
 type EventKind = (typeof EVENT_KINDS)[number];
 type AnyEventKind = (typeof ALL_EVENT_KINDS)[number];
-type Event = AnchorEvent | Observation | RetentionEvent | ApplicationRecord | CorrectionEvent | PracticeCardEvent | PracticeAttempt;
+type Event = RelationReviewEvent | AnchorEvent | Observation | RetentionEvent | ApplicationRecord | CorrectionEvent | PracticeCardEvent | PracticeAttempt;
 
 interface IssueState {
   all: ImportIssue[];
@@ -257,6 +260,7 @@ function validateExportEnvelope(data: unknown, now: string): Record<string, unkn
   if (record.retentions !== undefined) requireArray(record.retentions, 'retentions');
   if (record.applications !== undefined) requireArray(record.applications, 'applications');
   if (record.corrections !== undefined) requireArray(record.corrections, 'corrections');
+  if (record.relationReviews !== undefined) requireArray(record.relationReviews, 'relationReviews');
   if (record.practice !== undefined) {
     const practice = requireRecord(record.practice, 'practice');
     requireArray(practice.cards, 'practice.cards');
@@ -404,6 +408,30 @@ function mappedId(mapping: ConceptMapping, id: string): string {
 
 function mappedConceptEvent<T extends { conceptId: string }>(event: T, mapping: ConceptMapping): T {
   return { ...event, conceptId: mappedId(mapping, event.conceptId) };
+}
+
+function validateRelationReview(value: unknown, index: number, nowMs: number, state: IssueState): RelationReviewEvent {
+  const record = requireRecord(value, `relationReviews[${index}]`);
+  const occurredAt = timestamp(record.occurredAt, `relationReviews[${index}].occurredAt`);
+  const recordedAt = timestamp(record.recordedAt, `relationReviews[${index}].recordedAt`);
+  let parsed;
+  try { const { recordedAt: _recordedAt, ...request } = record; parsed = parseRelationReviewRequest(request); }
+  catch (error) { throw new StoreError('INVALID_BODY', error instanceof Error ? error.message : '关系核对记录无效。', 400); }
+  validateTimeBounds(occurredAt, recordedAt, nowMs, parsed.eventId, parsed.conceptId, state, 'occurredAt');
+  return { ...parsed, recordedAt: recordedAt.raw };
+}
+
+function mappedRelationReview(event: RelationReviewEvent, mapping: ConceptMapping, state: IssueState): RelationReviewEvent {
+  const endpoint = (value: RelationReviewEvent['basis']['source']): RelationReviewEvent['basis']['source'] => ({
+    ...value,
+    conceptId: mappedId(mapping, value.conceptId),
+    current: value.current === null ? null : { ...value.current, conceptId: mappedId(mapping, value.current.conceptId) },
+  });
+  const mapped = { ...event, conceptId: mappedId(mapping, event.conceptId), basis: { ...event.basis, source: endpoint(event.basis.source), target: endpoint(event.basis.target) } };
+  if (mapped.basis.source.conceptId === mapped.basis.target.conceptId) {
+    addIssue(state, 'RELATION_ENDPOINT_MAPPING_COLLISION', `关系核对事件 ${event.eventId} 的两端映射到了同一概念。`, { eventId: event.eventId, conceptId: mapped.conceptId });
+  }
+  return mapped;
 }
 
 function mappedApplication(event: ApplicationRecord, mapping: ConceptMapping, state: IssueState): ApplicationRecord {
@@ -724,6 +752,7 @@ function collectCurrentEvents(current: ExportData): Map<string, EventIdentity> {
     ['retentions', current.retentions ?? []],
     ['applications', current.applications ?? []],
     ['corrections', current.corrections ?? []],
+    ['relationReviews', current.relationReviews ?? []],
   ] as const) {
     for (const event of events) map.set(eventKey(kind, event), { kind, event });
   }
@@ -741,11 +770,11 @@ function compareEventIdentity(left: Event, right: Event, kind: AnyEventKind): bo
 }
 
 function classifyEventConflicts(
-  incoming: { anchors: AnchorEvent[]; observations: Observation[]; retentions: RetentionEvent[]; applications: ApplicationRecord[]; corrections: CorrectionEvent[]; practiceCards: PracticeCardEvent[]; practiceAttempts: PracticeAttempt[] },
+  incoming: { anchors: AnchorEvent[]; observations: Observation[]; retentions: RetentionEvent[]; applications: ApplicationRecord[]; corrections: CorrectionEvent[]; relationReviews: RelationReviewEvent[]; practiceCards: PracticeCardEvent[]; practiceAttempts: PracticeAttempt[] },
   current: ExportData,
   mapping: ConceptMapping,
   state: IssueState,
-): { newAnchors: AnchorEvent[]; newObservations: Observation[]; newRetentions: RetentionEvent[]; newApplications: ApplicationRecord[]; newCorrections: CorrectionEvent[]; newPracticeCards: PracticeCardEvent[]; newPracticeAttempts: PracticeAttempt[]; duplicates: number } {
+): { newAnchors: AnchorEvent[]; newObservations: Observation[]; newRetentions: RetentionEvent[]; newApplications: ApplicationRecord[]; newCorrections: CorrectionEvent[]; newRelationReviews: RelationReviewEvent[]; newPracticeCards: PracticeCardEvent[]; newPracticeAttempts: PracticeAttempt[]; duplicates: number } {
   const currentEvents = collectCurrentEvents(current);
   const currentByEventId = new Map<string, EventIdentity[]>();
   for (const identity of currentEvents.values()) {
@@ -760,6 +789,7 @@ function classifyEventConflicts(
     newRetentions: [] as RetentionEvent[],
     newApplications: [] as ApplicationRecord[],
     newCorrections: [] as CorrectionEvent[],
+    newRelationReviews: [] as RelationReviewEvent[],
     newPracticeCards: [] as PracticeCardEvent[],
     newPracticeAttempts: [] as PracticeAttempt[],
     duplicates: 0,
@@ -770,11 +800,12 @@ function classifyEventConflicts(
     ['retentions', incoming.retentions],
     ['applications', incoming.applications],
     ['corrections', incoming.corrections],
+    ['relationReviews', incoming.relationReviews],
     ['practiceCards', incoming.practiceCards],
     ['practiceAttempts', incoming.practiceAttempts],
   ] as const) {
     for (const original of events) {
-      const event = kind === 'practiceCards' || kind === 'practiceAttempts' || kind === 'applications'
+      const event = kind === 'practiceCards' || kind === 'practiceAttempts' || kind === 'applications' || kind === 'relationReviews'
         ? original as Event
         : mappedConceptEvent(original as { conceptId: string }, mapping) as Event;
       const identity = { kind, event } as EventIdentity;
@@ -798,6 +829,7 @@ function classifyEventConflicts(
       else if (kind === 'retentions') result.newRetentions.push(event as RetentionEvent);
       else if (kind === 'applications') result.newApplications.push(event as ApplicationRecord);
       else if (kind === 'corrections') result.newCorrections.push(event as CorrectionEvent);
+      else if (kind === 'relationReviews') result.newRelationReviews.push(event as RelationReviewEvent);
       else if (kind === 'practiceCards') result.newPracticeCards.push(event as PracticeCardEvent);
       else result.newPracticeAttempts.push(event as PracticeAttempt);
     }
@@ -1173,6 +1205,185 @@ function validateCorrectionChains(input: CorrectionChainValidationInput): Correc
   return ordered;
 }
 
+function compareRelationReviewChronology(left: RelationReviewEvent, right: RelationReviewEvent): number {
+  return compareTime(left.occurredAt, right.occurredAt) || compareTime(left.recordedAt, right.recordedAt) || left.eventId.localeCompare(right.eventId);
+}
+
+interface RelationReviewChainValidationInput {
+  incoming: RelationReviewEvent[];
+  newRelationReviews: RelationReviewEvent[];
+  current: ExportData;
+  applications: ApplicationRecord[];
+  state: IssueState;
+}
+
+/**
+ * Validate historical references and the per-application append-only chain.
+ * Exact incoming duplicates are intentionally harmless: a backup may contain
+ * an older prefix while the live store already has later decisions. New
+ * records, however, must attach to the live tail and are returned in
+ * dependency order for the store transaction.
+ */
+function validateRelationReviewChains(input: RelationReviewChainValidationInput): RelationReviewEvent[] {
+  const { incoming, newRelationReviews, current, applications, state } = input;
+  const applicationsById = new Map<string, ApplicationRecord>();
+  for (const application of current.applications ?? []) applicationsById.set(application.eventId, application);
+  for (const application of applications) applicationsById.set(application.eventId, application);
+
+  const currentRelationReviews = current.relationReviews ?? [];
+  const all = new Map<string, RelationReviewEvent>();
+  for (const event of currentRelationReviews) all.set(event.eventId, event);
+  for (const event of incoming) if (!all.has(event.eventId)) all.set(event.eventId, event);
+  const newIds = new Set(newRelationReviews.map((event) => event.eventId));
+
+  for (const event of incoming) {
+    const application = applicationsById.get(event.applicationEventId);
+    if (!application) {
+      addIssue(state, 'RELATION_REVIEW_APPLICATION_NOT_FOUND', `关系核对事件 ${event.eventId} 引用的应用事件 ${event.applicationEventId} 不存在。`, { eventId: event.eventId, conceptId: event.conceptId });
+      continue;
+    }
+    if (application.conceptId !== event.conceptId) {
+      addIssue(state, 'RELATION_REVIEW_CONCEPT_MISMATCH', `关系核对事件 ${event.eventId} 与应用事件 ${event.applicationEventId} 不属于同一概念。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    const suggestion = application.relationSuggestion;
+    if (!suggestion) {
+      addIssue(state, 'RELATION_REVIEW_SOURCE_EMPTY', `应用事件 ${event.applicationEventId} 没有关系建议。`, { eventId: event.eventId, conceptId: event.conceptId });
+    } else {
+      try { validateRelationReviewBasis(suggestion, event.basis); }
+      catch { addIssue(state, 'RELATION_REVIEW_BASIS_MISMATCH', `关系核对事件 ${event.eventId} 的冻结依据与应用建议不一致。`, { eventId: event.eventId, conceptId: event.conceptId }); continue; }
+      if (event.status === 'resolved' && !relationReviewMatches(suggestion, event.basis)) {
+        addIssue(state, 'RELATION_REVIEW_UNVERIFIED', `关系核对事件 ${event.eventId} 的 resolved 状态缺少匹配的冻结依据。`, { eventId: event.eventId, conceptId: event.conceptId });
+      }
+    }
+    if (compareTime(application.occurredAt, event.occurredAt) > 0) {
+      addIssue(state, 'RELATION_REVIEW_BEFORE_APPLICATION', `关系核对事件 ${event.eventId} 早于其应用事件 ${event.applicationEventId}。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+  }
+
+  const children = new Map<string, RelationReviewEvent>();
+  const roots = new Map<string, RelationReviewEvent>();
+  for (const event of all.values()) {
+    if (event.previousEventId === null) {
+      const key = event.applicationEventId;
+      const root = roots.get(key);
+      if (root && root.eventId !== event.eventId) {
+        addIssue(state, 'RELATION_REVIEW_ROOT_BRANCH', `应用事件 ${key} 存在多个关系核对起点。`, { eventId: event.eventId, conceptId: event.conceptId });
+      } else {
+        roots.set(key, event);
+      }
+      continue;
+    }
+    const previous = all.get(event.previousEventId);
+    if (!previous) {
+      addIssue(state, 'RELATION_REVIEW_PREVIOUS_NOT_FOUND', `关系核对事件 ${event.eventId} 引用的前一事件 ${event.previousEventId} 不存在。`, { eventId: event.eventId, conceptId: event.conceptId });
+      continue;
+    }
+    if (previous.applicationEventId !== event.applicationEventId) {
+      addIssue(state, 'RELATION_REVIEW_APPLICATION_MISMATCH', `关系核对事件 ${event.eventId} 的前一事件属于另一个应用事件。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    if (previous.conceptId !== event.conceptId) {
+      addIssue(state, 'RELATION_REVIEW_CONCEPT_MISMATCH', `关系核对事件 ${event.eventId} 与前一事件不属于同一概念。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    if (compareTime(previous.occurredAt, event.occurredAt) > 0) {
+      addIssue(state, 'RELATION_REVIEW_BEFORE_PREVIOUS', `关系核对事件 ${event.eventId} 早于其前一事件 ${previous.eventId}。`, { eventId: event.eventId, conceptId: event.conceptId });
+    }
+    const child = children.get(previous.eventId);
+    if (child && child.eventId !== event.eventId) {
+      addIssue(state, 'RELATION_REVIEW_BRANCH', `关系核对事件 ${previous.eventId} 出现分叉。`, { eventId: event.eventId, conceptId: event.conceptId });
+    } else {
+      children.set(previous.eventId, event);
+    }
+  }
+
+  const reportedCycles = new Set<string>();
+  const completed = new Set<string>();
+  for (const start of all.values()) {
+    const path: string[] = [];
+    const positions = new Map<string, number>();
+    let cursor: RelationReviewEvent | undefined = start;
+    while (cursor) {
+      if (completed.has(cursor.eventId)) break;
+      const previousPosition = positions.get(cursor.eventId);
+      if (previousPosition !== undefined) {
+        const cycle = path.slice(previousPosition).sort().join('|');
+        if (!reportedCycles.has(cycle)) {
+          reportedCycles.add(cycle);
+          addIssue(state, 'RELATION_REVIEW_CYCLE', `关系核对事件 ${start.eventId} 的 previousEventId 形成环。`, { eventId: start.eventId, conceptId: start.conceptId });
+        }
+        break;
+      }
+      positions.set(cursor.eventId, path.length);
+      path.push(cursor.eventId);
+      cursor = cursor.previousEventId === null ? undefined : all.get(cursor.previousEventId);
+    }
+    for (const eventId of path) completed.add(eventId);
+  }
+
+  const currentByApplication = new Map<string, RelationReviewEvent[]>();
+  for (const event of currentRelationReviews) {
+    const list = currentByApplication.get(event.applicationEventId) ?? [];
+    list.push(event);
+    currentByApplication.set(event.applicationEventId, list);
+  }
+  const newByApplication = new Map<string, RelationReviewEvent[]>();
+  for (const event of newRelationReviews) {
+    const list = newByApplication.get(event.applicationEventId) ?? [];
+    list.push(event);
+    newByApplication.set(event.applicationEventId, list);
+  }
+  for (const [applicationEventId, added] of newByApplication) {
+    const existing = currentByApplication.get(applicationEventId) ?? [];
+    const currentChildren = new Set(existing.map((event) => event.previousEventId).filter((id): id is string => id !== null));
+    const tails = existing.filter((event) => !currentChildren.has(event.eventId));
+    const newRoots = added.filter((event) => event.previousEventId === null || !newIds.has(event.previousEventId));
+    if (newRoots.length !== 1) {
+      addIssue(state, 'RELATION_REVIEW_CHAIN_ROOT_INVALID', `应用事件 ${applicationEventId} 的新增关系核对链必须只有一个起点。`, { conceptId: added[0]?.conceptId });
+      continue;
+    }
+    const root = newRoots[0];
+    if (tails.length > 1) {
+      addIssue(state, 'RELATION_REVIEW_CHAIN_TAIL_INVALID', `应用事件 ${applicationEventId} 的当前关系核对链存在多个尾部。`, { eventId: root.eventId, conceptId: root.conceptId });
+    } else if (tails.length === 1) {
+      if (root.previousEventId !== tails[0].eventId) {
+        addIssue(state, 'RELATION_REVIEW_CHAIN_NOT_AT_HEAD', `应用事件 ${applicationEventId} 的新增关系核对链没有接在当前尾部。`, { eventId: root.eventId, conceptId: root.conceptId });
+      }
+    } else if (root.previousEventId !== null && !currentChildren.has(root.previousEventId)) {
+      addIssue(state, 'RELATION_REVIEW_CHAIN_ROOT_INVALID', `应用事件 ${applicationEventId} 的首个关系核对事件必须从空 previousEventId 开始。`, { eventId: root.eventId, conceptId: root.conceptId });
+    }
+  }
+
+  const indegree = new Map<string, number>();
+  const newChildren = new Map<string, RelationReviewEvent[]>();
+  for (const event of newRelationReviews) indegree.set(event.eventId, 0);
+  for (const event of newRelationReviews) {
+    if (event.previousEventId === null || !newIds.has(event.previousEventId)) continue;
+    indegree.set(event.eventId, (indegree.get(event.eventId) ?? 0) + 1);
+    const list = newChildren.get(event.previousEventId) ?? [];
+    list.push(event);
+    newChildren.set(event.previousEventId, list);
+  }
+  const ready = [...newRelationReviews].filter((event) => indegree.get(event.eventId) === 0).sort(compareRelationReviewChronology);
+  let readyIndex = 0;
+  const ordered: RelationReviewEvent[] = [];
+  while (readyIndex < ready.length) {
+    const event = ready[readyIndex];
+    readyIndex += 1;
+    ordered.push(event);
+    for (const child of newChildren.get(event.eventId) ?? []) {
+      const next = (indegree.get(child.eventId) ?? 0) - 1;
+      indegree.set(child.eventId, next);
+      if (next === 0) {
+        ready.push(child);
+      }
+    }
+  }
+  if (ordered.length !== newRelationReviews.length) {
+    const seen = new Set(ordered.map((event) => event.eventId));
+    ordered.push(...newRelationReviews.filter((event) => !seen.has(event.eventId)).sort(compareRelationReviewChronology));
+  }
+  return ordered;
+}
+
 function validateLayout(value: unknown, label: string): Layout {
   const record = requireRecord(value, label);
   const entries = Object.entries(record);
@@ -1348,6 +1559,7 @@ function sortTokenCollections(value: ExportData): ExportData {
   copy.retentions = [...(copy.retentions ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.applications = [...(copy.applications ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.corrections = [...(copy.corrections ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
+  if (copy.relationReviews !== undefined) copy.relationReviews = [...copy.relationReviews].sort((a, b) => a.eventId.localeCompare(b.eventId));
   if (copy.practice) {
     copy.practice.cards = [...copy.practice.cards].sort((a, b) => a.eventId.localeCompare(b.eventId));
     copy.practice.attempts = [...copy.practice.attempts].sort((a, b) => a.eventId.localeCompare(b.eventId));
@@ -1389,14 +1601,24 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
       attempts: requireArray(record.practice.attempts, 'practice.attempts'),
     }
     : null;
+  const rawRelationReviews = optionalArray(record, 'relationReviews');
   const references = collectReferences(rawEvents, record);
+  for (const raw of rawRelationReviews) {
+    if (!isRecord(raw)) continue;
+    if (typeof raw.conceptId === 'string') references.add(raw.conceptId);
+    if (!isRecord(raw.basis)) continue;
+    for (const endpoint of [raw.basis.source, raw.basis.target]) {
+      if (isRecord(endpoint) && typeof endpoint.conceptId === 'string') references.add(endpoint.conceptId);
+      if (isRecord(endpoint) && isRecord(endpoint.current) && typeof endpoint.current.conceptId === 'string') references.add(endpoint.current.conceptId);
+    }
+  }
   const state: IssueState = { all: [], errors: 0 };
   if (Array.isArray(record.identityBindings) && record.identityBindings.length > 0) {
     addIssue(state, 'IDENTITY_BINDINGS_UNTRUSTED', '备份中的 identityBindings 仅供确认时核对，不会授权路径映射或自动创建绑定；导入仍按当前知识空间的路径和版本关联。', { severity: 'warning' });
   }
   const mapping = buildConceptMapping(backupConcepts, input.concepts, references, input.acceptedPaths, state);
   const parsedEvents = parseEventArrays(record, now.ms, state);
-  if (eventCount(rawEvents) + (rawPractice ? rawPractice.cards.length + rawPractice.attempts.length : 0) > MAX_EVENTS) {
+  if (eventCount(rawEvents) + rawRelationReviews.length + (rawPractice ? rawPractice.cards.length + rawPractice.attempts.length : 0) > MAX_EVENTS) {
     invalid(`事件总数不能超过 ${MAX_EVENTS}。`, 'IMPORT_LIMIT');
   }
   const hasDuplicatePracticeSource = hasRawPracticeSourceDuplicate(record.practice, state);
@@ -1412,6 +1634,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   const mappedRetentions = parsedEvents.retentions.map((event) => mappedConceptEvent(event, mapping));
   const mappedApplications = parsedEvents.applications.map((event) => mappedApplication(event, mapping, state));
   const mappedCorrections = parsedEvents.corrections.map((event) => mappedConceptEvent(event, mapping));
+  const mappedRelationReviews = rawRelationReviews.map((value, index) => mappedRelationReview(validateRelationReview(value, index, now.ms, state), mapping, state));
   const mappedPracticeCards = (parsedPractice?.cards ?? []).map((card) => mappedPracticeCard(card, mapping, state));
   const mappedPracticeAttempts = parsedPractice?.attempts ?? [];
 
@@ -1439,6 +1662,15 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     }
   }
 
+  for (const event of mappedRelationReviews) {
+    for (const endpoint of [event.basis.source, event.basis.target]) {
+      const live = input.concepts.find((item) => item.id === endpoint.conceptId);
+      if (live && endpoint.current && live.source.revision !== endpoint.current.sourceRevision) {
+        addIssue(state, 'RELATION_REVIEW_SOURCE_REVISION_CHANGED', `关系核对事件 ${event.eventId} 的端点 ${endpoint.conceptId} 引用了旧版本，将保留冻结依据。`, { severity: 'warning', eventId: event.eventId, conceptId: endpoint.conceptId });
+      }
+    }
+  }
+
   for (const event of [...mappedAnchors, ...mappedObservations, ...mappedRetentions, ...mappedApplications, ...mappedCorrections]) {
     if (event.sourceRevision && event.conceptId && input.concepts.some((concept) => concept.id === event.conceptId && concept.source.revision !== event.sourceRevision)) {
       addIssue(state, 'OLD_SOURCE_REVISION', `事件 ${event.eventId} 使用了当前概念的旧来源版本，将保留为历史记录。`, { severity: 'warning', eventId: event.eventId, conceptId: event.conceptId });
@@ -1448,6 +1680,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   const classified = classifyEventConflicts({
     ...parsedEvents,
     applications: mappedApplications,
+    relationReviews: mappedRelationReviews,
     practiceCards: mappedPracticeCards,
     practiceAttempts: mappedPracticeAttempts,
   }, input.current, mapping, state);
@@ -1482,6 +1715,10 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     applications: classified.newApplications,
     state,
   });
+  const orderedRelationReviews = validateRelationReviewChains({
+    incoming: mappedRelationReviews, newRelationReviews: classified.newRelationReviews,
+    current: input.current, applications: classified.newApplications, state,
+  });
   const currentLayout = validateLayout(input.current.layout, 'current.layout');
   const incomingLayout = validateLayout(record.layout, 'layout');
   const layout = mergeLayout(currentLayout, incomingLayout, mapping, options.restoreLayout);
@@ -1501,6 +1738,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     retentions: mappedRetentions,
     applications: mappedApplications,
     corrections: mappedCorrections,
+    ...(record.relationReviews !== undefined ? { relationReviews: mappedRelationReviews } : {}),
     ...(record.practice !== undefined
       ? { practice: { cards: mappedPracticeCards, attempts: mappedPracticeAttempts } }
       : {}),
@@ -1530,6 +1768,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     matchedConcepts: mapping.matches.filter((match) => match.toId !== null).length,
     remappedConcepts: mapping.matches.filter((match) => match.match === 'path-revision').length,
     unresolvedConcepts: mapping.unresolved.size,
+    ...(record.relationReviews !== undefined ? { relationReviews: classified.newRelationReviews.length } : {}),
     ...(record.practice !== undefined ? {
       practiceCards: classified.newPracticeCards.length,
       practiceAttempts: classified.newPracticeAttempts.length,
@@ -1557,6 +1796,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     newRetentions: orderedRetentions.filter((event) => classified.newRetentions.some((candidate) => candidate.eventId === event.eventId)),
     newApplications: classified.newApplications,
     newCorrections: orderedCorrections,
+    newRelationReviews: orderedRelationReviews,
     newPracticeCards: orderedPracticeCards,
     newPracticeAttempts: classified.newPracticeAttempts,
     newConfigs: configMerge.newConfigs,

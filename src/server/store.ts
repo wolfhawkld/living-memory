@@ -69,6 +69,7 @@ import { buildLearningProgress } from '../core/learning-progress.js';
 import { buildScenarioPromptPage, type ScenarioPromptCursor } from '../core/scenario-prompts.js';
 import { buildImportPlan, type PreparedConfig, type PreparedImport } from './import-plan.js';
 import { parsePracticeAttemptRequest, parsePracticeCardRequest } from './practice-validation.js';
+import { parseRelationReviewRequest as parseSharedRelationReviewRequest, parseRelationReviewBasis, validateRelationReviewBasis, relationReviewMatches, type RelationReviewRequest, type RelationReviewEvent, type RelationReviewHistory, type RelationReviewStatus } from '../shared/relation-reviews.js';
 import { parseRelationSuggestion } from '../shared/relation-suggestions.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 7;
@@ -696,6 +697,22 @@ export class Store {
         request_payload TEXT NOT NULL,
         PRIMARY KEY(namespace, event_id)
       );
+      CREATE TABLE IF NOT EXISTS relation_reviews (
+        namespace TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        application_event_id TEXT NOT NULL,
+        concept_id TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        previous_event_id TEXT,
+        status TEXT NOT NULL CHECK(status IN ('resolved', 'dismissed', 'open')),
+        note TEXT NOT NULL,
+        basis_json TEXT NOT NULL,
+        request_payload TEXT NOT NULL,
+        PRIMARY KEY(namespace, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS relation_reviews_by_application
+        ON relation_reviews(namespace, application_event_id, occurred_at, recorded_at, event_id);
       CREATE TABLE IF NOT EXISTS practice_cards (
         namespace TEXT NOT NULL,
         event_id TEXT NOT NULL,
@@ -998,7 +1015,7 @@ export class Store {
     }
   }
 
-  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | PracticeEventKind; payload: string } | null {
+  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | 'relation-review' | PracticeEventKind; payload: string } | null {
     const anchor = this.db.prepare('SELECT request_payload FROM anchors WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (anchor) return { kind: 'anchor', payload: anchor.request_payload };
     const observation = this.db.prepare('SELECT request_payload FROM observations WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
@@ -1009,6 +1026,8 @@ export class Store {
     if (application) return { kind: 'application', payload: application.request_payload };
     const correction = this.db.prepare('SELECT request_payload FROM corrections WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (correction) return { kind: 'correction', payload: correction.request_payload };
+    const relationReview = this.db.prepare('SELECT request_payload FROM relation_reviews WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
+    if (relationReview) return { kind: 'relation-review', payload: relationReview.request_payload };
     const card = this.db.prepare('SELECT request_payload FROM practice_cards WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (card) return { kind: 'practice-card', payload: card.request_payload };
     const attempt = this.db.prepare('SELECT request_payload FROM practice_attempts WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
@@ -2223,6 +2242,214 @@ export class Store {
     return { status: 'accepted', eventId: request.eventId };
   }
 
+  private relationReviewRequestPayload(request: RelationReviewRequest): string {
+    return canonicalJson({
+      eventId: request.eventId,
+      applicationEventId: request.applicationEventId,
+      conceptId: request.conceptId,
+      basis: request.basis,
+      occurredAt: request.occurredAt,
+      previousEventId: request.previousEventId,
+      status: request.status,
+      note: request.note,
+    });
+  }
+
+  private relationReviewFromRow(row: {
+    event_id: string;
+    application_event_id: string;
+    concept_id: string;
+    basis_json: string;
+    occurred_at: string;
+    recorded_at: string;
+    previous_event_id: string | null;
+    status: RelationReviewStatus;
+    note: string;
+  }): RelationReviewEvent {
+    return {
+      eventId: row.event_id,
+      applicationEventId: row.application_event_id,
+      conceptId: row.concept_id,
+      basis: parseRelationReviewBasis(JSON.parse(row.basis_json)),
+      occurredAt: row.occurred_at,
+      recordedAt: row.recorded_at,
+      previousEventId: row.previous_event_id,
+      status: row.status,
+      note: row.note,
+    };
+  }
+
+  private relationReviewTail(applicationEventId: string): RelationReviewEvent | null {
+    const rows = this.db.prepare(`
+      SELECT c.event_id, c.application_event_id, c.concept_id, c.basis_json,
+        c.occurred_at, c.recorded_at, c.previous_event_id, c.status, c.note
+      FROM relation_reviews AS c
+      WHERE c.namespace = ? AND c.application_event_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM relation_reviews AS child
+          WHERE child.namespace = c.namespace
+            AND child.application_event_id = c.application_event_id
+            AND child.previous_event_id = c.event_id
+        )
+    `).all(this.namespace, applicationEventId) as Array<{
+      event_id: string;
+      application_event_id: string;
+      concept_id: string;
+      basis_json: string;
+      occurred_at: string;
+      recorded_at: string;
+      previous_event_id: string | null;
+      status: RelationReviewStatus;
+      note: string;
+    }>;
+    if (rows.length > 1) {
+      throw new StoreError('RELATION_REVIEW_CONFLICT', '关系复核历史链出现多个当前尾节点，无法安全追加。', 409);
+    }
+    return rows.length === 1 ? this.relationReviewFromRow(rows[0]) : null;
+  }
+
+  getRelationReviews(conceptId?: string, applicationEventId?: string): RelationReviewEvent[] {
+    let query = `SELECT event_id, application_event_id, concept_id, basis_json,
+      occurred_at, recorded_at, previous_event_id, status, note
+      FROM relation_reviews WHERE namespace = ?`;
+    const parameters: string[] = [this.namespace];
+    if (conceptId !== undefined) {
+      query += ' AND concept_id = ?';
+      parameters.push(conceptId);
+    }
+    if (applicationEventId !== undefined) {
+      query += ' AND application_event_id = ?';
+      parameters.push(applicationEventId);
+    }
+    query += ' ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC';
+    const rows = this.db.prepare(query).all(...parameters) as Array<{
+      event_id: string;
+      application_event_id: string;
+      concept_id: string;
+      basis_json: string;
+      occurred_at: string;
+      recorded_at: string;
+      previous_event_id: string | null;
+      status: RelationReviewStatus;
+      note: string;
+    }>;
+    return rows.map((row) => this.relationReviewFromRow(row));
+  }
+
+  getRelationReviewHistory(applicationEventId: string, limit = 50): RelationReviewHistory {
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new StoreError('INVALID_HISTORY_LIMIT', '关系复核历史 limit 必须是正整数。');
+    }
+    const boundedLimit = Math.min(limit, 50);
+    const totalRow = this.db.prepare(`SELECT COUNT(*) AS count
+      FROM relation_reviews WHERE namespace = ? AND application_event_id = ?`).get(this.namespace, applicationEventId) as { count: number };
+    const latest = this.relationReviewTail(applicationEventId);
+    const events: RelationReviewEvent[] = [];
+    const visited = new Set<string>();
+    let current = latest;
+    while (current && events.length < boundedLimit && !visited.has(current.eventId)) {
+      visited.add(current.eventId);
+      events.push(current);
+      if (!current.previousEventId) {
+        current = null;
+        continue;
+      }
+      const previous = this.db.prepare(`SELECT event_id, application_event_id, concept_id, basis_json,
+        occurred_at, recorded_at, previous_event_id, status, note
+        FROM relation_reviews
+        WHERE namespace = ? AND application_event_id = ? AND event_id = ?`).get(
+        this.namespace, applicationEventId, current.previousEventId,
+      ) as {
+        event_id: string;
+        application_event_id: string;
+        concept_id: string;
+        basis_json: string;
+        occurred_at: string;
+        recorded_at: string;
+        previous_event_id: string | null;
+        status: RelationReviewStatus;
+        note: string;
+      } | undefined;
+      current = previous ? this.relationReviewFromRow(previous) : null;
+    }
+    return { latest, events, total: totalRow.count };
+  }
+
+  /** Append an independent immutable human relation-review decision. */
+  addRelationReview(input: RelationReviewRequest): StoreWriteResult {
+    const request = parseRelationReviewRequest(input);
+    this.ensureEventId(request.eventId);
+    const requestPayload = this.relationReviewRequestPayload(request);
+    const existing = this.findEvent(request.eventId);
+    if (existing) {
+      if (existing.kind !== 'relation-review' || existing.payload !== requestPayload) {
+        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+      }
+      return { status: 'duplicate', eventId: request.eventId };
+    }
+
+    const now = this.now();
+    const nowMs = now.getTime();
+    if (parseDate(request.occurredAt) > nowMs) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
+    const recordedAt = iso(now);
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      // Re-check under the write lock. A concurrent writer may have claimed
+      // this event ID after the optimistic duplicate check above.
+      const concurrent = this.findEvent(request.eventId);
+      if (concurrent) {
+        if (concurrent.kind !== 'relation-review' || concurrent.payload !== requestPayload) {
+          throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        }
+        this.db.exec('COMMIT');
+        return { status: 'duplicate', eventId: request.eventId };
+      }
+
+      const parent = this.db.prepare(`SELECT concept_id, source_revision, occurred_at, relation_suggestion_json
+        FROM applications WHERE namespace = ? AND event_id = ?`).get(this.namespace, request.applicationEventId) as {
+          concept_id: string; source_revision: string; occurred_at: string; relation_suggestion_json: string | null;
+        } | undefined;
+      if (!parent) throw new StoreError('APPLICATION_NOT_FOUND', '找不到同一知识空间中的应用记录。', 409);
+      if (parent.concept_id !== request.conceptId) throw new StoreError('RELATION_REVIEW_CONFLICT', '关系复核主概念与应用记录不一致。', 409);
+      if (!parent.relation_suggestion_json) throw new StoreError('INVALID_BODY', '应用记录没有关系建议。');
+      const suggestion = parseRelationSuggestion(JSON.parse(parent.relation_suggestion_json), { conceptId: parent.concept_id, sourceRevision: parent.source_revision });
+      try { validateRelationReviewBasis(suggestion, request.basis); } catch (error) { throw new StoreError('INVALID_BODY', error instanceof Error ? error.message : '关系复核依据无效。'); }
+      if (request.status === 'resolved' && !relationReviewMatches(suggestion, request.basis)) throw new StoreError('RELATION_REVIEW_NOT_MATCHED', '当前关系核对依据不符合建议，不能确认已采纳。', 409);
+      const tail = this.relationReviewTail(request.applicationEventId);
+      const currentPreviousEventId = tail?.eventId ?? null;
+      if (request.previousEventId !== currentPreviousEventId) {
+        throw new StoreError('RELATION_REVIEW_CONFLICT', '关系复核历史已变化，请重新读取当前尾节点后重试。', 409);
+      }
+      const lowerBound = tail ? parseDate(tail.occurredAt) : parseDate(parent.occurred_at);
+      const occurredAtMs = parseDate(request.occurredAt);
+      if (occurredAtMs < lowerBound) {
+        throw new StoreError('RELATION_REVIEW_CONFLICT', '关系复核发生时间不能早于应用记录或上一条关系复核。', 409);
+      }
+      this.db.prepare(`INSERT INTO relation_reviews(
+        namespace, event_id, application_event_id, concept_id, basis_json,
+        occurred_at, recorded_at, previous_event_id, status, note, request_payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        this.namespace,
+        request.eventId,
+        request.applicationEventId,
+        request.conceptId,
+        canonicalJson(request.basis),
+        request.occurredAt,
+        recordedAt,
+        request.previousEventId,
+        request.status,
+        request.note,
+        requestPayload,
+      );
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (error instanceof StoreError) throw error;
+      throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
+    }
+    return { status: 'accepted', eventId: request.eventId };
+  }
+
   countObservations(): number {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM observations WHERE namespace = ?').get(this.namespace) as { count: number };
     return row.count;
@@ -3109,7 +3336,7 @@ export class Store {
     throw new StoreError('IMPORT_CONFLICT', `导入事件 ${eventId} 与当前知识空间中的记录不一致。`, 409);
   }
 
-  private eventAlreadyImported(eventId: string, kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | PracticeEventKind, requestPayload: string): boolean {
+  private eventAlreadyImported(eventId: string, kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | 'relation-review' | PracticeEventKind, requestPayload: string): boolean {
     const existing = this.findEvent(eventId);
     if (!existing) return false;
     if (existing.kind !== kind || existing.payload !== requestPayload) this.importEventConflict(eventId);
@@ -3363,6 +3590,26 @@ export class Store {
     );
   }
 
+  private insertImportedRelationReview(event: RelationReviewEvent): void {
+    const request = parseRelationReviewRequest({ eventId: event.eventId, applicationEventId: event.applicationEventId, conceptId: event.conceptId, occurredAt: event.occurredAt, previousEventId: event.previousEventId, status: event.status, note: event.note, basis: event.basis });
+    const payload = this.relationReviewRequestPayload(request);
+    if (this.eventAlreadyImported(event.eventId, 'relation-review', payload)) return;
+    if (!isValidInstant(event.recordedAt) || parseDate(event.recordedAt) < parseDate(request.occurredAt)) throw new StoreError('IMPORT_INVALID_DATA', '关系复核记录时间无效。');
+    const parent = this.db.prepare(`SELECT concept_id, source_revision, occurred_at, relation_suggestion_json
+      FROM applications WHERE namespace = ? AND event_id = ?`).get(this.namespace, request.applicationEventId) as {
+        concept_id: string; source_revision: string; occurred_at: string; relation_suggestion_json: string | null;
+      } | undefined;
+    if (!parent || parent.concept_id !== request.conceptId) throw new StoreError('IMPORT_CONFLICT', '关系复核父记录不存在或主概念不一致。', 409);
+    if (!parent.relation_suggestion_json) throw new StoreError('IMPORT_INVALID_DATA', '关系复核父记录没有关系建议。');
+    const suggestion = parseRelationSuggestion(JSON.parse(parent.relation_suggestion_json), { conceptId: parent.concept_id, sourceRevision: parent.source_revision });
+    try { validateRelationReviewBasis(suggestion, request.basis); } catch (error) { throw new StoreError('IMPORT_INVALID_DATA', error instanceof Error ? error.message : '关系复核依据无效。'); }
+    if (request.status === 'resolved' && !relationReviewMatches(suggestion, request.basis)) throw new StoreError('IMPORT_CONFLICT', '已采纳关系复核的历史依据不匹配。', 409);
+    const tail = this.relationReviewTail(request.applicationEventId);
+    if (request.previousEventId !== (tail?.eventId ?? null)) throw new StoreError('IMPORT_CONFLICT', '关系复核前置记录不匹配。', 409);
+    if (parseDate(request.occurredAt) < parseDate(tail?.occurredAt ?? parent.occurred_at)) throw new StoreError('IMPORT_INVALID_DATA', '关系复核早于父记录或前置复核。');
+    this.db.prepare(`INSERT INTO relation_reviews(namespace, event_id, application_event_id, concept_id, basis_json, occurred_at, recorded_at, previous_event_id, status, note, request_payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(this.namespace, request.eventId, request.applicationEventId, request.conceptId, canonicalJson(request.basis), request.occurredAt, event.recordedAt, request.previousEventId, request.status, request.note, payload);
+  }
+
   private mergeImportedConcepts(concepts: Array<Pick<Concept, 'id' | 'title' | 'source'>>): void {
     for (const concept of concepts) {
       if (typeof concept.id !== 'string' || !concept.id.trim()
@@ -3462,6 +3709,7 @@ export class Store {
       for (const observation of prepared.newObservations) this.insertImportedObservation(observation);
       for (const retention of prepared.newRetentions) this.insertImportedRetention(retention);
       for (const application of prepared.newApplications) this.insertImportedApplication(application);
+      for (const review of prepared.newRelationReviews) this.insertImportedRelationReview(review);
       for (const correction of prepared.newCorrections) this.insertImportedCorrection(correction);
       // Practice history is restored in the same transaction, but remains in
       // its own tables so it cannot affect Observation-based aggregates.
@@ -3520,6 +3768,12 @@ export class Store {
         }
       }
     }
+    const relationReviews = this.getRelationReviews();
+    for (const review of relationReviews) {
+      for (const endpoint of [review.basis.source.current, review.basis.target.current]) {
+        if (endpoint && !mergedConcepts.has(endpoint.conceptId) && !boundRawIds.has(endpoint.conceptId)) mergedConcepts.set(endpoint.conceptId, { id: endpoint.conceptId, title: endpoint.title, source: { path: endpoint.path, revision: endpoint.sourceRevision } });
+      }
+    }
     const practice = this.getPracticeData();
     return {
       schemaVersion: 1,
@@ -3534,6 +3788,7 @@ export class Store {
       retentions: this.getRetentions(),
       applications,
       corrections: this.getCorrections(),
+      ...(relationReviews.length ? { relationReviews } : {}),
       ...(practice.cards.length || practice.attempts.length ? { practice } : {}),
       reviewPlan: this.getReviewPlan(),
       layout: this.getLayout(),
@@ -3618,4 +3873,9 @@ export function parseObservationRequest(value: unknown): ObservationRequest {
     ...(learning ? { learning } : {}),
     ...(evidenceMode ? { evidenceMode } : {}),
   };
+}
+
+export function parseRelationReviewRequest(value: unknown): RelationReviewRequest {
+  try { return parseSharedRelationReviewRequest(value); }
+  catch (error) { throw new StoreError('INVALID_BODY', error instanceof Error ? error.message : '关系复核请求无效。'); }
 }

@@ -12,6 +12,15 @@ import type { CorrectionHistory } from '../shared/corrections';
 import { ApplicationMaterialPreview } from './ApplicationRecordDialog';
 import { ApplicationCorrectionPanel, type SaveCorrection } from './ApplicationCorrectionPanel';
 import { RelationSuggestionPreview } from './RelationSuggestionPreview';
+import { ApplicationRelationReviewPanel, type ApplicationRelationReviewPanelProps } from './ApplicationRelationReviewPanel';
+
+export interface RelationReviewIntegration {
+  sourceId: string;
+  loadReview: ApplicationRelationReviewPanelProps['loadReview'];
+  onSave: ApplicationRelationReviewPanelProps['onSave'];
+  pendingApplications: readonly string[];
+  recoveryVersions: Readonly<Record<string, number>>;
+}
 
 export interface ConceptHistoryPanelProps {
   history: ConceptHistory | null;
@@ -29,6 +38,7 @@ export interface ConceptHistoryPanelProps {
   pendingCorrectionApplications?: readonly string[];
   onCorrectionEditingChange?: (applicationEventId: string, editing: boolean) => void;
   correctionRecoveryVersions?: Readonly<Record<string, number>>;
+  relationReview?: RelationReviewIntegration;
   focusedApplicationEventId?: string;
   onClearFocus?: () => void;
 }
@@ -211,7 +221,7 @@ function ObservationEntry({
   );
 }
 
-function ApplicationEntry({ event, history, concept, onRevealAnswer, correctionHistory, correctionDisabled, pendingCorrection, onSaveCorrection, onRefreshHistory, onCorrectionEditingChange, recoveryVersion }: {
+function ApplicationEntry({ event, history, concept, onRevealAnswer, correctionHistory, correctionDisabled, pendingCorrection, onSaveCorrection, onRefreshHistory, onCorrectionEditingChange, recoveryVersion, relationReview }: {
   event: ApplicationRecord;
   history: ConceptHistory;
   concept?: Concept;
@@ -220,6 +230,7 @@ function ApplicationEntry({ event, history, concept, onRevealAnswer, correctionH
   correctionDisabled: boolean;
   pendingCorrection: boolean;
   recoveryVersion: number;
+  relationReview?: RelationReviewIntegration;
   onSaveCorrection?: SaveCorrection;
   onRefreshHistory: () => void;
   onCorrectionEditingChange?: (applicationEventId: string, editing: boolean) => void;
@@ -249,6 +260,14 @@ function ApplicationEntry({ event, history, concept, onRevealAnswer, correctionH
       {revealed ? <div className="concept-history-answer">
         {fields.filter(([, value]) => value).map(([label, value]) => <div key={label}><span className="concept-history-answer-label">{label}</span><p>{value}</p></div>)}
         {event.relationSuggestion ? <RelationSuggestionPreview suggestion={event.relationSuggestion} /> : null}
+        {event.relationSuggestion && relationReview ? <ApplicationRelationReviewPanel
+          key={`${relationReview.sourceId}:${event.eventId}:${relationReview.recoveryVersions[event.eventId] ?? 0}`}
+          application={event} sourceId={relationReview.sourceId} refreshKey={history.asOf}
+          loadReview={relationReview.loadReview} onSave={relationReview.onSave}
+          disabled={correctionDisabled} pending={relationReview.pendingApplications.includes(event.eventId)}
+          onRefreshHistory={onRefreshHistory}
+          onEditingChange={(editing) => onCorrectionEditingChange?.(`relation:${event.eventId}`, editing)}
+        /> : null}
         {concept ? <ApplicationMaterialPreview concept={{ ...concept, source: { ...concept.source, revision: event.sourceRevision } }} record={event} /> : null}
         <ApplicationCorrectionPanel
           key={`${event.eventId}:${recoveryVersion}`}
@@ -259,14 +278,14 @@ function ApplicationEntry({ event, history, concept, onRevealAnswer, correctionH
           pending={pendingCorrection}
           onSave={onSaveCorrection}
           onRefreshHistory={onRefreshHistory}
-          onEditingChange={(editing) => onCorrectionEditingChange?.(event.eventId, editing)}
+          onEditingChange={(editing) => onCorrectionEditingChange?.(`text:${event.eventId}`, editing)}
         />
       </div> : null}
     </div>
   </li>;
 }
 
-function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrection, onRefreshHistory, correctionDisabled, pendingCorrectionApplications, onCorrectionEditingChange, correctionRecoveryVersions }: {
+function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrection, onRefreshHistory, correctionDisabled, pendingCorrectionApplications, onCorrectionEditingChange, correctionRecoveryVersions, relationReview }: {
   entry: ConceptHistoryEntry;
   history: ConceptHistory;
   concept?: Concept;
@@ -276,6 +295,7 @@ function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrectio
   correctionDisabled: boolean;
   pendingCorrectionApplications: readonly string[];
   correctionRecoveryVersions: Readonly<Record<string, number>>;
+  relationReview?: RelationReviewIntegration;
   onCorrectionEditingChange?: (applicationEventId: string, editing: boolean) => void;
 }): ReactElement {
   if (entry.type === 'application') {
@@ -293,6 +313,7 @@ function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrectio
       correctionDisabled={correctionDisabled}
       pendingCorrection={pendingCorrectionApplications.includes(entry.event.eventId)}
       recoveryVersion={correctionRecoveryVersions[entry.event.eventId] ?? 0}
+      relationReview={relationReview}
       onSaveCorrection={onSaveCorrection}
       onRefreshHistory={onRefreshHistory}
       onCorrectionEditingChange={onCorrectionEditingChange}
@@ -333,6 +354,7 @@ export function ConceptHistoryPanel({
   correctionDisabled = false,
   pendingCorrectionApplications = [],
   correctionRecoveryVersions = {},
+  relationReview,
   focusedApplicationEventId,
   onClearFocus,
   onCorrectionEditingChange,
@@ -399,6 +421,7 @@ export function ConceptHistoryPanel({
                   correctionDisabled={correctionDisabled || loading || loadingMore || Boolean(error)}
                   pendingCorrectionApplications={pendingCorrectionApplications}
                   correctionRecoveryVersions={correctionRecoveryVersions}
+                  relationReview={relationReview}
                   onCorrectionEditingChange={onCorrectionEditingChange}
                 />
               ))}

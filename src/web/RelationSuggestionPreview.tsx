@@ -13,7 +13,7 @@ function Endpoint({ label, value }: { label: string; value: RelationSuggestionEn
 export function RelationSuggestionPreview({ suggestion }: RelationSuggestionPreviewProps) {
   return <section className="relation-suggestion-preview" aria-label="关系建议快照">
     <h3>{RELATION_OPERATION_LABELS[suggestion.operation]}</h3>
-    <p className="relation-suggestion-note">待核对建议，尚未验证采纳。记录时快照，整理前核对当前知识源。</p>
+    <p className="relation-suggestion-note">记录建议时：待核对建议，尚未验证采纳。记录时快照，整理前核对当前知识源。当前人工处理结果见关系建议复核。</p>
     <p className="relation-suggestion-direction">{suggestion.source.title} → {suggestion.target.title}</p>
     <div className="relation-suggestion-endpoints">
       <Endpoint label="源概念" value={suggestion.source} />

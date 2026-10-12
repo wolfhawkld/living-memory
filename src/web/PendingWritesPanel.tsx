@@ -9,6 +9,7 @@ const PATH_LABELS: Record<string, string> = {
   '/retentions': '长期保持状态',
   '/applications': '应用与总结记录',
   '/corrections': '知识修正复核',
+  '/relation-reviews': '关系建议复核',
 };
 
 function writeLabel(write: PendingWrite): string {

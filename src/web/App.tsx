@@ -74,8 +74,10 @@ import { ApplicationRecordDialog } from './ApplicationRecordDialog';
 import type { ApplicationRecordDraft } from './application-record';
 import { buildScenarioApplicationDraft, resolveScenarioApplicationConcept } from './scenario-application-handoff';
 import type { SaveCorrection } from './ApplicationCorrectionPanel';
+import type { SaveRelationReview } from './ApplicationRelationReviewPanel';
 import './application-record.css';
 import './application-correction.css';
+import './application-relation-review.css';
 import { LearningOverviewDialog } from './LearningOverviewDialog';
 import { createLearningOverviewLoader, resolveCorrectionOverviewSelection, resolveOverviewSelection } from './learning-overview-loader';
 import './learning-overview.css';
@@ -282,10 +284,11 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const learningWriteRef = useRef(false);
   const correctionEditingRef = useRef(new Set<string>());
   const [correctionRecoveryVersions, setCorrectionRecoveryVersions] = useState<Record<string, number>>({});
-  const onCorrectionEditingChange = useCallback((applicationEventId: string, editing: boolean) => {
-    if (editing) correctionEditingRef.current.add(applicationEventId);
+  const [relationReviewRecoveryVersions, setRelationReviewRecoveryVersions] = useState<Record<string, number>>({});
+  const onCorrectionEditingChange = useCallback((editingKey: string, editing: boolean) => {
+    if (editing) correctionEditingRef.current.add(editingKey);
     else {
-      correctionEditingRef.current.delete(applicationEventId);
+      correctionEditingRef.current.delete(editingKey);
       if (correctionEditingRef.current.size === 0) queueMicrotask(() => changeHandlersRef.current.flush());
     }
   }, []);
@@ -776,7 +779,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     };
   }, []);
 
-  const pendingConceptIds = useMemo(() => new Set(pendingWrites.filter((item) => !['/applications', '/corrections'].includes(item.path)).map((item) => item.conceptId).filter((id): id is string => Boolean(id))), [pendingWrites]);
+  const pendingConceptIds = useMemo(() => new Set(pendingWrites.filter((item) => !['/applications', '/corrections', '/relation-reviews'].includes(item.path)).map((item) => item.conceptId).filter((id): id is string => Boolean(id))), [pendingWrites]);
   const displaySnapshot = useMemo(() => {
     if (snapshot && demoEnabled && demoRecord) return projectDemoSnapshot(snapshot, demoRecord, simDays);
     if (!snapshot || pendingConceptIds.size === 0) return snapshot;
@@ -873,10 +876,16 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     applicationEventId: focusedApplicationEventId,
   }, historyEnabled, snapshot);
   const pendingLearningCount = pendingWrites.filter((write) => write.conceptId === selectedId
-    && (write.path === '/reviews' || write.path === '/observations' || write.path === '/retentions' || write.path === '/applications' || write.path === '/corrections')).length;
+    && (write.path === '/reviews' || write.path === '/observations' || write.path === '/retentions' || write.path === '/applications' || write.path === '/corrections' || write.path === '/relation-reviews')).length;
   const pendingCorrectionApplications = useMemo(() => pendingWrites.flatMap((write) => {
     const payload = write.payload;
     return write.path === '/corrections' && payload && typeof payload === 'object'
+      && 'applicationEventId' in payload && typeof payload.applicationEventId === 'string'
+      ? [payload.applicationEventId] : [];
+  }), [pendingWrites]);
+  const pendingRelationReviewApplications = useMemo(() => pendingWrites.flatMap((write) => {
+    const payload = write.payload;
+    return write.path === '/relation-reviews' && payload && typeof payload === 'object'
       && 'applicationEventId' in payload && typeof payload.applicationEventId === 'string'
       ? [payload.applicationEventId] : [];
   }), [pendingWrites]);
@@ -1065,7 +1074,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [attempt, briefSession, loadSnapshot, showNotice, sourceId, writeLocked, writeToken]);
 
   const writeWithRetry = useCallback(async (options: {
-    path: '/reviews' | '/observations' | '/retentions' | '/applications' | '/corrections' | '/config' | '/layout' | '/practice-cards' | '/practice-attempts';
+    path: '/reviews' | '/observations' | '/retentions' | '/applications' | '/corrections' | '/relation-reviews' | '/config' | '/layout' | '/practice-cards' | '/practice-attempts';
     method: 'POST' | 'PUT';
     payload: unknown;
     eventId: string | null;
@@ -1080,7 +1089,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     } catch (writeError) {
       const retryable = writeError instanceof ApiRequestError && writeError.retryable;
       const timedOut = writeError instanceof ApiRequestError && writeError.code === 'REQUEST_TIMEOUT';
-      const changedEvidenceSource = ['/observations', '/applications', '/corrections', '/practice-cards', '/practice-attempts'].includes(options.path) && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
+      const changedEvidenceSource = ['/observations', '/applications', '/corrections', '/relation-reviews', '/practice-cards', '/practice-attempts'].includes(options.path) && writeError instanceof ApiRequestError && writeError.code === 'SOURCE_MISMATCH';
       const expiredAccount = Boolean(options.eventId) && writeError instanceof ApiRequestError && writeError.code === 'AUTH_REQUIRED';
       if (retryable || changedEvidenceSource || expiredAccount) {
         const queued = await queuePendingWrite(sourceId, { method: options.method, path: options.path, payload: options.payload, eventId: options.eventId, conceptId: options.conceptId, label: options.label });
@@ -1100,7 +1109,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         return { ok: false, queued: false, unsaved: true, error: message };
       }
       showNotice({ tone: 'error', text: errorMessage(writeError) });
-      return { ok: false, queued: false, error: errorMessage(writeError) };
+      return { ok: false, queued: false, error: errorMessage(writeError),
+        errorCode: writeError instanceof ApiRequestError ? writeError.code : undefined };
     }
   }, [refreshPendingState, showNotice, sourceId]);
 
@@ -1184,7 +1194,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [attempt, beginRecall, briefSession, busyAction, selectedConcept, selectedState, snapshot, writeLocked]);
 
   const pendingReviewIds = useCallback(() => new Set(getPendingWrites(sourceId)
-    .filter((write) => !['/applications', '/corrections'].includes(write.path)).map((write) => write.conceptId).filter((id): id is string => Boolean(id))), [sourceId]);
+    .filter((write) => !['/applications', '/corrections', '/relation-reviews'].includes(write.path)).map((write) => write.conceptId).filter((id): id is string => Boolean(id))), [sourceId]);
 
   const briefExclusions = useCallback((response: ReviewPlanResponse) => new Set([
     ...pendingReviewIds(), ...reviewAllowance(response, getPendingWrites(sourceId)).excludedIds,
@@ -1584,6 +1594,28 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     }
   };
 
+  const saveRelationReview: SaveRelationReview = async (payload) => {
+    if (!writeToken || writeLocked || busyAction || learningWriteRef.current || !historyEnabled || simulated
+      || payload.conceptId !== selectedConcept?.id || pendingRelationReviewApplications.includes(payload.applicationEventId)) {
+      return { ok: false, error: '当前无法保存关系复核，请保留说明并稍后重试。' };
+    }
+    learningWriteRef.current = true;
+    setBusyAction('relation-review');
+    try {
+      const result = await writeWithRetry({ path: '/relation-reviews', method: 'POST', payload,
+        eventId: payload.eventId, conceptId: payload.conceptId, label: '关系建议复核',
+        send: () => api.postRelationReview(payload, writeToken, sourceId) });
+      if (result.ok) {
+        showNotice({ tone: 'success', text: '关系处理结果已保存，可在原应用 / 总结记录下查看。' });
+        await reloadRealSnapshot();
+      }
+      return { ok: result.ok, queued: Boolean(result.queued), error: result.error, errorCode: result.errorCode };
+    } finally {
+      learningWriteRef.current = false;
+      setBusyAction(null);
+    }
+  };
+
   const saveRetention = async () => {
     if (!retentionConfirmation || !writeToken || writeLocked || busyAction) return;
     const payload = retentionConfirmation;
@@ -1752,7 +1784,11 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       const payload = write.payload;
       if (payload && typeof payload === 'object' && 'applicationEventId' in payload && typeof payload.applicationEventId === 'string') {
         const id = payload.applicationEventId;
-        setCorrectionRecoveryVersions((before) => ({ ...before, [id]: (before[id] ?? 0) + 1 }));
+        if (write.path === '/relation-reviews') {
+          setRelationReviewRecoveryVersions((before) => ({ ...before, [id]: (before[id] ?? 0) + 1 }));
+        } else {
+          setCorrectionRecoveryVersions((before) => ({ ...before, [id]: (before[id] ?? 0) + 1 }));
+        }
       }
       refreshPendingState();
       conceptHistory.onRetry();
@@ -1983,6 +2019,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
                 pendingCorrectionApplications={pendingCorrectionApplications}
                 onCorrectionEditingChange={onCorrectionEditingChange}
                 correctionRecoveryVersions={correctionRecoveryVersions}
+                relationReview={{ sourceId, loadReview: api.getRelationReview, onSave: saveRelationReview,
+                  pendingApplications: pendingRelationReviewApplications, recoveryVersions: relationReviewRecoveryVersions }}
                 focusedApplicationEventId={focusedApplicationEventId}
                 onClearFocus={() => {
                   if (!confirmCorrectionNavigation()) return;

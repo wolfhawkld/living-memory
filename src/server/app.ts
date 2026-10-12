@@ -15,6 +15,7 @@ import { parsePracticeCardRequest, parsePracticeAttemptRequest } from './practic
 import { sendConceptAttachment } from './attachments.js';
 import { loadKnowledgeGraph, KnowledgeSourceError, type KnowledgeSource } from './kg.js';
 import { createChangeFeed } from './changes.js';
+import { buildRelationReviewBasis, type RelationReviewResponse } from '../shared/relation-reviews.js';
 import { Accounts, type AccountSession } from './accounts.js';
 import type { FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuBindingStatus, FeishuChannelState, FeishuScope } from '../shared/feishu-binding.js';
 import type { FeishuReadMessage } from '../shared/feishu-reading.js';
@@ -27,6 +28,7 @@ import { validateStoragePaths } from './storage-paths.js';
 import {
   parseApplicationRequest,
   parseCorrectionRequest,
+  parseRelationReviewRequest,
   parseObservationRequest,
   parseRetentionRequest,
   parseReviewRequest,
@@ -747,6 +749,35 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       if (record.relationSuggestion) assertRelationSuggestionCurrent(source, record.relationSuggestion);
     }
     const receipt = store.addApplication(record);
+    if (receipt.status === 'accepted') changes.publish('application');
+    res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
+  }));
+  app.get('/api/applications/:applicationEventId/relation-review', asyncRoute((req, res) => {
+    const { source, store } = contextOf(req);
+    const application = store.getApplications().find((entry) => entry.eventId === req.params.applicationEventId);
+    if (!application) throw new StoreError('APPLICATION_NOT_FOUND', '找不到当前知识空间中的应用 / 总结记录。', 404);
+    if (!application.relationSuggestion) throw new StoreError('INVALID_BODY', '这条应用 / 总结没有关系建议。');
+    const response: RelationReviewResponse = {
+      sourceId: source.namespace, applicationEventId: application.eventId, conceptId: application.conceptId,
+      asOf: now().toISOString(),
+      basis: buildRelationReviewBasis(application.relationSuggestion, source.index.concepts, source.index.links),
+      history: store.getRelationReviewHistory(application.eventId),
+    };
+    res.set('Cache-Control', 'no-store').json(response);
+  }));
+  app.post('/api/relation-reviews', requireWrite, asyncRoute((req, res) => {
+    const { source, store, changes } = contextOf(req);
+    const decision = parseRelationReviewRequest(req.body);
+    if (!store.hasEvent(decision.eventId)) {
+      const application = store.getApplications().find((entry) => entry.eventId === decision.applicationEventId);
+      if (!application) throw new StoreError('APPLICATION_NOT_FOUND', '找不到当前知识空间中的应用 / 总结记录。', 409);
+      if (!application.relationSuggestion) throw new StoreError('INVALID_BODY', '这条应用 / 总结没有关系建议。');
+      const current = buildRelationReviewBasis(application.relationSuggestion, source.index.concepts, source.index.links);
+      if (JSON.stringify(current) !== JSON.stringify(decision.basis)) {
+        throw new StoreError('RELATION_REVIEW_SOURCE_CHANGED', '关系核对依据已变化，请重新读取当前关系后记录处理结果。', 409);
+      }
+    }
+    const receipt = store.addRelationReview(decision);
     if (receipt.status === 'accepted') changes.publish('application');
     res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));

@@ -1,0 +1,20 @@
+.application-relation-review { margin-top: 16px; padding: 16px; border: 1px solid var(--ui-border, #35465d); border-radius: 10px; background: var(--ui-panel, #111d30); color: var(--ui-text, #e7f0ff); overflow-wrap: anywhere; }
+.application-relation-review h4 { margin: 0 0 8px; }
+.application-relation-review p, .application-relation-review small { line-height: 1.6; }
+.application-relation-review .relation-review-help { color: var(--ui-text-muted, #a8bdd8); font-size: 12px; }
+.application-relation-review .relation-review-warning { color: var(--ui-warning, #dcb985); font-size: 12px; }
+.application-relation-review .relation-review-error { color: var(--ui-error, #ffaaa6); font-size: 12px; }
+.relation-review-basis { padding: 10px 12px; border: 1px solid var(--ui-border, #35465d); border-radius: 8px; font-size: 12px; }
+.relation-review-basis dl { display: grid; grid-template-columns: minmax(70px, auto) minmax(0, 1fr); gap: 6px 12px; }
+.relation-review-basis dt { color: var(--ui-text-muted, #a8bdd8); }
+.relation-review-basis dd { margin: 0; white-space: pre-wrap; }
+.relation-review-field { display: flex; flex-direction: column; gap: 7px; margin: 12px 0; font-size: 12px; }
+.relation-review-field select, .relation-review-field textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--ui-border-strong, #405775); border-radius: 7px; padding: 8px; background: var(--ui-input, #081221); color: var(--ui-text, #e7f0ff); font: inherit; }
+.relation-review-check { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; }
+.relation-review-check input { margin-top: 3px; }
+.relation-review-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.relation-review-actions button { border: 1px solid var(--ui-border-strong, #405775); border-radius: 7px; padding: 8px 12px; background: var(--ui-raised, #1b2f4b); color: var(--ui-text, #e7f0ff); cursor: pointer; }
+.relation-review-actions button:disabled { opacity: .55; cursor: default; }
+.relation-review-history { margin-top: 16px; padding-left: 20px; }
+.relation-review-history > li { margin-bottom: 14px; }
+.relation-review-history time { display: block; color: var(--ui-text-muted, #a8bdd8); font-size: 11px; }

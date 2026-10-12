@@ -18,6 +18,7 @@ import type { LearningOverview } from '../shared/learning-overview';
 import type { ScenarioPrompts } from '../shared/scenario-prompts';
 import type { PracticeCardRequest, PracticeAttemptRequest, PracticeCardsResponse, PracticeHistoryResponse } from '../shared/practice';
 import type { CorrectionRequest } from '../shared/corrections';
+import type { RelationReviewRequest, RelationReviewResponse } from '../shared/relation-reviews';
 import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
 import type { ImportPreviewRequest, ImportPreview, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
@@ -233,8 +234,10 @@ function sameCorrectionArchiveSnapshot(entry: unknown, expected: PendingWrite): 
 
 /** Only deterministic correction rejections may leave the pending queue. */
 export function canArchiveCorrectionWrite(write: PendingWrite): boolean {
-  return write.method === 'POST' && write.path === '/corrections'
-    && (write.lastError?.code === 'SOURCE_REVISION_MISMATCH' || write.lastError?.code === 'CORRECTION_CONFLICT');
+  if (write.method !== 'POST') return false;
+  if (write.path === '/corrections') return write.lastError?.code === 'SOURCE_REVISION_MISMATCH' || write.lastError?.code === 'CORRECTION_CONFLICT';
+  return write.path === '/relation-reviews'
+    && (write.lastError?.code === 'RELATION_REVIEW_SOURCE_CHANGED' || write.lastError?.code === 'RELATION_REVIEW_CONFLICT');
 }
 
 function isCorrectionRecoveryEntry(entry: unknown, expected: PendingWrite): boolean {
@@ -570,6 +573,12 @@ export const api = {
     writeJson<WriteReceipt>('/applications', payload, writeToken, sourceId),
   postCorrection: (payload: CorrectionRequest, writeToken: string, sourceId: string) =>
     writeJson<WriteReceipt>('/corrections', payload, writeToken, sourceId),
+  getRelationReview: (applicationEventId: string, sourceId: string, signal: AbortSignal) =>
+    requestJson<RelationReviewResponse>(`/applications/${encodeURIComponent(applicationEventId)}/relation-review`, {
+      headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal,
+    }),
+  postRelationReview: (payload: RelationReviewRequest, writeToken: string, sourceId: string) =>
+    writeJson<WriteReceipt>('/relation-reviews', payload, writeToken, sourceId),
   putConfig: (payload: Pick<ModelConfig, 'halfLifeDays' | 'revision'>, writeToken: string, sourceId: string) =>
     authenticatedJson<ConfigWriteReceipt>('/config', {
       method: 'PUT',
