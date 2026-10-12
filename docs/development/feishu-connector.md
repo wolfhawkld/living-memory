@@ -32,6 +32,10 @@
 
 SDK dispatcher、WSClient 与文本 / 卡片发送 Client 的 `error`、`warn`、`info`、`debug`、`trace` 五个日志方法全部禁用，避免 SDK 输出 ticket、凭据、事件正文或异常对象。
 
+发送失败另有最小诊断：`Living Memory Feishu send:` 之后仅记录固定阶段，以及经过整数校验的 `platformCode` / `httpStatus`（如有）。卡片准备不可用、授权拒绝、本地预算、平台拒绝、发送结果异常分别分类；未知异常只记 `send-failed`，不直接认定为网络故障。不会记录原始平台错误文本、响应、消息 / 卡片或身份，不改变回执、不自动重试。诊断观察器抛错也不影响原发送结果。
+
+`connected` 只证明长连接就绪，不能证明回复已投递。旧失败记录无法恢复已经丢弃的错误详情；启用新诊断后，需要本人重新发送命令产生新的尝试，不能把旧的 `failed-or-unknown` 当作平台明确拒绝或自动重发。
+
 ## 当前卡片处理边界
 
 注册 `card.action.trigger` 和 `im.message.receive_v1`。后者投影本人私聊绑定、知识查看及明确复习指令，分别进入狭窄的账号确认、只读知识与复习会话能力；详细身份与一次性请求约束见[账号绑定说明](feishu-account-binding.md)。卡片路径如下。内部适配函数接收经过官方 WebSocket transport 的 SDK handler 平铺输入，校验 `event_type`、`event_id`、`app_id`、`tenant_key`、`operator.open_id`、可选 `operator.tenant_key`、`context.open_message_id` / `open_chat_id` 和 `action.tag = button`。应用及租户必须与服务端配置一致，operator 租户如存在也必须一致；必要字符串为空、类型错误或长度超过 256 时拒绝。SDK 平铺输入保留的 `schema: "2.0"` 可接受，缺省 schema 也兼容接受；其他 schema 值及嵌套 header / event 拒绝。原始 schema envelope 不能直接传给此适配器。

@@ -10,6 +10,7 @@ import type { FeishuDeliveryResult, FeishuReadMessage } from '../shared/feishu-r
 import type { FeishuCardDelivery, FeishuCardNavAction } from '../shared/feishu-cards.js';
 import type { PreparedFeishuReadReply } from '../server/feishu-reading.js';
 import type { PreparedFeishuCardReply } from '../server/feishu-cards.js';
+import { notifyFeishuSendDiagnostic, type FeishuSendDiagnostic } from './feishu-send-diagnostic.js';
 import {
   createFeishuSdkDriverFactory,
   type FeishuCardResponse,
@@ -34,6 +35,7 @@ export interface FeishuConnectorOptions {
   env: Record<string, string | undefined>;
   driverFactory?: FeishuDriverFactory;
   onStatus?: (status: Readonly<FeishuConnectorStatus>) => void;
+  onSendDiagnostic?: (diagnostic: Readonly<FeishuSendDiagnostic>) => void;
   confirmBinding?: (input: FeishuBindingConfirmation) => FeishuBindingConfirmationResult;
   prepareReading?: (input: FeishuReadMessage) => PreparedFeishuReadReply | null;
   prepareCardMessage?: (input: FeishuReadMessage) => PreparedFeishuCardReply | null;
@@ -94,16 +96,23 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
     if (stopped || !driverStarted) return;
     let prepared: PreparedFeishuCardReply | null = null;
     let delivery: FeishuCardDelivery = { status: 'failed-or-unknown' };
+    let failureStage: FeishuSendDiagnostic['stage'] = 'prepare-unavailable';
     try {
       prepared = prepare();
-      if (!prepared || stopped || !driverStarted || !driver?.sendCard
-        || prepared.actor.appId !== input.appId || prepared.actor.tenantKey !== input.tenantKey || prepared.actor.openId !== input.openId
-        || !prepared.stillAuthorized()) return;
+      if (!prepared) { notifyFeishuSendDiagnostic(options.onSendDiagnostic, { stage: 'prepare-unavailable' }); return; }
+      if (stopped || !driverStarted) return;
+      if (!driver?.sendCard) { notifyFeishuSendDiagnostic(options.onSendDiagnostic, { stage: 'send-unavailable' }); return; }
+      failureStage = 'authorization-rejected';
+      if (prepared.actor.appId !== input.appId || prepared.actor.tenantKey !== input.tenantKey || prepared.actor.openId !== input.openId
+        || !prepared.stillAuthorized()) {
+        notifyFeishuSendDiagnostic(options.onSendDiagnostic, { stage: 'authorization-rejected' }); return;
+      }
       const reply = prepared;
+      failureStage = 'send-failed';
       delivery = await driver.sendCard({ openId: reply.actor.openId, card: reply.card,
         uuid: reply.operationId, expectedChatId: reply.expectedChatId,
         stillAuthorized: () => !stopped && driverStarted && reply.stillAuthorized() });
-    } catch { /* No original card content or SDK errors enter logs. */ }
+    } catch { notifyFeishuSendDiagnostic(options.onSendDiagnostic, { stage: failureStage }); }
     finally { if (prepared) { try { prepared.settle(delivery); } catch { /* Attempted receipt prevents implicit retry. */ } } }
   }
 
@@ -140,6 +149,7 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
     if (!stopped && driverStarted) publish({ state: 'connected' });
   }
   const callbacks: FeishuDriverCallbacks = {
+    onSendDiagnostic: (diagnostic) => notifyFeishuSendDiagnostic(options.onSendDiagnostic, diagnostic),
     onReady: connected,
     onReconnected: connected,
     onError: () => {

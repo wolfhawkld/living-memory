@@ -6,6 +6,7 @@ import { FEISHU_SILENT_LOGGER, type FeishuDriverCallbacks, type FeishuSendCard }
 import type { PreparedFeishuCardReply } from '../src/server/feishu-cards.js';
 import type { FeishuActor } from '../src/shared/feishu-binding.js';
 import type { FeishuCardDelivery } from '../src/shared/feishu-cards.js';
+import type { FeishuSendDiagnostic } from '../src/integrations/feishu-send-diagnostic.js';
 
 const scope = { appId: 'cli_0000000000000000', tenantKey: 'synthetic-tenant' };
 const env = { LM_FEISHU_ENABLED: '1', LM_FEISHU_APP_ID: scope.appId, LM_FEISHU_APP_SECRET: 'synthetic-secret', LM_FEISHU_TENANT_KEY: scope.tenantKey };
@@ -195,4 +196,87 @@ test('stop closes transport, waits for tracked card work to settle and rejects s
   const scheduled = createFeishuConnector({ env, prepareCardAction() { throw new Error('Must not prepare a scheduled card after stop'); },
     driverFactory: async (_config, callbacks) => { hooks = callbacks; return { start() {}, close() {} }; } });
   await scheduled.start(); hooks.onCardAction(action()); await scheduled.stop();
+});
+
+
+test('card delivery diagnostics identify local rejection stages without exposing preparation or transport errors', async () => {
+  const modes = ['prepare-null', 'prepare-throw', 'no-sender', 'wrong-actor', 'wrong-scope', 'guard-false', 'guard-throw', 'sender-throw'] as const;
+  for (const mode of modes) {
+    let hooks!: FeishuDriverCallbacks;
+    let sends = 0;
+    const settled: FeishuCardDelivery[] = [];
+    const diagnostics: FeishuSendDiagnostic[] = [];
+    const connector = createFeishuConnector({ env,
+      onSendDiagnostic(value) { diagnostics.push(value); },
+      prepareCardAction(input) {
+        if (mode === 'prepare-null') return null;
+        if (mode === 'prepare-throw') throw new Error('PRIVATE_PREPARATION_BODY');
+        return prepared(input, {
+          ...(mode === 'wrong-actor' ? { actor: { ...scope, openId: 'PRIVATE_OTHER_ACTOR' } } : {}),
+          ...(mode === 'wrong-scope' ? { actor: { ...input, tenantKey: 'PRIVATE_OTHER_TENANT' } } : {}),
+          stillAuthorized() {
+            if (mode === 'guard-throw') throw new Error('PRIVATE_GUARD_SECRET');
+            return mode !== 'guard-false';
+          },
+          settle(result) { settled.push(result); },
+        });
+      },
+      driverFactory: async (_config, callbacks) => {
+        hooks = callbacks;
+        return { start() {}, close() {}, ...(mode === 'no-sender' ? {} : {
+          async sendCard() { sends++; throw new Error('PRIVATE_TRANSPORT_RESPONSE'); },
+        }) };
+      },
+    });
+    try {
+      await connector.start(); hooks.onReady();
+      const ack = hooks.onCardAction(action());
+      assert.equal(ack.toast.type, 'info');
+      assert.deepEqual(diagnostics, [], 'diagnostics must not start before the callback ACK');
+      await setImmediate();
+      const stage = mode.startsWith('prepare-') ? 'prepare-unavailable'
+        : mode === 'no-sender' ? 'send-unavailable' : mode === 'sender-throw' ? 'send-failed' : 'authorization-rejected';
+      assert.deepEqual(diagnostics, [{ stage }], mode);
+      assert.equal(Object.isFrozen(diagnostics[0]), true);
+      assert.equal(sends, mode === 'sender-throw' ? 1 : 0, mode);
+      assert.deepEqual(settled, mode.startsWith('prepare-') ? [] : [{ status: 'failed-or-unknown' }], mode);
+      assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_|synthetic-secret|actor|tenant|cardId|messageId|body/i);
+      assert.equal(connector.getStatus().state, 'connected');
+    } finally { await connector.stop(); }
+  }
+});
+
+test('driver send diagnostics cross the connector as a frozen allowlist and observer failures preserve delivery receipts', async () => {
+  for (const observerThrows of [false, true]) {
+    let hooks!: FeishuDriverCallbacks;
+    const diagnostics: FeishuSendDiagnostic[] = [];
+    const settled: FeishuCardDelivery[] = [];
+    let sends = 0;
+    const raw = { stage: 'platform-rejected', code: 230099, httpStatus: 403,
+      message: 'PRIVATE_PLATFORM_MESSAGE', body: 'PRIVATE_CARD_BODY', token: 'PRIVATE_APP_SECRET', openId: 'PRIVATE_OPEN_ID' };
+    const connector = createFeishuConnector({ env,
+      onSendDiagnostic(value) { diagnostics.push(value); if (observerThrows) throw new Error('PRIVATE_OBSERVER_FAILURE'); },
+      prepareCardMessage(input) { return prepared(input, { settle(result) { settled.push(result); } }); },
+      driverFactory: async (_config, callbacks) => {
+        hooks = callbacks;
+        return { start() {}, close() {}, async sendCard() {
+          sends++;
+          callbacks.onSendDiagnostic!(raw as unknown as FeishuSendDiagnostic);
+          callbacks.onSendDiagnostic!({ ...raw, code: -1, httpStatus: 600 } as unknown as FeishuSendDiagnostic);
+          return accepted;
+        } };
+      },
+    });
+    try {
+      await connector.start(); hooks.onReady(); hooks.onMessage!(message());
+      await setImmediate();
+      assert.equal(sends, 1);
+      assert.deepEqual(settled, [accepted], 'diagnostics cannot replace, duplicate or prevent the delivery receipt');
+      assert.deepEqual(diagnostics, [{ stage: 'platform-rejected', code: 230099, httpStatus: 403 }, { stage: 'platform-rejected' }]);
+      assert.ok(diagnostics.every(value => Object.isFrozen(value)));
+      assert.notEqual(diagnostics[0], raw);
+      assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_|message|body|token|openId/);
+      assert.equal(connector.getStatus().state, 'connected');
+    } finally { await connector.stop(); }
+  }
 });

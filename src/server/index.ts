@@ -24,6 +24,9 @@ connector = createFeishuConnector({
   onStatus: ({ state, code }) => {
     process.stdout.write(`Living Memory Feishu: ${state}${code ? ` (${code})` : ''}\n`);
   },
+  onSendDiagnostic: ({ stage, code, httpStatus }) => {
+    process.stderr.write(`Living Memory Feishu send: ${stage}${code === undefined ? '' : ` platformCode=${code}`}${httpStatus === undefined ? '' : ` httpStatus=${httpStatus}`}\n`);
+  },
 });
 const lifecycle = createServiceLifecycle({
   connector,

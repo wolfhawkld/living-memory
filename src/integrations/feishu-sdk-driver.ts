@@ -1,3 +1,4 @@
+import { feishuSendFailureDiagnostic, notifyFeishuSendDiagnostic, type FeishuSendDiagnostic } from './feishu-send-diagnostic.js';
 import type { FeishuConfigResult } from './feishu-config.js';
 import type { FeishuDeliveryResult } from '../shared/feishu-reading.js';
 import type { FeishuCardDelivery, FeishuCardPayload } from '../shared/feishu-cards.js';
@@ -30,6 +31,7 @@ export interface FeishuDriverCallbacks {
   onReconnected: () => void;
   onCardAction: (event: unknown) => FeishuCardResponse;
   onMessage?: (event: unknown) => void;
+  onSendDiagnostic?: (diagnostic: FeishuSendDiagnostic) => void;
 }
 export interface FeishuDriver {
   start: () => Promise<void> | void;
@@ -86,6 +88,8 @@ interface BoundedHttp {
   patch: (url: string, data?: unknown, options?: Record<string, unknown>) => Promise<unknown>;
 }
 
+class FeishuDispatchRejectedError extends Error {}
+
 /** Keep the SDK response interceptor, but never mutate its shared defaults. */
 function boundedHttp(base: BoundedHttp, authorizeDispatch: (options: Record<string, unknown>) => boolean): BoundedHttp {
   for (const method of ['request', 'get', 'delete', 'head', 'options', 'post', 'put', 'patch'] as const) {
@@ -94,7 +98,9 @@ function boundedHttp(base: BoundedHttp, authorizeDispatch: (options: Record<stri
   return {
     request: (options) => {
       // SDK token retrieval happens before this actual message dispatch boundary.
-      if (!authorizeDispatch(options)) throw new Error('Feishu message dispatch rejected');
+      let authorized = false;
+      try { authorized = authorizeDispatch(options); } catch { /* Fail closed without exposing guard errors. */ }
+      if (!authorized) throw new FeishuDispatchRejectedError('Feishu message dispatch rejected');
       return base.request({ ...options, timeout: FEISHU_HTTP_TIMEOUT_MS });
     },
     get: (url, options) => base.get(url, { ...options, timeout: FEISHU_HTTP_TIMEOUT_MS }),
@@ -143,6 +149,7 @@ export function createFeishuSdkDriverFactory(
       onReconnecting: callbacks.onReconnecting,
       onReconnected: callbacks.onReconnected,
     });
+    const diagnose = (value: FeishuSendDiagnostic) => notifyFeishuSendDiagnostic(callbacks.onSendDiagnostic, value);
     let closed = false;
     let sender: InstanceType<NonNullable<SdkContract['Client']>> | undefined;
     const active = new Map<string, { openId: string; msgType: 'text' | 'interactive'; content: string; guard: () => boolean }>();
@@ -156,23 +163,33 @@ export function createFeishuSdkDriverFactory(
     }
     async function send(input: Pick<FeishuSendText, 'openId' | 'uuid' | 'stillAuthorized'>,
       msgType: 'text' | 'interactive', content: string, budget: number): Promise<Record<string, unknown> | null> {
-      if (closed || !input || !validId(input.openId)
+      if (closed) { diagnose({ stage: 'send-unavailable' }); return null; }
+      if (!input || !validId(input.openId)
         || typeof input.uuid !== 'string' || !/^[a-f0-9]{32}$/.test(input.uuid)
-        || typeof input.stillAuthorized !== 'function' || active.has(input.uuid) || active.size >= 4) return null;
+        || typeof input.stillAuthorized !== 'function') { diagnose({ stage: 'request-invalid' }); return null; }
+      if (active.has(input.uuid) || active.size >= 4) { diagnose({ stage: 'send-unavailable' }); return null; }
       const data = { receive_id: input.openId, msg_type: msgType, content, uuid: input.uuid };
-      if (Buffer.byteLength(JSON.stringify(data), 'utf8') > budget) return null;
+      if (Buffer.byteLength(JSON.stringify(data), 'utf8') > budget) { diagnose({ stage: 'local-budget' }); return null; }
       try {
-        if (!input.stillAuthorized()) return null;
+        try {
+          if (!input.stillAuthorized()) { diagnose({ stage: 'authorization-rejected' }); return null; }
+        } catch { diagnose({ stage: 'authorization-rejected' }); return null; }
         active.set(input.uuid, { openId: input.openId, msgType, content, guard: input.stillAuthorized });
         if (!sender) {
-          if (typeof sdk.Client !== 'function' || !sdk.defaultHttpInstance) return null;
+          if (typeof sdk.Client !== 'function' || !sdk.defaultHttpInstance) { diagnose({ stage: 'send-unavailable' }); return null; }
           sender = new sdk.Client({ appId: config.appId, appSecret: config.appSecret,
             logger: FEISHU_SILENT_LOGGER, httpInstance: boundedHttp(sdk.defaultHttpInstance, authorizeDispatch) });
         }
         const response = await sender.im.message.create({ params: { receive_id_type: 'open_id' }, data });
-        return record(response) && response.code === 0 && record(response.data) && validId(response.data.message_id)
-          ? response.data : null;
-      } catch { return null; }
+        if (record(response) && typeof response.code === 'number' && Number.isSafeInteger(response.code) && response.code > 0) {
+          diagnose({ stage: 'platform-rejected', code: response.code }); return null;
+        }
+        if (record(response) && response.code === 0 && record(response.data) && validId(response.data.message_id)) return response.data;
+        diagnose({ stage: 'response-invalid' }); return null;
+      } catch (error) {
+        diagnose(error instanceof FeishuDispatchRejectedError ? { stage: 'authorization-rejected' } : feishuSendFailureDiagnostic(error));
+        return null;
+      }
       finally { active.delete(input.uuid); }
     }
     return {
@@ -180,20 +197,22 @@ export function createFeishuSdkDriverFactory(
       start: () => client.start({ eventDispatcher }),
       close: () => { closed = true; return client.close({ force: true }); },
       sendText: async (input) => {
-        if (!input || typeof input.text !== 'string' || !input.text.trim()) return 'failed-or-unknown';
+        if (!input || typeof input.text !== 'string' || !input.text.trim()) { diagnose({ stage: 'request-invalid' }); return 'failed-or-unknown'; }
         return await send(input, 'text', JSON.stringify({ text: input.text }), MAX_SEND_BODY_BYTES)
           ? 'platform-accepted' : 'failed-or-unknown';
       },
       sendCard: async (input) => {
         const failed: FeishuCardDelivery = { status: 'failed-or-unknown' };
-        if (!input || !record(input.card) || input.card.schema !== '2.0' || !validId(input.expectedChatId)) return failed;
+        if (!input || !record(input.card) || input.card.schema !== '2.0' || !validId(input.expectedChatId)) { diagnose({ stage: 'request-invalid' }); return failed; }
         try {
           const content = JSON.stringify(input.card);
-          if (Buffer.byteLength(content, 'utf8') > 20 * 1024) return failed;
+          if (Buffer.byteLength(content, 'utf8') > 20 * 1024) { diagnose({ stage: 'local-budget' }); return failed; }
           const response = await send(input, 'interactive', content, 24 * 1024);
-          return response && validId(response.message_id) && validId(response.chat_id) && response.chat_id === input.expectedChatId
-            ? { status: 'platform-accepted', messageId: response.message_id, chatId: response.chat_id } : failed;
-        } catch { return failed; }
+          if (!response) return failed; // send() has already reported the failure.
+          if (!validId(response.chat_id)) { diagnose({ stage: 'response-invalid' }); return failed; }
+          if (response.chat_id !== input.expectedChatId) { diagnose({ stage: 'chat-mismatch' }); return failed; }
+          return { status: 'platform-accepted', messageId: response.message_id as string, chatId: response.chat_id };
+        } catch { diagnose({ stage: 'request-invalid' }); return failed; }
       },
     };
   };
