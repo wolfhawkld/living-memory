@@ -4,7 +4,7 @@ import type { ReviewPlanResponse } from '../shared/review-plan.js';
 import type { Snapshot } from '../shared/types.js';
 import { createHash } from 'node:crypto';
 import { domainIdOf } from '../core/domain-view.js';
-import { cardButton, cardButtonRows, cardDivider, cardMarkdown, styledFeishuCard } from './feishu-card-style.js';
+import { cardButton, cardButtonRows, cardDivider, cardInfoColumns, cardMarkdown, cardSurface, styledFeishuCard, type NativeCardElement } from './feishu-card-style.js';
 import { buildFeishuReadReferences, type FeishuReadContext } from './feishu-read-view.js';
 import { type FeishuCardActionDefinition, type FeishuCardPayload, type FeishuCardView, type FeishuBrowseView } from '../shared/feishu-cards.js';
 
@@ -109,17 +109,53 @@ function createPlan(title: string, content: string, rows: CardRow[], controls: C
       item.target.kind === 'review-batch-start' ? 'primary_filled' : item.target.kind === 'read' ? 'primary' : 'default');
     const elements = [cardMarkdown(content, 'notation')];
     for (const row of rows) {
-      elements.push(cardDivider());
-      if (row.title) elements.push(cardMarkdown(row.title, 'heading'));
-      elements.push(cardMarkdown(row.content, row.title ? 'notation' : 'normal'));
+      const group: NativeCardElement[] = [];
+      if (row.title) group.push(cardMarkdown(row.title, 'heading-2'));
+      group.push(cardMarkdown(row.content, row.title ? 'notation' : 'normal'));
       const buttons = [];
       if (row.caption && row.target) buttons.push(button(row as CardControl));
       if (row.extra) buttons.push(button(row.extra));
-      elements.push(...cardButtonRows(buttons));
+      group.push(...cardButtonRows(buttons));
+      elements.push(cardSurface(group));
     }
     if (controls.length) elements.push(cardDivider(), ...cardButtonRows(controls.map(button)));
     elements.push(cardDivider(), cardMarkdown(READ_ONLY, 'notation'));
     return styledFeishuCard({ title: metadata(title, 200), subtitle: metadata(subtitle, 160), elements });
+  } };
+}
+
+interface ReadCardPresentation {
+  title: string;
+  domain: string;
+  time: string;
+  confirmed: string;
+  page: number;
+  pages: number;
+  body: string;
+}
+
+/** Read layout receives explicit fields; content and navigation remain independent. */
+function createReadPlan(read: ReadCardPresentation, controls: CardControl[]): FeishuCardViewPlan {
+  const actions = controls.map((control, index) => ({ id: `a${index}`, target: control.target }));
+  return { actions, build: (cardId) => {
+    const button = (control: CardControl) => cardButton(cardId, actions[controls.indexOf(control)].id,
+      metadata(control.caption, 80), control.target.kind === 'read' ? 'primary' : 'default');
+    const pagers = controls.filter(control => control.target.kind === 'read');
+    const back = controls.filter(control => control.target.kind !== 'read');
+    const elements: NativeCardElement[] = [
+      cardMarkdown(metadata(read.title, 200), 'heading-1', 'center'),
+      cardInfoColumns([
+        [cardMarkdown('目录域', 'notation'), cardMarkdown(metadata(read.domain, 300), 'notation')],
+        [cardMarkdown('时间状态', 'notation'), cardMarkdown(read.time, 'notation')],
+      ]),
+      cardMarkdown(`最近确认重温：${read.confirmed}`, 'notation'),
+      ...cardButtonRows(pagers.map(button)),
+      cardMarkdown(read.body || '（正文为空）', 'normal'),
+      ...back.flatMap(control => cardButtonRows([button(control)])),
+      cardMarkdown('附件/链接以文字展示，Mermaid、公式不保证渲染。', 'notation'),
+      cardMarkdown(READ_ONLY, 'notation'),
+    ];
+    return styledFeishuCard({ title: '知识阅读', subtitle: `第 ${read.page}/${read.pages} 页`, elements });
   } };
 }
 
@@ -190,8 +226,9 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
     if (view.page > 1) controls.push({ caption: '上一页', target: { ...view, page: view.page - 1 } });
     if (view.page < chunks.length) controls.push({ caption: '下一页', target: { ...view, page: view.page + 1 } });
     controls.push({ caption: view.back.kind === 'due' ? '返回原待复习' : '返回原列表', target: view.back });
-    const plan = createPlan(metadata(concept.title, 200), `目录域：${metadata(domainIdOf(concept), 300)}\n${timeText(context, concept.id)}\n最近确认重温：${confirmed(context, concept.id, concept.source.revision)}\n正文 ${view.page}/${chunks.length} 页。附件/链接以文字展示，Mermaid、公式不保证渲染。`,
-      [{ content: chunks[view.page - 1] || '（正文为空）' }], controls, `知识阅读 · 第 ${view.page}/${chunks.length} 页`);
+    const plan = createReadPlan({ title: concept.title, domain: domainIdOf(concept),
+      time: timeText(context, concept.id), confirmed: confirmed(context, concept.id, concept.source.revision),
+      page: view.page, pages: chunks.length, body: chunks[view.page - 1] }, controls);
     return fitsPlan(view, plan) ? plan : errorPlan('当前正文或导航参数超过展示限制，请重新列表或搜索。');
   }
   if (view.kind === 'due') {

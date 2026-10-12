@@ -143,6 +143,16 @@ test('SDK card browsing uses each private full index, restores filters and never
     const response = await c.click(readClick);
     assert.match(JSON.stringify(response), /已收到操作/);
     assert.match(JSON.stringify(c.sent.at(-1)!.card), /Member-private-first/);
+    const readingCard = c.sent.at(-1)!.card;
+    assert.equal((readingCard.header as { title: { content: string } }).title.content, '知识阅读');
+    const readingElements = cardElements(readingCard);
+    assert.ok(readingElements.some(element => element.tag === 'markdown' && element.text_size === 'heading-1'
+      && element.text_align === 'center' && element.content === 'MemberOnly0'));
+    assert.ok(readingElements.some(element => element.tag === 'column_set' && element.columns.length === 2
+      && element.columns.every((column: Record<string, unknown>) => column.background_style === 'grey-50')));
+    const readingBodyIndex = readingElements.findIndex(element => element.tag === 'markdown' && element.text_size === 'normal');
+    const pagerIndex = readingElements.findIndex(element => element.tag === 'button' && element.text.content === '下一页');
+    assert.ok(pagerIndex >= 0 && pagerIndex < readingBodyIndex, 'real reading entry places paging before its full body');
     const page = c.sent.at(-1)!;
     await c.click(action(page, `platform-${c.sent.length}`, '下一页'));
     assert.match(JSON.stringify(c.sent.at(-1)!.card), /Member-private-tail/);
@@ -194,7 +204,7 @@ test('due cards apply persisted focus, defer, retention, accepted progress and e
     assert.match(payload, /今日已落库概念回忆 1 项 · 剩余预算 2 项/);
     assert.match(payload, /OwnerOnly5/); assert.doesNotMatch(payload, /OwnerOnly[034]|Owner-private-body/);
     const candidateRows = cardElements(c.sent.at(-1)!.card)
-      .filter(element => element.tag === 'markdown' && element.text_size === 'heading' && /^\d+\. /.test(element.content ?? ''));
+      .filter(element => element.tag === 'markdown' && element.text_size === 'heading-2' && /^\d+\. /.test(element.content ?? ''));
     assert.equal(candidateRows.length, 2);
     assert.match(candidateRows[0].content!, /^1\. OwnerOnly5\b/);
     assert.match(candidateRows[1].content!, /^2\. OwnerOnly[12]\b/);

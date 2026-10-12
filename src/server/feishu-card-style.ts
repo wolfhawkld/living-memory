@@ -20,6 +20,17 @@ export function cardDivider(): NativeCardElement {
   return { tag: 'hr', margin: '8px 0' };
 }
 
+/** Native column backgrounds keep metadata and its actions in one visual region. */
+export function cardInfoColumns(cells: readonly (readonly NativeCardElement[])[]): NativeCardElement {
+  return { tag: 'column_set', flex_mode: 'none', horizontal_spacing: '8px',
+    columns: cells.map((elements) => ({ tag: 'column', width: 'weighted', weight: 1,
+      background_style: 'grey-50', padding: '12px', vertical_spacing: '8px', elements: [...elements] })) };
+}
+
+export function cardSurface(elements: readonly NativeCardElement[]): NativeCardElement {
+  return cardInfoColumns([elements]);
+}
+
 export function cardButton(cardId: string, actionId: string, caption: string,
   type: NativeCardButton['type'] = 'default'): NativeCardButton {
   return { tag: 'button', text: { tag: 'plain_text', content: caption }, type, size: 'medium', width: 'fill',

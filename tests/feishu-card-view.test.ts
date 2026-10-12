@@ -318,9 +318,9 @@ test('native candidate groups keep each name, hint and two actions adjacent with
     ['read', 'read', 'review-start', 'review-start', 'review-batch-start', 'due', 'due', 'domains', 'list']);
   for (const [index, name] of ['candidate-one', 'candidate-two'].entries()) {
     const nameIndex = elements.findIndex(element => element.tag === 'markdown' && element.content.includes(name));
-    const nextName = elements.findIndex((element, offset) => offset > nameIndex && element.tag === 'markdown' && element.text_size === 'heading');
+    const nextName = elements.findIndex((element, offset) => offset > nameIndex && element.tag === 'markdown' && element.text_size === 'heading-2');
     const group = elements.slice(nameIndex, nextName < 0 ? elements.length : nextName);
-    assert.equal(group[0].text_size, 'heading');
+    assert.equal(group[0].text_size, 'heading-2');
     assert.equal(group[1].text_size, 'notation');
     assert.match(group[1].content, /距锚点/);
     const groupButtons = group.filter(element => element.tag === 'button').slice(0, 2);
@@ -333,4 +333,70 @@ test('native candidate groups keep each name, hint and two actions adjacent with
   assert.ok(elements.some(element => element.tag === 'column_set'));
   assert.ok(elements.some(element => element.tag === 'hr'));
   checkBudgets(view, rendered);
+});
+
+
+test('read entry uses a centered concept title, paired information blocks and pagers before the unchanged body', () => {
+  const concept = node('Readable concept', 'AI models');
+  concept.body = 'Complete synthetic reading body. '.repeat(400);
+  const context = readContext(snapshot([concept]));
+  const back = { ...listView, domainId: 'AI models', query: 'Readable', sort: 'title', page: 2 } as const;
+  const view = { kind: 'read', reference: sha(concept.id).slice(0, 12), revision: sha(concept.source.revision).slice(0, 12), page: 2, back } as const;
+  const rendered = render(view, context, plan());
+  const payload = card(rendered);
+  const header = payload.header as { title: { content: string }; subtitle: { content: string } };
+  assert.equal(header.title.content, '知识阅读');
+  assert.match(header.subtitle.content, /^第 2\/\d+ 页$/);
+  const elements = cardElements(payload);
+  const heading = elements.find(element => element.tag === 'markdown' && element.text_size === 'heading-1');
+  assert.ok(heading);
+  assert.equal(heading.content, concept.title);
+  assert.equal(heading.text_align, 'center');
+  const info = elements.find(element => element.tag === 'column_set' && element.columns.length === 2
+    && element.columns.every((column: Record<string, unknown>) => column.background_style === 'grey-50'));
+  assert.ok(info);
+  assert.deepEqual(info.columns.map((column: Record<string, unknown>) => column.weight), [1, 1]);
+  assert.match(JSON.stringify(info.columns[0]), /目录域/);
+  assert.match(JSON.stringify(info.columns[0]), /AI models/);
+  assert.match(JSON.stringify(info.columns[1]), /时间记录较久/);
+  assert.match(JSON.stringify(info.columns[1]), /20\.0 天/);
+  const bodyIndex = elements.findIndex(element => element.tag === 'markdown' && element.text_size === 'normal');
+  assert.ok(bodyIndex > 0);
+  assert.equal(elements[bodyIndex].text_align, 'left');
+  const buttons = cardButtons(payload);
+  assert.deepEqual(buttons.map(button => button.text.content), ['上一页', '下一页', '返回原列表']);
+  assert.deepEqual(buttons.map(button => button.behaviors[0].value.actionId), ['a0', 'a1', 'a2']);
+  assert.ok(elements.indexOf(buttons[0]) < bodyIndex);
+  assert.ok(elements.indexOf(buttons[1]) < bodyIndex);
+  assert.ok(elements.indexOf(buttons[2]) > bodyIndex);
+  assert.ok((payload.body as { elements: unknown[] }).elements.includes(buttons[2]), 'return has its own full row');
+  assert.deepEqual(rendered.actions[2].target, back);
+  assert.match(text(rendered), /最近确认重温|附件\/链接以文字展示|只读浏览不扣复习预算/);
+  checkBudgets(view, rendered);
+});
+
+test('browse collections render one grey surface per item with its own title and unique original actions', () => {
+  const context = readContext(snapshot([node('Math concept', 'Math'), node('AI concept', 'AI')]));
+  for (const view of [listView, { kind: 'domains', page: 1 }, { kind: 'due', domainId: null, limit: 3 }] as const) {
+    const rendered = render(view, context, plan());
+    const payload = card(rendered);
+    const top = (payload.body as { elements: Record<string, any>[] }).elements;
+    const surfaces = top.filter(element => element.tag === 'column_set' && element.columns.length === 1
+      && element.columns[0].background_style === 'grey-50');
+    assert.equal(surfaces.length, 2, view.kind);
+    for (const surface of surfaces) {
+      const contents = surface.columns[0].elements;
+      assert.equal(contents[0].tag, 'markdown');
+      assert.equal(contents[0].text_size, 'heading-2');
+      assert.equal(contents[1].text_size, 'notation');
+      const local = cardButtons({ body: { elements: [surface] } });
+      assert.equal(local.length, view.kind === 'due' ? 2 : 1);
+      const targets = local.map(button => rendered.actions.find(action => action.id === button.behaviors[0].value.actionId)!.target);
+      assert.deepEqual(targets.map(target => target.kind), view.kind === 'due' ? ['read', 'review-start'] : [view.kind === 'domains' ? 'list' : 'read']);
+    }
+    const ids = cardButtons(payload).map(button => button.behaviors[0].value.actionId);
+    assert.equal(new Set(ids).size, rendered.actions.length);
+    assert.deepEqual([...ids].sort(), rendered.actions.map(action => action.id).sort());
+    checkBudgets(view, rendered);
+  }
 });
