@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { planFeishuReviewView as render, type FeishuReviewRenderInput } from '../src/server/feishu-review-view.js';
 import type { FeishuReviewOperation, FeishuReviewSession } from '../src/shared/feishu-review.js';
 import type { Concept } from '../src/shared/types.js';
+import { cardButtons, cardElements } from './helpers/feishu-card-elements.js';
 
 const concept: Concept = { id: 'private-id', title: '名字 <at id=all> [链接](private)', aliases: [], domain: '', summary: 'SUMMARY_SECRET', body: 'BODY_SECRET', source: { path: 'Math/concept.md', revision: 'private-revision' } };
 function session(): FeishuReviewSession {
@@ -24,7 +25,7 @@ test('recall front excludes summaries, bodies, private metadata, history and wri
   assert.deepEqual(verbs(value), ['reveal', 'pause', 'finish']);
   assert.deepEqual(value, before);
   assert.deepEqual(plan.view, { kind: 'review', sessionId: value.session!.id, version: 1, verb: 'show', page: 1 });
-  const buttons = (plan.build('c'.repeat(64)).body as { elements: Record<string, unknown>[] }).elements.filter(element => element.tag === 'button');
+  const buttons = cardButtons(plan.build('c'.repeat(64)));
   buttons.forEach((button, index) => assert.deepEqual(button.behaviors, [{ type: 'callback', value: { kind: 'lm.nav.v1', cardId: 'c'.repeat(64), actionId: `a${index}` } }]));
   assert.match(wire(value), /不计入独立成功或信心校准/);
   assert.match(wire(value), /只有明确确认重温才更新锚点/);
@@ -114,8 +115,7 @@ test('revealed safe Unicode pages retain complete body and satisfy all wire/meta
     assert.ok(Buffer.byteLength(JSON.stringify({ content: JSON.stringify(card) })) <= 24 * 1024);
     assert.ok(Buffer.byteLength(JSON.stringify({ view: plan.view, actions: plan.actions })) <= 12 * 1024);
     assert.ok(plan.actions.length <= 16);
-    const elements = (card.body as { elements: { content?: string }[] }).elements;
-    const body = elements[1].content!;
+    const body = cardElements(card).filter(element => element.tag === 'markdown')[1].content as string;
     assert.ok(Buffer.byteLength(body) <= 3000); assert.doesNotMatch(body, /<at|\[危险\]|!\[图\]/);
     joined += body; pages++;
     assert.ok(verbs(value).includes('rate-clear'));
@@ -208,4 +208,77 @@ test('batch ineligible fronts can skip explicitly but expired or changed sources
   assert.ok(Buffer.byteLength(JSON.stringify({ view: plan.view, actions: plan.actions })) <= 12 * 1024);
   assert.ok(Buffer.byteLength(JSON.stringify(plan.build('c'.repeat(64)))) <= 20 * 1024);
   assert.ok(plan.actions.length <= 16);
+});
+
+
+test('review cards show step and actual queue progress with equal self-report buttons', () => {
+  const value = batchInput(5); value.session!.state.batch!.items.splice(3);
+  const front = render(value).build('c'.repeat(64));
+  assert.match(JSON.stringify(front.header), /先回忆/);
+  assert.match(JSON.stringify(front.header), /第 1\/3 项/);
+  assert.equal((front.header as { template: string }).template, 'turquoise');
+  const frontButtons = cardButtons(front);
+  assert.equal(frontButtons.find(button => button.text.content === '查看资料')!.type, 'primary_filled');
+  assert.equal(frontButtons.filter(button => button.type === 'primary_filled').length, 1);
+  value.session!.state.phase = 'revealed';
+  const revealed = render(value).build('c'.repeat(64));
+  const ratings = cardButtons(revealed).filter(button => ['清楚', '模糊', '想不起'].includes(button.text.content));
+  assert.deepEqual(ratings.map(button => button.text.content), ['清楚', '模糊', '想不起']);
+  assert.deepEqual(ratings.map(button => button.type), ['default', 'default', 'default']);
+  const columns = cardElements(revealed).find(element => element.tag === 'column_set' && JSON.stringify(element).includes('清楚'));
+  assert.ok(columns); assert.equal(columns.columns.length, 3);
+  assert.equal(new Set(columns.columns.map((column: Record<string, unknown>) => JSON.stringify([column.width, column.weight]))).size, 1);
+  assert.match(JSON.stringify(revealed), /评价查看资料前的脑中回忆/);
+  assert.equal(cardButtons(revealed).some(button => button.type === 'primary_filled'), false);
+  value.session!.state.phase = 'saved'; value.operations = [batchOperation(value, 0, 'applied')];
+  const saved = render(value).build('c'.repeat(64));
+  assert.equal((saved.header as { template: string }).template, 'turquoise');
+  assert.ok(cardButtons(saved).some(button => button.text.content === '确认已重温，更新时间'));
+  assert.ok(cardButtons(saved).some(button => button.text.content === '下一条'));
+  const savedElements = (saved.body as { elements: Record<string, any>[] }).elements;
+  const confirmation = savedElements.find(element => element.tag === 'button' && element.text.content === '确认已重温，更新时间');
+  assert.ok(confirmation, 'explicit rewarm confirmation occupies its own top-level row');
+  assert.equal(cardButtons({ ...saved, body: { elements: [confirmation] } }).length, 1);
+  assert.ok(savedElements.some(element => element !== confirmation && JSON.stringify(element).includes('下一条')));
+  value.session!.state.phase = 'finished';
+  assert.equal((render(value).build('c'.repeat(64)).header as { template: string }).template, 'turquoise');
+});
+
+test('review visual tones identify pending, unavailable, paused and conflict without success inference', () => {
+  const cases: [FeishuReviewRenderInput, string][] = [];
+  const pending = input(); pending.operations = [operation('pending')]; cases.push([pending, 'orange']);
+  const conflict = input(); conflict.operations = [operation('conflict')]; cases.push([conflict, 'red']);
+  const paused = input(); paused.session!.state.paused = true; cases.push([paused, 'grey']);
+  for (const availability of ['source-changed', 'ineligible', 'expired'] as const) {
+    const value = input(); value.availability = availability;
+    cases.push([value, availability === 'expired' ? 'grey' : 'orange']);
+  }
+  for (const [value, expected] of cases) {
+    const card = render(value).build('c'.repeat(64));
+    assert.equal((card.header as { template: string }).template, expected);
+    assert.doesNotMatch(JSON.stringify(card), /BODY_SECRET|SUMMARY_SECRET/);
+    assert.match(JSON.stringify(card), /仅最新卡可操作/);
+  }
+});
+
+
+test('an earlier batch conflict colors the finished summary red but never the active last item', () => {
+  const value = batchInput(); const batch = value.session!.state.batch!;
+  batch.cursor = batch.items.length - 1;
+  value.session!.state.conceptId = batch.items[batch.cursor].conceptId;
+  value.session!.state.sourceRevision = batch.items[batch.cursor].sourceRevision;
+  value.session!.state.phase = 'revealed';
+  value.operations = [batchOperation(value, 0, 'conflict')];
+  const active = render(value).build('c'.repeat(64));
+  assert.equal((active.header as { template: string }).template, 'turquoise');
+  assert.ok(verbs(value).includes('rate-clear'));
+  assert.match(JSON.stringify(active), /BODY_SECRET/);
+  assert.doesNotMatch(JSON.stringify(active), /写入冲突/);
+  value.operations.push(batchOperation(value, batch.cursor, 'applied'));
+  value.session!.state.phase = 'finished';
+  const finished = render(value).build('c'.repeat(64));
+  assert.equal((finished.header as { template: string }).template, 'red');
+  assert.deepEqual(verbs(value), []);
+  assert.match(JSON.stringify(finished), /脑中自评未保存\(冲突\) 1 项/);
+  assert.doesNotMatch(JSON.stringify(finished), /BODY_SECRET/);
 });

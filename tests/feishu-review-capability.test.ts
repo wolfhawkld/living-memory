@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { cardButtons } from './helpers/feishu-card-elements.js';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -55,8 +56,7 @@ async function fixture(extraCandidates = false, mixedDomains = false) {
     return reply;
   }
   function action(reply: PreparedFeishuCardReply, caption: string): FeishuCardNavAction {
-    const elements = (reply.card.body as { elements: Array<{ tag: string; text?: { content: string }; behaviors?: Array<{ value: { cardId: string; actionId: string } }> }> }).elements;
-    const button = elements.find(item => item.tag === 'button' && item.text?.content === caption);
+    const button = cardButtons(reply.card).find(item => item.text?.content === caption);
     assert.ok(button, `missing ${caption}: ${JSON.stringify(reply.card)}`);
     const value = button.behaviors![0].value;
     return { ...actor, ...value, eventId: `click-${++sequence}`, messageId: `platform-${reply.operationId}`, chatId: 'private-chat' };
@@ -83,7 +83,7 @@ function unchanged(f: Awaited<ReturnType<typeof fixture>>, before: ReturnType<ty
 function pendingGrade(f: Awaited<ReturnType<typeof fixture>>) {
   const revealed = f.click(f.send('知识 复习'), '查看资料');
   f.sql("CREATE TRIGGER reject_observation BEFORE INSERT ON observations BEGIN SELECT RAISE(ABORT,'synthetic write unavailable'); END");
-  const pending = f.click(revealed, '脑中回忆清楚');
+  const pending = f.click(revealed, '清楚');
   assert.equal(f.operations()[0].status, 'pending'); assert.equal(f.store.countObservations(), 0);
   return pending;
 }
@@ -109,7 +109,7 @@ test('front card omits private body, summary and history; browsing, pause and pa
 test('due candidate starts mental review; grade completes budget without confidence or anchor updates; review confirmation is separate', async () => {
   const f = await fixture(); try {
     const before = f.export(); const front = f.click(f.send('知识 待复习'), '回忆 1');
-    const saved = f.click(f.click(front, '查看资料'), '脑中回忆模糊');
+    const saved = f.click(f.click(front, '查看资料'), '模糊');
     const [observation] = f.store.getObservations();
     assert.equal(observation.answer, ''); assert.equal(observation.evidenceMode, 'mental'); assert.equal(observation.rating, 'partial');
     assert.equal(observation.exposure, 'unknown'); assert.equal(observation.observedExposure, false);
@@ -130,7 +130,7 @@ test('reveal freezes H, config and original anchor despite later H and historica
     const revealed = f.click(f.send('知识 复习'), '查看资料'); const frozen = f.session().state.frozen!;
     f.store.updateConfig(30, frozen.configRevision);
     f.store.addReview({ eventId: 'later-history', conceptId: f.concept.id, sourceRevision: f.concept.source.revision, kind: 'review', occurredAt: '2026-10-06T01:00:00Z' });
-    f.advance(60_000); f.click(revealed, '脑中回忆清楚');
+    f.advance(60_000); f.click(revealed, '清楚');
     const [event] = f.store.getObservations(); assert.equal(event.configRevision, frozen.configRevision); assert.equal(event.halfLifeDays, frozen.halfLifeDays);
     assert.equal(event.anchorEventId, 'original-anchor'); assert.equal(event.elapsedDays, 7); assert.equal(event.decay, 0.5);
     assert.equal(event.observedAt, frozen.observedAt);
@@ -150,7 +150,7 @@ test('committed Store event with failed journal settlement compares exact duplic
   const f = await fixture(); try {
     const revealed = f.click(f.send('知识 复习'), '查看资料');
     f.accounts.settleFeishuReviewOperation = () => { throw new Error('synthetic settlement unavailable'); };
-    f.click(revealed, '脑中想不起'); assert.equal(f.store.countObservations(), 1); assert.equal(f.operations()[0].status, 'pending');
+    f.click(revealed, '想不起'); assert.equal(f.store.countObservations(), 1); assert.equal(f.operations()[0].status, 'pending');
     const intent = f.operations()[0].intent; assert.equal(intent.kind, 'observation');
     f.reopen(); f.changeSource(); f.advance(25 * 60 * 60_000);
     const recovered = f.send('知识 继续复习'); assert.equal(f.operations()[0].status, 'applied'); assert.equal(f.store.countObservations(), 1);
@@ -161,7 +161,7 @@ test('committed Store event with failed journal settlement compares exact duplic
 
 test('unknown send never rolls back saved learning, activates failed card or automatically repeats message', async () => {
   const f = await fixture(); try {
-    const revealed = f.click(f.send('知识 复习'), '查看资料'); const click = f.action(revealed, '脑中回忆清楚');
+    const revealed = f.click(f.send('知识 复习'), '查看资料'); const click = f.action(revealed, '清楚');
     const saved = f.cards.prepareAction(click)!; assert.ok(saved); saved.settle({ status: 'failed-or-unknown' });
     assert.equal(f.store.countObservations(), 1); assert.equal(saved.stillAuthorized(), false);
     assert.equal(f.cards.prepareAction({ ...click, eventId: 'redelivery' }), null);
@@ -222,7 +222,7 @@ test('changed source or expired session before grading never creates a new learn
   for (const reason of ['source', 'expiry'] as const) {
     const f = await fixture(); try {
       const revealed = f.click(f.send('知识 复习'), '查看资料');
-      const grade = f.action(revealed, '脑中回忆清楚');
+      const grade = f.action(revealed, '清楚');
       if (reason === 'source') f.changeSource(); else f.advance(24 * 60 * 60_000);
       assert.equal(f.cards.prepareAction(grade), null);
       const resumed = f.send('知识 继续复习');
@@ -274,7 +274,7 @@ test('first reveal rechecks current eligibility; retained, deferred, recent, com
     f.store.addRetention({ eventId: 'web-retained-after-reveal', conceptId: f.concept.id, sourceRevision: f.concept.source.revision,
       active: true, previousEventId: null, occurredAt: '2026-10-07T01:00:00Z' }, null);
     const retained = f.export().retentions;
-    f.click(revealed, '脑中回忆清楚'); assert.equal(f.store.countObservations(), 1);
+    f.click(revealed, '清楚'); assert.equal(f.store.countObservations(), 1);
     assert.equal(f.session().state.phase, 'saved'); assert.deepEqual(f.export().retentions, retained);
   } finally { f.cleanup(); }
 });
@@ -305,7 +305,7 @@ test('unclassified temporary Store errors remain pending and recover once withou
     const revealed = f.click(f.send('知识 复习'), '查看资料');
     const addObservation = f.store.addObservation.bind(f.store);
     f.store.addObservation = () => { throw new StoreError('UNCLASSIFIED_TEMPORARY', 'synthetic temporary storage error', 503); };
-    f.click(revealed, '脑中回忆清楚');
+    f.click(revealed, '清楚');
     const operation = f.operations()[0]; assert.equal(operation.status, 'pending'); assert.equal(operation.errorCode, null);
     assert.equal(f.store.countObservations(), 0);
     f.store.addObservation = addObservation;
@@ -392,7 +392,7 @@ test('due batch entry preserves its domain and uses the remaining account-wide b
 test('batch items freeze independently and write distinct observations and explicit rewarm events without automatic advance', async () => {
   const f = await fixture(true); try {
     const front = f.send('知识 复习 3'); const batchSession = f.session(); const initial = f.export();
-    const saved1 = f.click(f.click(front, '查看资料'), '脑中回忆清楚');
+    const saved1 = f.click(f.click(front, '查看资料'), '清楚');
     const frozen1 = f.session().state.frozen!;
     assert.equal(f.session().state.batch!.cursor, 0); assert.deepEqual(f.export().anchors, initial.anchors);
     const reviewed1 = f.click(saved1, '确认已重温，更新时间');
@@ -400,7 +400,7 @@ test('batch items freeze independently and write distinct observations and expli
     f.advance(60_000); f.store.updateConfig(5, f.store.getConfig().revision);
     const front2 = f.click(reviewed1, '下一条');
     assert.equal(f.session().state.batch!.cursor, 1); assert.equal(f.session().state.frozen, null);
-    const saved2 = f.click(f.click(front2, '查看资料'), '脑中回忆模糊');
+    const saved2 = f.click(f.click(front2, '查看资料'), '模糊');
     const frozen2 = f.session().state.frozen!;
     assert.equal(frozen1.halfLifeDays, 7); assert.equal(frozen2.halfLifeDays, 5);
     assert.notEqual(frozen1.observedAt, frozen2.observedAt);
@@ -438,7 +438,7 @@ test('pending batch recovery saves the original item and requires another explic
   const f = await fixture(true); try {
     const revealed = f.click(f.send('知识 复习 3'), '查看资料');
     f.sql("CREATE TRIGGER reject_observation BEFORE INSERT ON observations BEGIN SELECT RAISE(ABORT,'synthetic batch unavailable'); END");
-    const pending = f.click(revealed, '脑中想不起'); const itemId = f.operations()[0].itemId;
+    const pending = f.click(revealed, '想不起'); const itemId = f.operations()[0].itemId;
     assert.doesNotMatch(f.payload(pending), /"content":"下一条"|"content":"跳过本条"|"content":"结束复习"/);
     f.reopen(); f.sql('DROP TRIGGER reject_observation');
     const recovered = f.send('知识 结束复习');
@@ -454,25 +454,25 @@ test('Store commit followed by journal failure recovers the exact batch item onc
   const f = await fixture(true); try {
     const revealed = f.click(f.send('知识 复习 3'), '查看资料');
     f.accounts.settleFeishuReviewOperation = () => { throw new Error('synthetic batch settlement unavailable'); };
-    f.click(revealed, '脑中回忆清楚'); const original = f.operations()[0];
+    f.click(revealed, '清楚'); const original = f.operations()[0];
     assert.equal(f.store.countObservations(), 1); assert.equal(original.status, 'pending');
     f.reopen(); const recovered = f.send('知识 继续复习');
     assert.deepEqual(f.operations()[0].intent, original.intent); assert.equal(f.operations()[0].itemId, original.itemId);
     assert.equal(f.session().state.batch!.cursor, 0); assert.equal(f.store.countObservations(), 1);
-    const next = f.click(recovered, '下一条'); f.click(f.click(next, '查看资料'), '脑中回忆模糊');
+    const next = f.click(recovered, '下一条'); f.click(f.click(next, '查看资料'), '模糊');
     assert.equal(f.store.countObservations(), 2); assert.equal(new Set(f.operations().map(item => item.itemId)).size, 2);
   } finally { f.cleanup(); }
 });
 
 test('a conflicted rewarm retains its saved self-report and does not contaminate the next item', async () => {
   const f = await fixture(true); try {
-    const saved = f.click(f.click(f.send('知识 复习 3'), '查看资料'), '脑中回忆清楚'); const id = f.session().id;
+    const saved = f.click(f.click(f.send('知识 复习 3'), '查看资料'), '清楚'); const id = f.session().id;
     const addReview = f.store.addReview.bind(f.store);
     f.store.addReview = () => { throw new StoreError('EVENT_CONFLICT', 'synthetic fixed business conflict', 409); };
     const conflicted = f.click(saved, '确认已重温，更新时间'); f.store.addReview = addReview;
     assert.match(f.payload(conflicted), /脑中自评：已保存/); assert.match(f.payload(conflicted), /确认重温：未保存\(冲突\)/);
     const next = f.click(conflicted, '略过冲突项，继续');
-    const savedNext = f.click(f.click(next, '查看资料'), '脑中想不起');
+    const savedNext = f.click(f.click(next, '查看资料'), '想不起');
     assert.match(f.payload(savedNext), /脑中回忆记录已保存/); assert.doesNotMatch(f.payload(savedNext), /有记录写入冲突|确认重温：未保存/);
     const summary = f.click(savedNext, '结束复习');
     assert.match(f.payload(summary), /脑中自评已保存 2 项/); assert.match(f.payload(summary), /明确确认重温已保存 0 项/);
@@ -497,7 +497,7 @@ test('frozen batch items recheck eligibility on entry and reveal without silentl
           observedAt: occurredAt, configRevision: 1, anchorEventId: anchor, answer: 'synthetic cross-channel answer',
           rating: 'partial', exposure: 'unexposed', observedExposure: false }, anchor);
       }
-      const saved = f.click(f.click(front, '查看资料'), '脑中回忆清楚');
+      const saved = f.click(f.click(front, '查看资料'), '清楚');
       if (reason === 'budget') f.store.updateReviewPlan({ revision: f.store.getReviewPlan().revision, dailyBudget: 1 });
       const blocked = f.click(saved, '下一条'); assert.equal(f.session().state.batch!.cursor, 1, reason);
       assert.match(f.payload(blocked), /当前已不在待复习范围/, reason); assert.doesNotMatch(f.payload(blocked), /SECRET_BODY|OTHER_BODY/, reason);
@@ -525,7 +525,7 @@ test('batch reveals remain eligible after ranking changes and retain evidence af
       observedAt: '2026-10-07T01:00:00Z', configRevision: 1, anchorEventId, answer: 'synthetic cross-channel answer',
       rating: 'partial', exposure: 'unexposed', observedExposure: false }, anchorEventId);
     const frozen = structuredClone(f.session().state.frozen);
-    f.click(revealed, '脑中回忆清楚'); assert.equal(f.store.countObservations(), 2);
+    f.click(revealed, '清楚'); assert.equal(f.store.countObservations(), 2);
     assert.equal(f.store.getObservations().filter(item => item.conceptId === current.conceptId).length, 1);
     assert.deepEqual(f.session().state.frozen, frozen);
     assert.equal(f.session().state.phase, 'saved'); assert.equal(f.export().retentions!.length, 1);
@@ -536,7 +536,7 @@ test('cross-day continuation keeps the queue and absolute expiry while using the
   const f = await fixture(true); try {
     f.store.updateReviewPlan({ revision: f.store.getReviewPlan().revision, dailyBudget: 3 });
     const front = f.send('知识 复习 3'); const expiry = f.session().expiresAt;
-    const saved = f.click(f.click(front, '查看资料'), '脑中回忆清楚');
+    const saved = f.click(f.click(front, '查看资料'), '清楚');
     f.store.updateReviewPlan({ revision: f.store.getReviewPlan().revision, dailyBudget: 1 });
     f.advance(23 * 60 * 60_000);
     const next = f.click(f.send('知识 继续复习'), '下一条');
@@ -549,7 +549,7 @@ test('cross-day continuation keeps the queue and absolute expiry while using the
 test('changed or expired batches stop navigation and show a body-free honest ending summary', async () => {
   for (const reason of ['source', 'expiry']) {
     const f = await fixture(true); try {
-      f.click(f.click(f.send('知识 复习 3'), '查看资料'), '脑中回忆清楚');
+      f.click(f.click(f.send('知识 复习 3'), '查看资料'), '清楚');
       if (reason === 'source') f.changeSource(); else f.advance(25 * 60 * 60_000);
       const blocked = f.send('知识 继续复习');
       assert.doesNotMatch(f.payload(blocked), /SECRET_BODY|OTHER_BODY|NEW_SECRET_BODY|"content":"下一条"|"content":"跳过本条"/);

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { cardButtons, cardElements } from './helpers/feishu-card-elements.js';
 import { test } from 'node:test';
 import { createServer, request } from 'node:http';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -82,9 +83,8 @@ function input(text: string, messageId: string, actor = memberActor): FeishuRead
 }
 type Button = { text: { content: string }; behaviors: Array<{ value: { kind: string; cardId: string; actionId: string } }> };
 function button(card: FeishuCardPayload, caption: string): Button {
-  const elements = (card.body as { elements: Array<Button & { tag: string }> }).elements;
-  const found = elements.find(element => element.tag === 'button' && element.text.content === caption);
-  assert.ok(found, `missing button ${caption}`); return found;
+  const found = cardButtons(card).find(element => element.text.content === caption);
+  assert.ok(found, `missing button ${caption}`); return found as Button;
 }
 function action(sent: FeishuSendCard, messageId: string, caption: string, actor = memberActor): FeishuCardNavAction {
   const { cardId, actionId } = button(sent.card, caption).behaviors[0].value;
@@ -193,8 +193,8 @@ test('due cards apply persisted focus, defer, retention, accepted progress and e
     assert.match(payload, /Asia\/Hong_Kong/); assert.match(payload, /2026-10-02/);
     assert.match(payload, /今日已落库概念回忆 1 项 · 剩余预算 2 项/);
     assert.match(payload, /OwnerOnly5/); assert.doesNotMatch(payload, /OwnerOnly[034]|Owner-private-body/);
-    const candidateRows = (c.sent.at(-1)!.card.body as { elements: Array<{ tag: string; content?: string }> }).elements
-      .filter(element => element.tag === 'markdown' && /^\d+\. /.test(element.content ?? ''));
+    const candidateRows = cardElements(c.sent.at(-1)!.card)
+      .filter(element => element.tag === 'markdown' && element.text_size === 'heading' && /^\d+\. /.test(element.content ?? ''));
     assert.equal(candidateRows.length, 2);
     assert.match(candidateRows[0].content!, /^1\. OwnerOnly5\b/);
     assert.match(candidateRows[1].content!, /^2\. OwnerOnly[12]\b/);
@@ -302,7 +302,7 @@ test('private SDK review writes the member learning Store visible to Web without
     assert.match(JSON.stringify(c.sent.at(-1)!.card), /MemberOnly0/);
     assert.doesNotMatch(JSON.stringify(c.sent.at(-1)!.card), /Member-private-first|OwnerOnly/);
     await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '查看资料'));
-    await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '脑中回忆清楚'));
+    await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '清楚'));
     const graded = (await f.send('/api/export', users.member)).body;
     assert.equal(graded.observations.length, 1); assert.equal(graded.anchors.length, 1);
     assert.equal(graded.observations[0].conceptId, concept.id);
@@ -333,7 +333,7 @@ test('private SDK batch shares both item records with member Web while owner dat
     assert.doesNotMatch(JSON.stringify(c.sent.at(-1)!.card), /Member-private|OwnerOnly/);
     for (const index of [0, 1]) {
       await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '查看资料'));
-      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, index ? '脑中回忆模糊' : '脑中回忆清楚'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, index ? '模糊' : '清楚'));
       if (!index) await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '确认已重温，更新时间'));
       await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, index ? '完成本轮' : '下一条'));
     }

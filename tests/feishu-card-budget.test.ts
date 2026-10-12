@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { cardButtons } from './helpers/feishu-card-elements.js';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,7 +47,7 @@ for (const envelope of [
         const stored=accounts.createFeishuCardDraft(actor,auth,input);
         assert.ok(stored,`Accounts must accept a renderer plan: ${metadataBytes} bytes`);
         const card=plan.build(stored.id);
-        const buttons=(card.body as {elements:{tag:string}[]}).elements.filter(element=>element.tag==='button');
+        const buttons=cardButtons(card);
         assert.ok(buttons.length>0,'normal navigation must not collapse into an error/empty card');
         assert.equal(buttons.length,plan.actions.length);
         assert.ok(Buffer.byteLength(JSON.stringify(card))<=20*1024);

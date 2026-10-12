@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { cardButtons, cardElements } from './helpers/feishu-card-elements.js';
 import { test } from 'node:test';
 import { selectFeishuReviewCandidates as select } from '../src/server/feishu-card-view.js';
 import { planFeishuCardView as render, type FeishuCardViewPlan } from '../src/server/feishu-card-view.js';
@@ -120,12 +121,13 @@ test('V2 cards use callback behaviors with only opaque navigation identifiers an
   assert.equal(payload.schema, '2.0');
   assert.deepEqual(payload.config, { update_multi: true, enable_forward: false });
   const header = payload.header as { title: { tag: string } }; assert.equal(header.title.tag, 'plain_text');
-  const elements = (payload.body as { elements: Record<string, unknown>[] }).elements;
-  const buttons = elements.filter((element) => element.tag === 'button');
+  const buttons = cardButtons(payload);
   assert.equal(buttons.length, rendered.actions.length);
   buttons.forEach((button, index) => {
     assert.equal(button.value, undefined);
-    assert.deepEqual(button.behaviors, [{ type: 'callback', value: { kind: 'lm.nav.v1', cardId: 'synthetic-card-id', actionId: `a${index}` } }]);
+    const actionId = (button.behaviors as { value: { actionId: string } }[])[0].value.actionId;
+    assert.deepEqual(button.behaviors, [{ type: 'callback', value: { kind: 'lm.nav.v1', cardId: 'synthetic-card-id', actionId } }]);
+    assert.equal(rendered.actions.filter(action => action.id === actionId).length, 1);
     assert.match(rendered.actions[index].id, /^a(?:[0-9]|1[0-5])$/);
     assert.deepEqual(Object.keys(rendered.actions[index]).sort(), ['id', 'target']);
   });
@@ -207,8 +209,7 @@ test('safe card Markdown fully paginates Unicode and inert attachments without s
   while (view.kind === 'read') {
     const rendered = render(view, context, plan()); checkBudgets(view, rendered);
     const payload = card(rendered);
-    const elements = (payload.body as { elements: { tag: string; content?: string }[] }).elements;
-    const body = elements[1].content!;
+    const body = cardElements(payload).find(element => element.tag === 'markdown' && element.text_size === 'normal')!.content as string;
     assert.ok(Buffer.byteLength(body) <= 3000);
     assert.doesNotMatch(body, /<at|\[危险\]|!\[图\]/);
     joined += body; pages++;
@@ -293,11 +294,43 @@ test('control-heavy body pages and maximum back filters satisfy final card budge
   while (view.kind === 'read') {
     const rendered = render(view, context, plan()); checkBudgets(view, rendered);
     const payload = card(rendered);
-    const body = (payload.body as { elements: { content?: string }[] }).elements[1].content!;
+    const body = cardElements(payload).find(element => element.tag === 'markdown' && element.text_size === 'normal')!.content as string;
     assert.ok(Buffer.byteLength(body) <= 3000); joined += body;
     assert.ok(rendered.actions.some((action) => JSON.stringify(action.target) === JSON.stringify(back)));
     const nextAction = rendered.actions.find((action) => action.target.kind === 'read' && action.target.page === (view as { page: number }).page + 1);
     if (!nextAction) break; view = nextAction.target as FeishuBrowseView;
   }
   assert.equal(joined, concept.body);
+});
+
+
+test('native candidate groups keep each name, hint and two actions adjacent without renumbering navigation', () => {
+  const context = readContext(snapshot([node('candidate-one'), node('candidate-two')]));
+  const view = { kind: 'due', domainId: 'Math', limit: 3 } as const;
+  const rendered = render(view, context, plan());
+  const payload = card(rendered);
+  const elements = cardElements(payload);
+  const buttons = cardButtons(payload);
+  const ids = buttons.map(button => button.behaviors[0].value.actionId);
+  assert.equal(new Set(ids).size, rendered.actions.length);
+  assert.deepEqual([...ids].sort(), rendered.actions.map(action => action.id).sort());
+  assert.deepEqual(rendered.actions.map(action => action.target.kind),
+    ['read', 'read', 'review-start', 'review-start', 'review-batch-start', 'due', 'due', 'domains', 'list']);
+  for (const [index, name] of ['candidate-one', 'candidate-two'].entries()) {
+    const nameIndex = elements.findIndex(element => element.tag === 'markdown' && element.content.includes(name));
+    const nextName = elements.findIndex((element, offset) => offset > nameIndex && element.tag === 'markdown' && element.text_size === 'heading');
+    const group = elements.slice(nameIndex, nextName < 0 ? elements.length : nextName);
+    assert.equal(group[0].text_size, 'heading');
+    assert.equal(group[1].text_size, 'notation');
+    assert.match(group[1].content, /距锚点/);
+    const groupButtons = group.filter(element => element.tag === 'button').slice(0, 2);
+    assert.deepEqual(groupButtons.map(button => button.text.content), [`阅读 ${index + 1}`, `回忆 ${index + 1}`]);
+    assert.deepEqual(groupButtons.map(button => button.behaviors[0].value.actionId), [`a${index}`, `a${index + 2}`]);
+  }
+  const filled = buttons.filter(button => button.type === 'primary_filled');
+  assert.equal(filled.length, 1);
+  assert.match(filled[0].text.content, /开始本轮/);
+  assert.ok(elements.some(element => element.tag === 'column_set'));
+  assert.ok(elements.some(element => element.tag === 'hr'));
+  checkBudgets(view, rendered);
 });

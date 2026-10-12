@@ -4,8 +4,9 @@ import type { ReviewPlanResponse } from '../shared/review-plan.js';
 import type { Snapshot } from '../shared/types.js';
 import { createHash } from 'node:crypto';
 import { domainIdOf } from '../core/domain-view.js';
+import { cardButton, cardButtonRows, cardDivider, cardMarkdown, styledFeishuCard } from './feishu-card-style.js';
 import { buildFeishuReadReferences, type FeishuReadContext } from './feishu-read-view.js';
-import { FEISHU_CARD_NAV_KIND, type FeishuCardActionDefinition, type FeishuCardPayload, type FeishuCardView, type FeishuBrowseView } from '../shared/feishu-cards.js';
+import { type FeishuCardActionDefinition, type FeishuCardPayload, type FeishuCardView, type FeishuBrowseView } from '../shared/feishu-cards.js';
 
 export interface FeishuReviewCandidates {
   candidates: BriefReviewCandidate[];
@@ -48,7 +49,7 @@ export function selectFeishuReviewCandidates(
   return { candidates, completedCount: completed.size, remaining, timeZone: plan.timeZone, dayKey: plan.dayKey };
 }
 
-interface CardRow { content: string; caption?: string; target?: FeishuCardView; extra?: CardControl }
+interface CardRow { title?: string; content: string; caption?: string; target?: FeishuCardView; extra?: CardControl }
 interface CardControl { caption: string; target: FeishuCardView }
 export interface FeishuCardViewPlan {
   actions: FeishuCardActionDefinition[];
@@ -99,19 +100,27 @@ export function bodyChunks(body: string): string[] {
   return chunks;
 }
 
-function createPlan(title: string, content: string, rows: CardRow[], controls: CardControl[]): FeishuCardViewPlan {
+function createPlan(title: string, content: string, rows: CardRow[], controls: CardControl[], subtitle = 'Living Memory · 个人知识'): FeishuCardViewPlan {
+  // Stored action order is a compatibility contract, independent of visual grouping.
   const navigation = [...rows.filter((row): row is CardRow & { caption: string; target: FeishuCardView } => !!row.caption && !!row.target), ...rows.flatMap((row) => row.extra ? [row.extra] : []), ...controls];
   const actions = navigation.map((item, index) => ({ id: `a${index}`, target: item.target }));
-  return { actions, build: (cardId) => ({
-    schema: '2.0', config: { update_multi: true, enable_forward: false },
-    header: { title: { tag: 'plain_text', content: metadata(title, 200) }, template: 'blue' },
-    body: { elements: [
-      { tag: 'markdown', content }, ...rows.map((row) => ({ tag: 'markdown', content: row.content })),
-      ...navigation.map((item, index) => ({ tag: 'button', text: { tag: 'plain_text', content: metadata(item.caption, 80) }, type: 'default',
-        behaviors: [{ type: 'callback', value: { kind: FEISHU_CARD_NAV_KIND, cardId, actionId: actions[index].id } }] })),
-      { tag: 'markdown', content: READ_ONLY },
-    ] },
-  }) };
+  return { actions, build: (cardId) => {
+    const button = (item: CardControl) => cardButton(cardId, actions[navigation.indexOf(item)].id, metadata(item.caption, 80),
+      item.target.kind === 'review-batch-start' ? 'primary_filled' : item.target.kind === 'read' ? 'primary' : 'default');
+    const elements = [cardMarkdown(content, 'notation')];
+    for (const row of rows) {
+      elements.push(cardDivider());
+      if (row.title) elements.push(cardMarkdown(row.title, 'heading'));
+      elements.push(cardMarkdown(row.content, row.title ? 'notation' : 'normal'));
+      const buttons = [];
+      if (row.caption && row.target) buttons.push(button(row as CardControl));
+      if (row.extra) buttons.push(button(row.extra));
+      elements.push(...cardButtonRows(buttons));
+    }
+    if (controls.length) elements.push(cardDivider(), ...cardButtonRows(controls.map(button)));
+    elements.push(cardDivider(), cardMarkdown(READ_ONLY, 'notation'));
+    return styledFeishuCard({ title: metadata(title, 200), subtitle: metadata(subtitle, 160), elements });
+  } };
 }
 
 function fitsPlan(view: FeishuCardView, plan: FeishuCardViewPlan): boolean {
@@ -182,7 +191,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
     if (view.page < chunks.length) controls.push({ caption: '下一页', target: { ...view, page: view.page + 1 } });
     controls.push({ caption: view.back.kind === 'due' ? '返回原待复习' : '返回原列表', target: view.back });
     const plan = createPlan(metadata(concept.title, 200), `目录域：${metadata(domainIdOf(concept), 300)}\n${timeText(context, concept.id)}\n最近确认重温：${confirmed(context, concept.id, concept.source.revision)}\n正文 ${view.page}/${chunks.length} 页。附件/链接以文字展示，Mermaid、公式不保证渲染。`,
-      [{ content: chunks[view.page - 1] || '（正文为空）' }], controls);
+      [{ content: chunks[view.page - 1] || '（正文为空）' }], controls, `知识阅读 · 第 ${view.page}/${chunks.length} 页`);
     return fitsPlan(view, plan) ? plan : errorPlan('当前正文或导航参数超过展示限制，请重新列表或搜索。');
   }
   if (view.kind === 'due') {
@@ -191,7 +200,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
     const result = selectFeishuReviewCandidates(snapshot, reviewPlan, view.domainId, view.limit);
     const rows: CardRow[] = result.candidates.map((candidate, index) => {
       const concept = context.concepts.find((item) => item.id === candidate.conceptId)!;
-      return { content: `${index + 1}. ${metadata(concept.title)}\n目录域：${metadata(domainIdOf(concept), 240)}\n${candidate.focus ? '重点 · ' : ''}${candidate.estimated ? '估算锚点 · ' : ''}距锚点 ${candidate.elapsedDays.toFixed(1)} 天`, caption: `阅读 ${index + 1}`, target: toRead(concept.id, concept.source.revision, view), extra: { caption: `回忆 ${index + 1}`, target: { kind: 'review-start', reference: references.get(concept.id)!, revision: hash(concept.source.revision).slice(0, 12), domainId: view.domainId } } };
+      return { title: `${index + 1}. ${metadata(concept.title)}`, content: `目录域：${metadata(domainIdOf(concept), 240)}\n${candidate.focus ? '重点 · ' : ''}${candidate.estimated ? '估算锚点 · ' : ''}距锚点 ${candidate.elapsedDays.toFixed(1)} 天`, caption: `阅读 ${index + 1}`, target: toRead(concept.id, concept.source.revision, view), extra: { caption: `回忆 ${index + 1}`, target: { kind: 'review-start', reference: references.get(concept.id)!, revision: hash(concept.source.revision).slice(0, 12), domainId: view.domainId } } };
     });
     const intro = `时间提示候选（非记忆能力测量）\n日期：${metadata(result.dayKey, 60)} · 时区：${metadata(result.timeZone, 100)}\n今日已落库概念回忆 ${result.completedCount} 项 · 剩余预算 ${result.remaining} 项\n不计场景记录；浏览器待同步/已访问信息在聊天中不可见。${rows.length ? '' : '\n当前没有可用候选。'}`;
     const controls: CardControl[] = [{ caption: view.limit === 3 ? '查看 5 项' : '查看 3 项', target: { ...view, limit: view.limit === 3 ? 5 : 3 } },
@@ -199,20 +208,20 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
       { caption: '本领域全部节点', target: { ...DEFAULT_LIST, domainId: view.domainId } }];
     if (rows.length) controls.unshift({ caption: `开始本轮 ${view.limit} 项`,
       target: { kind: 'review-batch-start' } });
-    let plan = createPlan('少量复习候选', intro, rows, controls);
+    let plan = createPlan('少量复习候选', intro, rows, controls, '先回忆，再核对 · 由你确认');
     if (!fitsPlan(view, plan)) {
       rows.forEach((row, index) => { if (index > 0) delete row.extra; });
-      plan = createPlan('少量复习候选', intro, rows, controls);
+      plan = createPlan('少量复习候选', intro, rows, controls, '先回忆，再核对 · 由你确认');
     }
     for (const caption of ['本领域全部节点', view.limit === 3 ? '查看 5 项' : '查看 3 项']) {
       if (fitsPlan(view, plan)) break;
       const index = controls.findIndex((control) => control.caption === caption);
       if (index >= 0) controls.splice(index, 1);
-      plan = createPlan('少量复习候选', intro, rows, controls);
+      plan = createPlan('少量复习候选', intro, rows, controls, '先回忆，再核对 · 由你确认');
     }
     for (let index = rows.length - 1; index > 0 && !fitsPlan(view, plan); index--) {
       delete rows[index].caption; delete rows[index].target;
-      plan = createPlan('少量复习候选', intro, rows, controls);
+      plan = createPlan('少量复习候选', intro, rows, controls, '先回忆，再核对 · 由你确认');
     }
     return fitsPlan(view, plan) ? plan : errorPlan('当前候选导航参数超过展示限制，请查看 3 项或全部领域候选。');
   }
@@ -227,11 +236,11 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
   const makeRows = (indices: number[], back: typeof view): CardRow[] => indices.map((index) => {
     if (isDomains) {
       const domain = domains[index];
-      return { content: `${metadata(domain.label)} · ${domain.conceptCount} 节点\n目录域：${metadata(domain.id, 300)}${domain.id.length > 512 ? '\n目录域超过 512 字元，本通道暂不支持直接筛选；可搜索节点。' : ''}`,
+      return { title: metadata(domain.label), content: `${domain.conceptCount} 节点\n目录域：${metadata(domain.id, 300)}${domain.id.length > 512 ? '\n目录域超过 512 字元，本通道暂不支持直接筛选；可搜索节点。' : ''}`,
         ...(domain.id.length <= 512 ? { caption: `查看领域 ${index + 1}`, target: { ...DEFAULT_LIST, domainId: domain.id } } : {}) };
     }
     const concept = concepts[index];
-    return { content: `${metadata(concept.title)}\n目录域：${metadata(domainIdOf(concept), 300)}\n${timeText(context, concept.id)}\n最近确认重温：${confirmed(context, concept.id, concept.source.revision)}`,
+    return { title: metadata(concept.title), content: `目录域：${metadata(domainIdOf(concept), 300)}\n${timeText(context, concept.id)}\n最近确认重温：${confirmed(context, concept.id, concept.source.revision)}`,
       caption: `阅读 ${index + 1}`, target: toRead(concept.id, concept.source.revision, back as Extract<FeishuCardView, { kind: 'list' }>) };
   });
   for (let index = 0; index < count; index++) {
@@ -246,6 +255,6 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
   const rows = makeRows(groups[view.page - 1], view);
   const plan = createPlan(`${isDomains ? '知识领域' : '知识列表'} · ${view.page}/${groups.length} 页`,
     `${count} ${isDomains ? '个领域' : '个节点'}。时间状态仅作管理提示，不代表实测记忆能力。${rows.length ? '' : '\n没有匹配节点。'}`,
-    rows, collectionControls(view, view.page, groups.length));
+    rows, collectionControls(view, view.page, groups.length), isDomains ? '选择领域，浏览你的知识' : '知识浏览 · 时间状态仅作管理提示');
   return fitsPlan(view, plan) ? plan : errorPlan('当前导航参数超过展示限制，请重新列表或搜索。');
 }
