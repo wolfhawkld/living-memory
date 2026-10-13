@@ -606,6 +606,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       states: store.getStates(concepts, asOf),
       observations: store.getObservations(), applications: store.getApplications(),
       corrections: store.getCorrections(),
+      relationData: { links: source.index.links, reviews: store.getRelationReviews() },
       anchors: store.getAnchors(),
     }));
   }));

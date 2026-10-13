@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { closeApp, createApp, type LivingMemoryApp } from '../src/server/app.js';
-import type { ApplicationRecordRequest, Concept, ConceptHistory, ExportData, Snapshot } from '../src/shared/types.js';
+import type { ApplicationRecordRequest, Concept, ConceptHistory, ExportData, RelationSuggestion, Snapshot } from '../src/shared/types.js';
 import type { LearningOverview, LearningOverviewItem } from '../src/shared/learning-overview.js';
+import type { RelationReviewResponse } from '../src/shared/relation-reviews.js';
 
 interface ResponseData {
   status: number;
@@ -665,6 +666,177 @@ test('learning overview corrections and focused history remain account-private',
     })).json<LearningOverview>();
     assert.deepEqual(memberOverview.corrections?.items, []);
     assert.equal(memberOverview.corrections?.unavailableCount, 0);
+  } finally {
+    if (client) await client.stop();
+    fixture.cleanup();
+  }
+});
+
+function relationProposal(initial: Snapshot): RelationSuggestion {
+  const endpoint = (concept: Concept) => ({ conceptId: concept.id, sourceRevision: concept.source.revision, title: concept.title, path: concept.source.path });
+  const alpha = conceptAt(initial, 'Math/Alpha.md');
+  const beta = conceptAt(initial, 'Math/Beta.md');
+  const edge = initial.links.find((link) => link.source === alpha.id && link.target === beta.id);
+  assert.ok(edge, 'full source fixture has its directed relation');
+  return { operation: 'add', source: endpoint(alpha), target: endpoint(beta), after: { type: edge.type, description: `${edge.description}_ADOPTED` } };
+}
+
+function adoptFixtureRelation(root: string): void {
+  writeFileSync(join(root, 'Math', 'Alpha.md'), conceptFile('Alpha', '数学摘要', 'ALPHA_PRIVATE_SOURCE_BODY') + '\n## 关系网络\n- 相关：[[Math/Beta.md]] — PRIVATE_RELATION_DESCRIPTION_ADOPTED\n');
+}
+
+async function readOnlyRelationOverview(client: RunningApp, credentials: SessionData, cookie?: string): Promise<LearningOverview> {
+  const headers = { 'x-lm-source-id': credentials.sourceId };
+  const beforeResponse = await client.request('/api/export', { cookie, headers });
+  assert.equal(beforeResponse.status, 200);
+  const response = await client.request('/api/learning-overview', { cookie, headers });
+  assert.equal(response.status, 200, response.body);
+  assert.equal(response.headers['cache-control'], 'no-store');
+  const result = response.json<LearningOverview>();
+  assert.equal(result.sourceId, credentials.sourceId);
+  assert.equal(result.asOf, NOW);
+  assert.ok(result.relations);
+  assert.doesNotMatch(response.body, /PRIVATE_APPLICATION_|PRIVATE_RELATION_DESCRIPTION|PRIVATE_DECISION_NOTE|PRIVATE_SOURCE_BODY/);
+  const afterResponse = await client.request('/api/export', { cookie, headers });
+  assert.equal(afterResponse.status, 200);
+  assert.deepEqual(afterResponse.json<ExportData>(), beforeResponse.json<ExportData>(), 'GET overview preserves all learning events, config and layout');
+  return result;
+}
+
+async function saveRelationDecision(client: RunningApp, credentials: SessionData, applicationEventId: string, eventId: string, status: 'open' | 'dismissed', cookie?: string): Promise<void> {
+  const current = await client.request(`/api/applications/${applicationEventId}/relation-review`, { cookie, headers: { 'x-lm-source-id': credentials.sourceId } });
+  assert.equal(current.status, 200, current.body);
+  assert.equal(current.headers['cache-control'], 'no-store');
+  const inspected = current.json<RelationReviewResponse>();
+  const response = await client.request('/api/relation-reviews', {
+    method: 'POST', cookie, headers: tokenHeaders(credentials),
+    body: { eventId, applicationEventId, conceptId: inspected.conceptId, occurredAt: '2026-02-28T00:00:00Z', previousEventId: inspected.history.latest?.eventId ?? null, status, note: 'PRIVATE_DECISION_NOTE', basis: inspected.basis },
+  });
+  assert.equal(response.status, 201, response.body);
+}
+
+test('relation overview uses the full graph, preserves human decisions and missing endpoints, and every read is side-effect free', async () => {
+  const fixture = sourceFixture();
+  writeFileSync(join(fixture.root, 'Math', 'Alpha.md'), conceptFile('Alpha', '数学摘要', 'ALPHA_PRIVATE_SOURCE_BODY') + '\n## 关系网络\n- 相关：[[Math/Beta.md]] — PRIVATE_RELATION_DESCRIPTION\n');
+  let client: RunningApp | undefined;
+  try {
+    client = await running({ root: fixture.root, dataDir: fixture.dataDir, limit: 1 });
+    const credentials = await session(client);
+    const headers = tokenHeaders(credentials);
+    const initial = await snapshot(client);
+    assert.equal((await client.request('/api/snapshot')).json<Snapshot>().concepts.length, 1);
+    const alpha = conceptAt(initial, 'Math/Alpha.md');
+    const beta = conceptAt(initial, 'Math/Beta.md');
+    const proposal = relationProposal(initial);
+    const created = await client.request('/api/applications', { method: 'POST', headers, body: application(alpha, 'relation-only', { correction: '', relationSuggestion: proposal }) });
+    assert.equal(created.status, 201, created.body);
+    const beforeAdoption = await readOnlyRelationOverview(client, credentials);
+    assert.equal(beforeAdoption.relations!.items[0].structureMatches, false);
+    assert.equal(beforeAdoption.relations!.items[0].status, 'open');
+    adoptFixtureRelation(fixture.root);
+    assert.equal((await client.request('/api/refresh', { method: 'POST', headers, body: {} })).status, 200);
+    let result = await readOnlyRelationOverview(client, credentials);
+    assert.deepEqual(result.corrections?.items, [], 'relation suggestions do not require a text correction');
+    let row = result.relations!.items[0];
+    assert.equal(result.relations!.items.length, 1);
+    assert.equal(row.source.conceptId, alpha.id);
+    assert.equal(row.target.conceptId, beta.id);
+    assert.equal(row.structureMatches, true, 'both endpoints and exact edge come from the full index despite graph cap one');
+    assert.equal(row.status, 'open', 'matching structure alone does not decide the human status');
+    const timeBaseline = (await client.request('/api/export', { headers })).json<ExportData>();
+    await saveRelationDecision(client, credentials, 'relation-only', 'dismiss-relation', 'dismissed');
+    result = await readOnlyRelationOverview(client, credentials);
+    row = result.relations!.items[0];
+    assert.equal(row.status, 'dismissed');
+    assert.equal(row.structureMatches, true);
+    assert.equal(row.latestEventId, 'dismiss-relation');
+    await saveRelationDecision(client, credentials, 'relation-only', 'reopen-relation', 'open');
+    result = await readOnlyRelationOverview(client, credentials);
+    assert.equal(result.relations!.items[0].status, 'open');
+    const afterDecisions = (await client.request('/api/export', { headers })).json<ExportData>();
+    for (const key of ['anchors', 'observations', 'retentions', 'config', 'configHistory', 'layout'] as const) {
+      assert.deepEqual(afterDecisions[key], timeBaseline[key], `manual relation decisions do not alter ${key}`);
+    }
+    rmSync(join(fixture.root, 'Math', 'Beta.md'));
+    assert.equal((await client.request('/api/refresh', { method: 'POST', headers, body: {} })).status, 200);
+    result = await readOnlyRelationOverview(client, credentials);
+    row = result.relations!.items[0];
+    assert.equal(row.applicationEventId, 'relation-only');
+    assert.equal(row.conceptId, alpha.id, 'primary remains available for focused history');
+    assert.equal(row.structureMatches, null);
+    assert.equal(row.basis.target.current, null);
+    assert.equal(row.target.conceptId, beta.id);
+    assert.equal(row.status, 'open');
+    assert.equal(row.basisChanged, true);
+    assert.equal(result.relations!.unavailableCount, 0);
+    const focused = await client.request(`/api/concepts/${encodeURIComponent(alpha.id)}/history?applicationEventId=relation-only`, { headers });
+    assert.equal(focused.status, 200);
+    rmSync(join(fixture.root, 'Math', 'Alpha.md'));
+    assert.equal((await client.request('/api/refresh', { method: 'POST', headers, body: {} })).status, 200);
+    result = await readOnlyRelationOverview(client, credentials);
+    assert.deepEqual(result.relations!.items, []);
+    assert.equal(result.relations!.unavailableCount, 1, 'missing primary is counted across the whole source');
+    const wrongSource = await client.request('/api/learning-overview', { headers: { 'x-lm-source-id': 'foreign-source' } });
+    assert.equal(wrongSource.status, 409);
+    assert.equal(errorCode(wrongSource), 'SOURCE_MISMATCH');
+  } finally {
+    if (client) await client.stop();
+    fixture.cleanup();
+  }
+});
+
+test('relation overview and focused history isolate same-title account sources and reject foreign access', async () => {
+  const fixture = sourceFixture();
+  writeFileSync(join(fixture.root, 'Math', 'Alpha.md'), conceptFile('Alpha', '数学摘要', 'ALPHA_PRIVATE_SOURCE_BODY') + '\n## 关系网络\n- 相关：[[Math/Beta.md]] — PRIVATE_RELATION_DESCRIPTION\n');
+  let client: RunningApp | undefined;
+  try {
+    client = await running({ root: fixture.root, dataDir: fixture.dataDir, accountsEnabled: true, limit: 1 });
+    const anonymous = await client.request('/api/learning-overview');
+    assert.equal(anonymous.status, 401);
+    assert.equal(errorCode(anonymous), 'AUTH_REQUIRED');
+    const setup = await client.request('/api/auth/setup', { method: 'POST', body: { username: 'owner', password: 'owner-password-2026' } });
+    assert.equal(setup.status, 201);
+    const ownerCookie = cookieFrom(setup);
+    const owner = await session(client, ownerCookie);
+    const ownerSnapshot = await snapshot(client, ownerCookie);
+    const ownerAlpha = conceptAt(ownerSnapshot, 'Math/Alpha.md');
+    const posted = await client.request('/api/applications', { method: 'POST', cookie: ownerCookie, headers: tokenHeaders(owner), body: application(ownerAlpha, 'owner-relation-only', { correction: '', relationSuggestion: relationProposal(ownerSnapshot) }) });
+    assert.equal(posted.status, 201, posted.body);
+    adoptFixtureRelation(fixture.root);
+    assert.equal((await client.request('/api/refresh', { method: 'POST', cookie: ownerCookie, headers: tokenHeaders(owner), body: {} })).status, 200);
+    await saveRelationDecision(client, owner, 'owner-relation-only', 'owner-dismissed', 'dismissed', ownerCookie);
+    const ownerOverview = await readOnlyRelationOverview(client, owner, ownerCookie);
+    assert.equal(ownerOverview.relations!.items[0].status, 'dismissed');
+    assert.deepEqual(ownerOverview.corrections!.items, []);
+    const created = await client.request('/api/admin/users', { method: 'POST', cookie: ownerCookie, headers: tokenHeaders(owner), body: { username: 'member', password: 'member-password-2026' } });
+    assert.equal(created.status, 201);
+    const memberId = created.json<{ user: { id: string } }>().user.id;
+    const memberRoot = join(fixture.dataDir, 'users', memberId, 'knowledge');
+    mkdirSync(join(memberRoot, 'Math'), { recursive: true });
+    for (const title of ['Alpha', 'Beta']) writeFileSync(join(memberRoot, 'Math', `${title}.md`), conceptFile(title, '成员摘要', 'MEMBER_PRIVATE_SOURCE_BODY'));
+    const login = await client.request('/api/auth/login', { method: 'POST', body: { username: 'member', password: 'member-password-2026' } });
+    assert.equal(login.status, 200);
+    const memberCookie = cookieFrom(login);
+    const member = await session(client, memberCookie);
+    assert.notEqual(member.sourceId, owner.sourceId);
+    assert.equal((await client.request('/api/refresh', { method: 'POST', cookie: memberCookie, headers: tokenHeaders(member), body: {} })).status, 200);
+    const memberSnapshot = await snapshot(client, memberCookie);
+    const memberAlpha = conceptAt(memberSnapshot, 'Math/Alpha.md');
+    assert.equal(memberAlpha.title, ownerAlpha.title);
+    assert.notEqual(memberAlpha.id, ownerAlpha.id);
+    const memberOverview = await readOnlyRelationOverview(client, member, memberCookie);
+    assert.deepEqual(memberOverview.relations, { items: [], unavailableCount: 0 });
+    assert.doesNotMatch(JSON.stringify(memberOverview), /owner-relation-only|owner-dismissed/);
+    const mismatch = await client.request('/api/learning-overview', { cookie: memberCookie, headers: { 'x-lm-source-id': owner.sourceId } });
+    assert.equal(mismatch.status, 409);
+    assert.equal(errorCode(mismatch), 'SOURCE_MISMATCH');
+    const foreignReview = await client.request('/api/applications/owner-relation-only/relation-review', { cookie: memberCookie, headers: { 'x-lm-source-id': member.sourceId } });
+    assert.equal(foreignReview.status, 404);
+    assert.equal(errorCode(foreignReview), 'APPLICATION_NOT_FOUND');
+    const foreignFocus = await client.request(`/api/concepts/${encodeURIComponent(memberAlpha.id)}/history?applicationEventId=owner-relation-only`, { cookie: memberCookie, headers: { 'x-lm-source-id': member.sourceId } });
+    assert.equal(foreignFocus.status, 404);
+    assert.equal(errorCode(foreignFocus), 'APPLICATION_NOT_FOUND');
+    assert.equal((await readOnlyRelationOverview(client, owner, ownerCookie)).relations!.items[0].latestEventId, 'owner-dismissed');
   } finally {
     if (client) await client.stop();
     fixture.cleanup();

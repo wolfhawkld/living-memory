@@ -162,3 +162,102 @@ test('relation decisions persist separately from text corrections and retain the
   const graphAfter = await snapshot(request);
   expect(graphAfter.concepts).toEqual(graphBefore.concepts); expect(graphAfter.links).toEqual(graphBefore.links);
 });
+
+test('relation overview filters directed endpoints and locates the exact older record without revealing its body', async ({ page, request }) => {
+  const graph = await snapshot(request);
+  const unique = graph.concepts.filter(item => graph.concepts.filter(other => other.title === item.title).length === 1);
+  const primary = unique[0];
+  const secondary = unique.find(item => domainIdOf(item) !== domainIdOf(primary));
+  expect(secondary).toBeTruthy();
+  const endpoint = (concept: Concept) => ({ conceptId: concept.id, sourceRevision: concept.source.revision,
+    title: concept.title, path: concept.source.path });
+  const session = await (await request.get('/api/session')).json() as { writeToken: string; sourceId: string };
+  const headers = { 'x-lm-token': session.writeToken, 'x-lm-source-id': session.sourceId };
+  const application: ApplicationRecordRequest = {
+    eventId: randomUUID(), conceptId: primary.id, sourceRevision: primary.source.revision,
+    occurredAt: '2025-01-01T00:00:00.000Z', kind: 'summary', context: '', content: `PRIVATE_OLD_BODY_${randomUUID()}`,
+    outcome: 'unverified', assistance: 'independent', result: '', limitations: '', insight: '', correction: '', references: '',
+    relationSuggestion: { operation: 'add', source: endpoint(primary), target: endpoint(secondary!),
+      after: { type: `overview-${randomUUID()}`, description: `PRIVATE_RELATION_${randomUUID()}` } },
+  };
+  expect((await request.post('/api/applications', { headers, data: application })).ok()).toBe(true);
+  expect((await request.post('/api/applications', { headers, data: { ...application,
+    eventId: randomUUID(), occurredAt: new Date().toISOString(), content: 'Newer unrelated summary', relationSuggestion: undefined } })).ok()).toBe(true);
+  const beforeBrowsing = await exported(request);
+  await page.goto('/'); await realMode(page);
+  await selectExactConcept(page, secondary!);
+  await page.getByRole('button', { name: '知识薄弱点总览', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: '关系待办', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: '关系建议待办', exact: true })).toBeVisible();
+  await expect(dialog).toContainText('本总览未包含');
+  await dialog.getByRole('combobox', { name: '知识域', exact: true }).selectOption('');
+  await dialog.getByRole('searchbox', { name: '搜索关系双端或记录', exact: true }).fill(secondary!.title);
+  await expect(dialog.locator('[data-relation-overview-item="true"]').filter({ hasText: application.eventId })).toHaveCount(1);
+  await dialog.getByRole('searchbox', { name: '搜索关系双端或记录', exact: true }).fill(application.eventId);
+  const row = dialog.locator('[data-relation-overview-item="true"]');
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText(primary.title);
+  await expect(row).toContainText(secondary!.title);
+  await expect(row).toContainText('待处理');
+  await expect(row).not.toContainText(application.content);
+  await expect(row).not.toContainText(application.relationSuggestion!.operation === 'add'
+    ? application.relationSuggestion!.after.description : 'PRIVATE_RELATION');
+  await dialog.getByRole('button', { name: /^暂不采用 \(/ }).click();
+  await expect(row).toHaveCount(0);
+  await dialog.getByRole('button', { name: /^待跟进 \(/ }).click();
+  await expect(row).toHaveCount(1);
+
+  const inspectionPath = `**/api/applications/${application.eventId}/relation-review`;
+  let releaseInspection!: () => void;
+  let inspectionArrived!: () => void;
+  let inspectionFinished!: () => void;
+  const gate = new Promise<void>(resolve => { releaseInspection = resolve; });
+  const arrived = new Promise<void>(resolve => { inspectionArrived = resolve; });
+  const finished = new Promise<void>(resolve => { inspectionFinished = resolve; });
+  await page.route(inspectionPath, async route => {
+    try {
+      const response = await route.fetch();
+      inspectionArrived();
+      await gate;
+      // Closing the dialog aborts the browser request; its delayed reply may be discarded by Playwright too.
+      await route.fulfill({ response }).catch(() => undefined);
+    } finally { inspectionFinished(); }
+  });
+  await row.getByRole('button', { name: `定位原记录：${primary.title}`, exact: true }).click();
+  await arrived;
+  await dialog.getByRole('button', { name: '关闭关系建议待办', exact: true }).click();
+  releaseInspection();
+  await finished;
+  await page.unroute(inspectionPath);
+  await expect(page.locator('.detail-head h2')).toHaveText(secondary!.title);
+  await page.getByRole('button', { name: '知识薄弱点总览', exact: true }).click();
+  await dialog.getByRole('button', { name: '关系待办', exact: true }).click();
+  await dialog.getByRole('combobox', { name: '知识域', exact: true }).selectOption('');
+  await dialog.getByRole('searchbox', { name: '搜索关系双端或记录', exact: true }).fill(application.eventId);
+
+  // Changing only the server's inspected exact-relation flag must invalidate selection.
+  await page.route(inspectionPath, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, basis: { ...body.basis, afterPresent: true } } });
+  });
+  await row.getByRole('button', { name: `定位原记录：${primary.title}`, exact: true }).click();
+  await expect(dialog).toContainText('关系依据或处理决定已变化');
+  await page.unroute(inspectionPath);
+  await dialog.getByRole('button', { name: '刷新数据', exact: true }).click();
+  await expect(row.getByRole('button', { name: `定位原记录：${primary.title}`, exact: true })).toBeEnabled();
+  const focused = page.waitForResponse(response => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === `/api/concepts/${encodeURIComponent(primary.id)}/history`
+    && new URL(response.url()).searchParams.get('applicationEventId') === application.eventId);
+  await row.getByRole('button', { name: `定位原记录：${primary.title}`, exact: true }).click();
+  expect((await focused).ok()).toBe(true);
+  await expect(dialog).not.toBeVisible();
+  const history = page.getByRole('region', { name: '概念学习历史', exact: true });
+  await expect(history.locator('.concept-history-focus')).toContainText(application.eventId);
+  await expect(history).not.toContainText(application.content);
+  await history.getByRole('button', { name: '展开应用 / 总结内容', exact: true }).click();
+  await expect(history).toContainText(application.content);
+  await expect(history.getByRole('region', { name: '关系建议复核', exact: true })).toBeVisible();
+  expect(await exported(request)).toEqual(beforeBrowsing);
+});

@@ -7,6 +7,13 @@ export interface RelationReviewEvent extends RelationReviewRequest { recordedAt:
 export interface RelationReviewHistory { latest: RelationReviewEvent | null; events: RelationReviewEvent[]; total: number }
 export interface RelationReviewResponse { sourceId: string; applicationEventId: string; conceptId: string; asOf: string; basis: RelationReviewBasis; history: RelationReviewHistory }
 
+/** Compare inspected identities, revisions and exact-relation presence without exposing relation text. */
+export function relationReviewBasisEqual(left: RelationReviewBasis, right: RelationReviewBasis): boolean {
+  const endpoint = (value: RelationReviewBasis['source']) => [value.conceptId, value.current?.conceptId ?? null, value.current?.sourceRevision ?? null, value.current?.title ?? null, value.current?.path ?? null];
+  return JSON.stringify([endpoint(left.source), endpoint(left.target), left.beforePresent, left.afterPresent])
+    === JSON.stringify([endpoint(right.source), endpoint(right.target), right.beforePresent, right.afterPresent]);
+}
+
 import { isValidInstant } from '../core/time-model.js';
 
 function object(value: unknown, keys: readonly string[]): Record<string, unknown> {

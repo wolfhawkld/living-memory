@@ -36,6 +36,8 @@ export interface LearningOverview {
   items: LearningOverviewItem[];
   /** Absent on older services; absence must not be displayed as zero suggestions. */
   corrections?: import('./correction-overview.js').CorrectionOverview;
+  /** Relation maintenance is independent of text corrections; absent on older services. */
+  relations?: import('./relation-overview.js').RelationOverview;
 }
 
 export type LearningOverviewFilter = 'all' | 'recall' | 'scenario' | 'calibration' | 'unobserved';

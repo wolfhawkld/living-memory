@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { LearningOverviewItem } from '../shared/learning-overview';
 import type { CorrectionOverviewItem } from '../shared/correction-overview';
+import type { RelationOverviewItem } from '../shared/relation-overview';
 import type { ConceptReviewPreference, ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 import type { AccountUser } from '../shared/accounts';
 import type { PracticeCardRequest, PracticeAttemptRequest, PracticeHandlers } from '../shared/practice';
@@ -79,9 +80,10 @@ import './application-record.css';
 import './application-correction.css';
 import './application-relation-review.css';
 import { LearningOverviewDialog } from './LearningOverviewDialog';
-import { createLearningOverviewLoader, resolveCorrectionOverviewSelection, resolveOverviewSelection } from './learning-overview-loader';
+import { createLearningOverviewLoader, resolveCorrectionOverviewSelection, resolveOverviewSelection, resolveRelationOverviewSelection } from './learning-overview-loader';
 import './learning-overview.css';
 import './correction-overview.css';
+import './relation-overview.css';
 import './time-recall.css';
 import { RetentionConfirmation } from './RetentionConfirmation';
 import { useConceptHistory } from './useConceptHistory';
@@ -100,6 +102,10 @@ import './markdown-image.css';
 import './mermaid-diagram.css';
 import './learning-evidence.css';
 import './scenario-practice.css';
+
+type OverviewSelection = { kind: 'concept'; item: LearningOverviewItem }
+  | { kind: 'correction'; item: CorrectionOverviewItem }
+  | { kind: 'relation'; item: RelationOverviewItem };
 
 const DAY_MS = 86_400_000;
 const STATUS_LABELS: Record<MemoryState['status'], string> = {
@@ -314,6 +320,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const [overviewSelectionError, setOverviewSelectionError] = useState<string | null>(null);
   const overviewOpenRef = useRef(false);
   const overviewNavigationRef = useRef(0);
+  const overviewNavigationAbortRef = useRef<AbortController | null>(null);
   const overviewActionRef = useRef(false);
   const overviewLoader = useMemo(() => createLearningOverviewLoader(sourceId, api.getLearningOverview), [sourceId]);
   const overviewState = useSyncExternalStore(overviewLoader.subscribe, overviewLoader.getSnapshot, overviewLoader.getSnapshot);
@@ -689,7 +696,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   useEffect(() => {
     if (overviewOpen && sourceId && !demoEnabled && !simulated && !sourceReloadPending) void overviewLoader.refresh();
-    return () => { overviewLoader.clear(); };
+    return () => { overviewLoader.clear(); overviewNavigationAbortRef.current?.abort(); };
   }, [overviewLoader, overviewOpen, sourceId, demoEnabled, simulated, sourceReloadPending]);
 
   useEffect(() => {
@@ -990,6 +997,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const closeOverview = useCallback(() => {
     overviewOpenRef.current = false;
     overviewNavigationRef.current += 1;
+    overviewNavigationAbortRef.current?.abort();
+    overviewNavigationAbortRef.current = null;
     overviewActionRef.current = false;
     overviewLoader.clear();
     setOverviewOpen(false);
@@ -997,22 +1006,30 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     setBusyAction((current) => current === 'overview' ? null : current);
   }, [overviewLoader]);
 
-  const selectOverviewItem = useCallback(async (item: LearningOverviewItem | CorrectionOverviewItem) => {
+  const selectOverviewItem = useCallback(async (selection: OverviewSelection) => {
     const overview = overviewLoader.getSnapshot();
     if (!overviewOpenRef.current || overviewActionRef.current || overview.loading || overview.error || !overview.overview || writeLocked) return;
     const ticket = ++overviewNavigationRef.current;
+    const navigation = new AbortController();
+    overviewNavigationAbortRef.current = navigation;
     overviewActionRef.current = true;
     setBusyAction('overview');
     setOverviewSelectionError(null);
-    const stillActive = () => overviewOpenRef.current && overviewNavigationRef.current === ticket
+    const stillActive = () => !navigation.signal.aborted && overviewOpenRef.current && overviewNavigationRef.current === ticket
       && sourceIdRef.current === sourceId && !writeLockedRef.current;
     try {
-      const latest = await loadSnapshot(undefined, sourceId, stillActive);
+      const [latest, inspection] = await Promise.all([
+        loadSnapshot(undefined, sourceId, stillActive),
+        selection.kind === 'relation'
+          ? api.getRelationReview(selection.item.applicationEventId, sourceId, navigation.signal)
+          : Promise.resolve(null),
+      ]);
       if (!latest || !stillActive()) return;
-      const isCorrection = 'applicationEventId' in item;
-      const concept = isCorrection
-        ? resolveCorrectionOverviewSelection(sourceId, overview.overview, item, latest)
-        : resolveOverviewSelection(sourceId, overview.overview, item, latest);
+      const concept = selection.kind === 'relation'
+        ? resolveRelationOverviewSelection(sourceId, overview.overview, selection.item, latest, inspection!)
+        : selection.kind === 'correction'
+          ? resolveCorrectionOverviewSelection(sourceId, overview.overview, selection.item, latest)
+          : resolveOverviewSelection(sourceId, overview.overview, selection.item, latest);
       const targetDomain = domainIdOf(concept);
       if (layoutWriteTimer.current !== null) {
         window.clearTimeout(layoutWriteTimer.current);
@@ -1022,7 +1039,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       setActiveDomainId(targetDomain);
       setExpandedIds([]);
       setSelectedId(concept.id);
-      setHistoryFocus(isCorrection ? { sourceId, conceptId: concept.id, applicationEventId: item.applicationEventId } : null);
+      setHistoryFocus(selection.kind !== 'concept'
+        ? { sourceId, conceptId: concept.id, applicationEventId: selection.item.applicationEventId } : null);
       setFocusRevision((revision) => revision + 1);
       reviewEventRef.current = null;
       try { window.localStorage.setItem(`living-memory.domain.v1.${sourceId}`, targetDomain); } catch { /* Navigation remains available. */ }
@@ -1030,6 +1048,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     } catch (error) {
       if (stillActive()) setOverviewSelectionError(errorMessage(error));
     } finally {
+      navigation.abort();
+      if (overviewNavigationAbortRef.current === navigation) overviewNavigationAbortRef.current = null;
       if (overviewNavigationRef.current === ticket) {
         overviewActionRef.current = false;
         setBusyAction((current) => current === 'overview' ? null : current);
@@ -2092,8 +2112,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         overview={sourceReloadPending ? null : overviewState.overview} loading={overviewState.loading || busyAction === 'overview'}
         error={sourceReloadPending ? '知识空间已变化，请关闭总览并重新加载页面。' : overviewSelectionError ?? overviewState.error}
         initialDomainId={domainId} pendingCount={pendingWrites.filter((write) => write.eventId).length}
-        onClose={closeOverview} onSelect={(item) => void selectOverviewItem(item)}
-        onSelectCorrection={(item) => void selectOverviewItem(item)}
+        onClose={closeOverview} onSelect={(item) => void selectOverviewItem({ kind: 'concept', item })}
+        onSelectCorrection={(item) => void selectOverviewItem({ kind: 'correction', item })}
+        onSelectRelation={(item) => void selectOverviewItem({ kind: 'relation', item })}
         onRefresh={() => { if (!sourceReloadPending && !overviewActionRef.current) { setOverviewSelectionError(null); void overviewLoader.refresh(); } }} /> : null}
 
       {applicationDraft ? <ApplicationRecordDialog key={`${applicationDraft.sourceId}:${applicationDraft.concept.id}`}

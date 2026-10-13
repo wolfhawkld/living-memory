@@ -3,6 +3,7 @@ import type {
   ApplicationRecord,
   CalibrationSummary,
   Concept,
+  GraphLink,
   MemoryState,
   Observation,
 } from '../shared/types.js';
@@ -18,6 +19,8 @@ import { summarizeLearning } from './learning-evidence.js';
 import { isValidInstant } from './time-model.js';
 import { buildTimeRecallSummary } from './time-recall.js';
 import { buildCorrectionOverview } from './correction-overview.js';
+import { buildRelationOverview } from './relation-overview.js';
+import type { RelationReviewEvent } from '../shared/relation-reviews.js';
 
 /** Inputs used to build the privacy-preserving learning overview. */
 export interface LearningOverviewInput {
@@ -29,6 +32,8 @@ export interface LearningOverviewInput {
   applications: readonly ApplicationRecord[];
   /** Optional for compatibility with clients/fixtures predating corrections. */
   corrections?: readonly CorrectionEvent[];
+  /** Both full-index inputs must be supplied; missing data is not an empty queue. */
+  relationData?: { links: readonly GraphLink[]; reviews: readonly RelationReviewEvent[] };
   anchors?: readonly AnchorEvent[];
 }
 
@@ -248,6 +253,7 @@ export function buildLearningOverview({
   observations,
   applications,
   corrections,
+  relationData,
   anchors = [],
 }: LearningOverviewInput): LearningOverview {
   const asOfTimestamp = parseTimestamp(asOf) ?? Number.NaN;
@@ -345,6 +351,9 @@ export function buildLearningOverview({
     ...(corrections === undefined
       ? {}
       : { corrections: buildCorrectionOverview({ concepts, applications, corrections, asOf }) }),
+    ...(relationData === undefined ? {} : { relations: buildRelationOverview({
+      concepts, applications, links: relationData.links, reviews: relationData.reviews, asOf,
+    }) }),
   };
 }
 

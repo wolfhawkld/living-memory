@@ -1,5 +1,6 @@
 import type { ApplicationRecord } from '../shared/types';
 import { parseRelationReviewRequest, type RelationReviewBasis, type RelationReviewRequest, type RelationReviewResponse } from '../shared/relation-reviews';
+export { relationReviewBasisEqual } from '../shared/relation-reviews';
 
 export function relationReviewCanRebase(errorCode: string | undefined): boolean {
   return errorCode === 'RELATION_REVIEW_SOURCE_CHANGED' || errorCode === 'RELATION_REVIEW_CONFLICT';
@@ -18,12 +19,6 @@ export function relationReviewSubmissionMode(input: {
 
 export function relationReviewResponseMatches(response: RelationReviewResponse, application: Pick<ApplicationRecord, 'eventId' | 'conceptId'>, sourceId: string): boolean {
   return response.sourceId === sourceId && response.applicationEventId === application.eventId && response.conceptId === application.conceptId;
-}
-
-export function relationReviewBasisEqual(left: RelationReviewBasis, right: RelationReviewBasis): boolean {
-  const endpoint = (value: RelationReviewBasis['source']) => [value.conceptId, value.current?.conceptId ?? null, value.current?.sourceRevision ?? null, value.current?.title ?? null, value.current?.path ?? null];
-  return JSON.stringify([endpoint(left.source), endpoint(left.target), left.beforePresent, left.afterPresent])
-    === JSON.stringify([endpoint(right.source), endpoint(right.target), right.beforePresent, right.afterPresent]);
 }
 
 function deepFreeze<T>(value: T): T {

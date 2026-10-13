@@ -1,6 +1,9 @@
 import type { LearningOverview, LearningOverviewItem } from '../shared/learning-overview';
 import type { Concept, Snapshot } from '../shared/types';
 import type { CorrectionOverviewItem } from '../shared/correction-overview';
+import type { RelationOverviewItem } from '../shared/relation-overview';
+import { relationReviewBasisEqual, type RelationReviewResponse } from '../shared/relation-reviews';
+import { domainIdOf } from '../core/domain-view';
 
 export interface OverviewLoadState { overview: LearningOverview | null; loading: boolean; error: string | null }
 export const EMPTY_OVERVIEW_STATE: OverviewLoadState = { overview: null, loading: false, error: null };
@@ -60,5 +63,36 @@ export function resolveCorrectionOverviewSelection(sourceId: string, overview: L
   }
   const concept = snapshot.concepts.find((candidate) => candidate.id === item.conceptId);
   if (!concept || concept.source.revision !== item.sourceRevision) throw new Error('概念已移动、移除或更新，请刷新总览后再查看。');
+  return concept;
+}
+
+/** A fresh server-side exact-relation inspection also checks changes beyond the main concept. */
+export function resolveRelationOverviewSelection(sourceId: string, overview: LearningOverview, item: RelationOverviewItem,
+  snapshot: Snapshot, inspection: RelationReviewResponse): Concept {
+  if (sourceId !== overview.sourceId || inspection.sourceId !== sourceId) {
+    throw new Error('知识空间已变化，请关闭总览并重新连接。');
+  }
+  if (!overview.relations?.items.some(row => row.applicationEventId === item.applicationEventId
+    && row.conceptId === item.conceptId && row.sourceRevision === item.sourceRevision
+    && row.latestEventId === item.latestEventId && relationReviewBasisEqual(row.basis, item.basis))) {
+    throw new Error('这条关系建议已不在当前总览中，请刷新总览。');
+  }
+  if (inspection.applicationEventId !== item.applicationEventId || inspection.conceptId !== item.conceptId
+    || (inspection.history.latest?.eventId ?? null) !== item.latestEventId
+    || !relationReviewBasisEqual(inspection.basis, item.basis)) {
+    throw new Error('关系依据或处理决定已变化，请刷新总览后再定位原记录。');
+  }
+  const concept = snapshot.concepts.find(candidate => candidate.id === item.conceptId);
+  if (!concept || concept.source.revision !== item.sourceRevision || concept.title !== item.title
+    || domainIdOf(concept) !== item.domainId) {
+    throw new Error('概念已移动、移除或更新，请刷新总览后再查看。');
+  }
+  for (const endpoint of [inspection.basis.source, inspection.basis.target]) {
+    const current = snapshot.concepts.find(candidate => candidate.id === endpoint.conceptId);
+    if (endpoint.current ? !current || current.source.revision !== endpoint.current.sourceRevision
+      || current.title !== endpoint.current.title || current.source.path !== endpoint.current.path : Boolean(current)) {
+      throw new Error('关系双端资料已变化，请刷新总览后再定位原记录。');
+    }
+  }
   return concept;
 }

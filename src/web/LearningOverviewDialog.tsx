@@ -6,6 +6,7 @@ import type {
   OverviewObservation,
 } from '../shared/learning-overview.js';
 import type { CorrectionOverviewItem } from '../shared/correction-overview.js';
+import type { RelationOverviewItem } from '../shared/relation-overview.js';
 import {
   overviewHasRecallDifficulty,
   overviewNeedsScenarioCheck,
@@ -13,9 +14,10 @@ import {
 } from '../core/learning-overview.js';
 import { TimeRecallComparison } from './TimeRecallComparison.js';
 import { CorrectionOverview } from './CorrectionOverview.js';
+import { RelationOverview } from './RelationOverview.js';
 
 const PAGE_SIZE = 50;
-type LearningOverviewView = 'overview' | 'time-recall' | 'corrections';
+type LearningOverviewView = 'overview' | 'time-recall' | 'corrections' | 'relations';
 
 const FILTERS: ReadonlyArray<{ value: LearningOverviewFilter; label: string }> = [
   { value: 'all', label: '全部' },
@@ -70,6 +72,7 @@ export interface LearningOverviewDialogProps {
   onClose: () => void;
   onSelect: (item: LearningOverviewItem) => void;
   onSelectCorrection?: (item: CorrectionOverviewItem) => void;
+  onSelectRelation?: (item: RelationOverviewItem) => void;
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -166,6 +169,7 @@ export function LearningOverviewDialog({
   onClose,
   onSelect,
   onSelectCorrection,
+  onSelectRelation,
 }: LearningOverviewDialogProps): ReactElement {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -213,10 +217,14 @@ export function LearningOverviewDialog({
   const dataVersion = overview?.asOf ? formatDate(overview.asOf) : '尚未读取';
   const timeRecallView = view === 'time-recall';
   const correctionView = view === 'corrections';
+  const relationView = view === 'relations';
+  const maintenanceView = correctionView || relationView;
   const currentItems = timeRecallView ? timeRecallItems : filteredItems;
-  const dialogTitle = correctionView ? '知识修正待办' : timeRecallView ? '时间与回忆对照' : '知识薄弱点总览';
-  const dialogKicker = correctionView ? '学习证据 · 修正复核' : timeRecallView ? '学习证据 · 时间与回忆对照' : '学习证据 · 薄弱点总览';
-  const dialogSubtitle = correctionView
+  const dialogTitle = relationView ? '关系建议待办' : correctionView ? '知识修正待办' : timeRecallView ? '时间与回忆对照' : '知识薄弱点总览';
+  const dialogKicker = relationView ? '知识维护 · 关系复核' : correctionView ? '学习证据 · 修正复核' : timeRecallView ? '学习证据 · 时间与回忆对照' : '学习证据 · 薄弱点总览';
+  const dialogSubtitle = relationView
+    ? '集中查看关系建议及人工处理状态，定位原应用 / 总结后核对双端和精确关系。'
+    : correctionView
     ? '按概念与应用 / 总结记录查看修正处理状态；原建议可能来自旧资料版本，请定位原记录后再核对。'
     : timeRecallView
       ? '按记录当时的时间起点与回忆自评并列查看，保留每条记录冻结的时间参数。'
@@ -240,7 +248,11 @@ export function LearningOverviewDialog({
       </header>
 
       <div className="learning-overview-body">
-        {correctionView ? <div className="learning-overview-notes learning-overview-notes-compact">
+        {relationView ? <div className="learning-overview-notes learning-overview-notes-compact">
+          <p>仅显示主概念、关系双端、操作与处理状态；关系描述、原建议和说明正文保留在原记录中。</p>
+          <p>结构符合仍需本人核对；依据变化保留原人工决定。知识域按主概念归属，跨域关系只计一条。</p>
+          <p>当前知识源 · 数据截至 {dataVersion} · 待同步记录：{Number.isFinite(pendingCount) && pendingCount > 0 ? `${Math.floor(pendingCount)} 条（本总览未包含）` : '0 条（本总览未包含）'}</p>
+        </div> : correctionView ? <div className="learning-overview-notes learning-overview-notes-compact">
           <p>只显示概念、领域、记录时间、处理状态与资料版本信息；不会在这里展示原建议、答案、场景或说明正文。</p>
           <p>原建议可能来自旧资料版本；资料变化不会自动改写本人已经作出的处理决定，请定位原记录后重新核对。</p>
           <p>当前资料版本 · 数据截至 {dataVersion} · 待同步记录：{Number.isFinite(pendingCount) && pendingCount > 0 ? `${Math.floor(pendingCount)} 条（本总览未包含）` : '0 条（本总览未包含）'}</p>
@@ -258,22 +270,23 @@ export function LearningOverviewDialog({
             <button type="button" aria-pressed={view === 'overview'} className={view === 'overview' ? 'is-active' : ''} onClick={() => setView('overview')}>薄弱点总览</button>
             <button type="button" aria-pressed={timeRecallView} className={timeRecallView ? 'is-active' : ''} onClick={() => setView('time-recall')}>时间与回忆对照</button>
             <button type="button" aria-pressed={correctionView} className={correctionView ? 'is-active' : ''} onClick={() => setView('corrections')}>知识修正待办</button>
+            <button type="button" aria-pressed={relationView} className={relationView ? 'is-active' : ''} onClick={() => setView('relations')}>关系待办</button>
           </div>
-          <label className="learning-overview-search"><span>{correctionView ? '搜索概念或记录' : '搜索概念'}</span><input data-learning-overview-autofocus type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={correctionView ? '标题、概念 ID 或记录 ID' : '标题或概念 ID'} /></label>
+          <label className="learning-overview-search"><span>{relationView ? '搜索关系双端或记录' : correctionView ? '搜索概念或记录' : '搜索概念'}</span><input data-learning-overview-autofocus type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={relationView ? '主概念、双端名称 / ID 或记录 ID' : correctionView ? '标题、概念 ID 或记录 ID' : '标题或概念 ID'} /></label>
           <label className="learning-overview-domain"><span>知识域</span><select value={domainId} onChange={(event) => setDomainId(event.target.value)}><option value="">全部领域</option>{domains.map((domain) => <option key={domain} value={domain}>{domain}</option>)}</select></label>
           {initialDomainId ? <button type="button" className="learning-overview-current-domain" onClick={() => setDomainId(initialDomainId)} disabled={!domains.includes(initialDomainId)}>当前领域：{initialDomainId}</button> : null}
-          {!timeRecallView && !correctionView ? <div className="learning-overview-filter-group" role="group" aria-label="薄弱点筛选">{FILTERS.map((item) => <button type="button" key={item.value} className={filter === item.value ? 'is-active' : ''} aria-pressed={filter === item.value} onClick={() => setFilter(item.value)}>{item.label}</button>)}</div> : null}
+          {!timeRecallView && !maintenanceView ? <div className="learning-overview-filter-group" role="group" aria-label="薄弱点筛选">{FILTERS.map((item) => <button type="button" key={item.value} className={filter === item.value ? 'is-active' : ''} aria-pressed={filter === item.value} onClick={() => setFilter(item.value)}>{item.label}</button>)}</div> : null}
           <button type="button" className="learning-overview-refresh" disabled={loading} onClick={onRefresh}>{loading ? '刷新中…' : '刷新数据'}</button>
         </div>
 
         {loading && overview ? <p className="learning-overview-status-note" role="status">正在刷新总览；已有数据暂时保留，查看节点操作暂不可用。</p> : null}
         {error ? <div className="learning-overview-error" role="alert"><span>总览加载失败：{error}</span>{!overview ? <button type="button" onClick={onRefresh} disabled={loading}>重试</button> : null}</div> : null}
         {loading && !overview ? <div className="learning-overview-loading" role="status">正在加载知识薄弱点总览…</div> : null}
-        {!correctionView && !error && !loading && !overview ? noDataMessage(overview, currentItems) : null}
-        {!correctionView && overview && overview.items.length === 0 ? noDataMessage(overview, currentItems) : null}
-        {!correctionView && !timeRecallView && overview && overview.items.length > 0 && filteredItems.length === 0 ? noDataMessage(overview, filteredItems) : null}
+        {!maintenanceView && !error && !loading && !overview ? noDataMessage(overview, currentItems) : null}
+        {!maintenanceView && overview && overview.items.length === 0 ? noDataMessage(overview, currentItems) : null}
+        {!maintenanceView && !timeRecallView && overview && overview.items.length > 0 && filteredItems.length === 0 ? noDataMessage(overview, filteredItems) : null}
 
-        {!correctionView && !timeRecallView && overview && filteredItems.length > 0 ? <>
+        {!maintenanceView && !timeRecallView && overview && filteredItems.length > 0 ? <>
           <div className="learning-overview-result-meta"><span>显示 {visibleItems.length} / {filteredItems.length} 个概念</span><span>点击概念名称查看节点</span></div>
           <div className="learning-overview-table-wrap">
             <table className="learning-overview-table">
@@ -291,8 +304,15 @@ export function LearningOverviewDialog({
           disabled={navigationDisabled}
           onSelect={onSelectCorrection}
         /> : null}
+        {relationView && overview && !error ? <RelationOverview
+          overview={overview.relations}
+          domainId={domainId || undefined}
+          query={query}
+          disabled={navigationDisabled}
+          onSelect={onSelectRelation}
+        /> : null}
       </div>
-      <footer className="learning-overview-footer"><span>{correctionView ? '修正待办只提供定位线索；原建议可能来自旧资料版本，打开原记录后再决定如何处理。' : '总览只提供练习线索；选择概念后可在节点详情中进行回忆、场景调用或记录应用。'}</span><button type="button" className="learning-overview-footer-close" onClick={onClose}>完成</button></footer>
+      <footer className="learning-overview-footer"><span>{relationView ? '关系待办只读；打开原记录后展开正文，使用关系建议复核面板处理。' : correctionView ? '修正待办只提供定位线索；原建议可能来自旧资料版本，打开原记录后再决定如何处理。' : '总览只提供练习线索；选择概念后可在节点详情中进行回忆、场景调用或记录应用。'}</span><button type="button" className="learning-overview-footer-close" onClick={onClose}>完成</button></footer>
     </div>
   </dialog>;
 }
