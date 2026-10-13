@@ -259,5 +259,8 @@ test('relation overview filters directed endpoints and locates the exact older r
   await history.getByRole('button', { name: '展开应用 / 总结内容', exact: true }).click();
   await expect(history).toContainText(application.content);
   await expect(history.getByRole('region', { name: '关系建议复核', exact: true })).toBeVisible();
-  expect(await exported(request)).toEqual(beforeBrowsing);
+  // Export timestamps describe each download; all persisted content must remain unchanged.
+  const { exportedAt: _afterExportedAt, ...afterBrowsingRecords } = await exported(request);
+  const { exportedAt: _beforeExportedAt, ...beforeBrowsingRecords } = beforeBrowsing;
+  expect(afterBrowsingRecords).toEqual(beforeBrowsingRecords);
 });
