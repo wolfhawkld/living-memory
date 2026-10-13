@@ -12,6 +12,8 @@
 
 ## 逐项矩阵
 
+后续实现补记（2026-10-13）：LM-012 已补齐日常概念预算 0 的 Web / 飞书暂停语义、导出恢复及当前题保留，见[复习安排](review-arrangements.md)。下表继续描述上述固定基线，AC-19 中预算 0 的缺口是该基线的历史状态；这项扩展不等于补齐所有目标暂停或完整 AC-19，也不改写原验收规格。运行结果另按本次提交 CI 核对。
+
 | 原 AC | 当前实现及软件证据状态 | 已检查的具体断言入口 | 原 AC 差距 | 下一步及负责人 |
 | --- | --- | --- | --- | --- |
 | AC-01 事件幂等与递送溯源 | **部分软件证据**：同知识空间、同事件 ID 和相同载荷去重，载荷冲突被拒绝，原记录保留。 | [server.test.ts](../../tests/server.test.ts)：`reviews are idempotent, queries do not reset anchors, and asOf projects time` 断言首次 201、重复 200、冲突 409；[pending-writes.test.ts](../../tests/pending-writes.test.ts)：`rejects a conflicting payload for an existing pending id without overwriting it` 保留原队列。 | 尚无统一 operation / event、原始 actor / source 与递送通道账本；CLI 回传 operation ID 不等于保存完整溯源。 | 开发者先设计通用事件语义及兼容；本人测试不能补足缺失实现。 |

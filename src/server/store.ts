@@ -57,6 +57,7 @@ import {
 import {
   DEFAULT_DAILY_REVIEW_BUDGET,
   MAX_DAILY_REVIEW_BUDGET,
+  MIN_DAILY_REVIEW_BUDGET,
   reviewDayKey,
   type ConceptReviewPreference,
   type ReviewPlan,
@@ -455,8 +456,8 @@ function emptyIdentityConcept(conceptId: string, title = ''): IdentityConcept {
 }
 
 function validateReviewBudget(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > MAX_DAILY_REVIEW_BUDGET) {
-    throw new StoreError('INVALID_REVIEW_BUDGET', `dailyBudget 必须是 1 到 ${MAX_DAILY_REVIEW_BUDGET} 的整数。`);
+  if (!Number.isSafeInteger(value) || (value as number) < MIN_DAILY_REVIEW_BUDGET || (value as number) > MAX_DAILY_REVIEW_BUDGET) {
+    throw new StoreError('INVALID_REVIEW_BUDGET', `dailyBudget 必须是 ${MIN_DAILY_REVIEW_BUDGET} 到 ${MAX_DAILY_REVIEW_BUDGET} 的整数。`);
   }
   return value as number;
 }
@@ -2898,7 +2899,7 @@ export class Store {
 
   private parseReviewPlanRow(row: { revision: number; daily_budget: number; concepts_json: string }): ReviewPlan {
     if (!Number.isSafeInteger(row.revision) || row.revision < 0
-        || !Number.isSafeInteger(row.daily_budget) || row.daily_budget < 1 || row.daily_budget > MAX_DAILY_REVIEW_BUDGET) {
+        || !Number.isSafeInteger(row.daily_budget) || row.daily_budget < MIN_DAILY_REVIEW_BUDGET || row.daily_budget > MAX_DAILY_REVIEW_BUDGET) {
       throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
     }
     let parsed: unknown;

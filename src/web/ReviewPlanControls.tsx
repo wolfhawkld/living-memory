@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactElement } from 'react';
 import {
   DEFAULT_DAILY_REVIEW_BUDGET,
   MAX_DAILY_REVIEW_BUDGET,
+  MIN_DAILY_REVIEW_BUDGET,
   type ConceptReviewPreference,
   type ReviewPlanResponse,
 } from '../shared/review-plan.js';
@@ -23,7 +24,7 @@ export interface ConceptReviewControlsProps {
 
 function clampBudget(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_DAILY_REVIEW_BUDGET;
-  return Math.min(MAX_DAILY_REVIEW_BUDGET, Math.max(1, Math.floor(value)));
+  return Math.min(MAX_DAILY_REVIEW_BUDGET, Math.max(MIN_DAILY_REVIEW_BUDGET, Math.floor(value)));
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -110,17 +111,17 @@ export function ReviewPlanDialog({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const initialBudget = clampBudget(response?.plan.dailyBudget ?? DEFAULT_DAILY_REVIEW_BUDGET);
-  const [draftBudget, setDraftBudget] = useState(initialBudget);
-  const draftBudgetRef = useRef(initialBudget);
+  const [draftBudget, setDraftBudget] = useState(String(initialBudget));
+  const draftBudgetRef = useRef(String(initialBudget));
   const draftDirtyRef = useRef(false);
 
   useEffect(() => {
     if (!response?.plan || !Number.isFinite(response.plan.dailyBudget)) return;
     const serverBudget = clampBudget(response.plan.dailyBudget);
     if (!draftDirtyRef.current) {
-      draftBudgetRef.current = serverBudget;
-      setDraftBudget(serverBudget);
-    } else if (draftBudgetRef.current === serverBudget) {
+      draftBudgetRef.current = String(serverBudget);
+      setDraftBudget(String(serverBudget));
+    } else if (draftBudgetRef.current.trim() !== '' && Number(draftBudgetRef.current) === serverBudget) {
       // A response reflecting the saved value confirms the draft. A refresh
       // that still has the old server value must leave the draft untouched.
       draftDirtyRef.current = false;
@@ -146,15 +147,16 @@ export function ReviewPlanDialog({
   }, []);
 
   const serverBudget = response?.plan.dailyBudget;
-  const budgetChanged = response !== null && draftBudget !== serverBudget;
+  const draftValue = draftBudget.trim() === '' ? NaN : Number(draftBudget);
+  const validBudget = Number.isSafeInteger(draftValue) && draftValue >= MIN_DAILY_REVIEW_BUDGET && draftValue <= MAX_DAILY_REVIEW_BUDGET;
+  const budgetChanged = response !== null && draftValue !== serverBudget;
   const completedCount = response ? new Set(response.completedConceptIds).size : 0;
   const timeZone = response?.timeZone || browserTimeZone();
-  const canSave = Boolean(response) && budgetChanged && !loading;
-  const updateDraftBudget = (value: number) => {
-    const nextBudget = clampBudget(value);
-    draftBudgetRef.current = nextBudget;
+  const canSave = Boolean(response) && validBudget && budgetChanged && !loading;
+  const updateDraftBudget = (value: string) => {
+    draftBudgetRef.current = value;
     draftDirtyRef.current = true;
-    setDraftBudget(nextBudget);
+    setDraftBudget(value);
   };
 
   return <dialog
@@ -198,6 +200,7 @@ export function ReviewPlanDialog({
             <span className="brief-review-plan-label">每日复习预算</span>
             <strong>按概念数量计算</strong>
             <p>预算在所有知识域之间共享，不代表掌握分数。</p>
+            <p>设为 0 会持续暂停每日复习推荐，调高后恢复；已开始的作答仍可完成，也可手动选择节点学习。</p>
           </div>
           <label htmlFor="brief-review-daily-budget">
             <span>数量</span>
@@ -205,17 +208,18 @@ export function ReviewPlanDialog({
               id="brief-review-daily-budget"
               data-review-plan-autofocus
               type="number"
-              min={1}
+              min={MIN_DAILY_REVIEW_BUDGET}
               max={MAX_DAILY_REVIEW_BUDGET}
               step={1}
               value={draftBudget}
               disabled={loading || !response}
-              onChange={(event) => updateDraftBudget(Number(event.currentTarget.value))}
+              aria-invalid={!validBudget}
+              onChange={(event) => updateDraftBudget(event.currentTarget.value)}
             />
-            <small>1–{MAX_DAILY_REVIEW_BUDGET} 个概念</small>
+            <small>{MIN_DAILY_REVIEW_BUDGET}–{MAX_DAILY_REVIEW_BUDGET} 个概念；0 为暂停推荐</small>
           </label>
         </div>
-        <button type="button" className="brief-review-plan-save" disabled={!canSave} onClick={() => onSaveBudget(clampBudget(draftBudget))}>{loading ? '保存中…' : '保存每日预算'}</button>
+        <button type="button" className="brief-review-plan-save" disabled={!canSave} onClick={() => { if (canSave) onSaveBudget(draftValue); }}>{loading ? '保存中…' : '保存每日预算'}</button>
       </div>
       <footer className="brief-review-plan-footer"><span>今日已保存 {completedCount} 个概念回忆 · 时区 {timeZone}</span><button type="button" className="brief-review-plan-footer-close" onClick={onClose}>完成</button></footer>
     </div>

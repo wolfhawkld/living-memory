@@ -100,6 +100,36 @@ test('export preserves recovery metadata needed for exact anchor retries and con
   }
 });
 
+test('zero budget exports, imports idempotently and survives reopening without changing learning history', () => {
+  const donor = cleanStore('zero-budget-donor');
+  const target = cleanStore('zero-budget-target');
+  try {
+    donor.store.updateReviewPlan({ revision: 0, dailyBudget: 0 });
+    const data = donor.store.exportData(source, [concept]);
+    assert.equal(data.reviewPlan?.dailyBudget, 0);
+    const options = { restoreLayout: false, restoreReviewPlan: true };
+    const preview = target.store.previewImport(data, options, source, [concept]);
+    assert.equal(preview.canImport, true, JSON.stringify(preview.issues));
+    const request: ImportCommitRequest = { data, options, importId: 'zero-budget-import', previewToken: preview.token, confirmed: true };
+    const receipt = target.store.commitImport(request, source, [concept], () => 'zero-budget-backup');
+    assert.equal(receipt.status, 'accepted');
+    assert.equal(target.store.getReviewPlan().dailyBudget, 0);
+    assert.equal(target.store.commitImport(request, source, [concept], () => { throw new Error('duplicate backup'); }).status, 'duplicate');
+    target.store.close();
+    const reopened = new Store({ dataDir: target.dataDir, namespace: 'zero-budget-target', now: () => new Date('2026-02-10T12:00:00Z') });
+    try {
+      const exported = reopened.exportData(source, [concept]);
+      assert.equal(exported.reviewPlan?.dailyBudget, 0);
+      assert.deepEqual(exported.anchors, data.anchors);
+      assert.deepEqual(exported.observations, data.observations);
+    } finally { reopened.close(); }
+  } finally {
+    donor.cleanup();
+    try { target.store.close(); } catch { /* closed for restart */ }
+    rmSync(target.dataDir, { recursive: true, force: true });
+  }
+});
+
 test('recovery tables are additive and namespace isolated', () => {
   const current = fixture();
   const other = new Store({ dataDir: current.dataDir, namespace: 'other-import-source', now: () => new Date('2026-01-10T12:00:00.000Z') });

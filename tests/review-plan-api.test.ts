@@ -120,21 +120,26 @@ test('review plan API applies source/auth guards, CAS idempotency, export, and d
     const writeHeaders = headers(current);
 
     assert.equal((await client.request('/api/review-plan?timeZone=Not/AZone')).status, 400);
+    for (const dailyBudget of [-1, 0.5, 51]) {
+      const invalid = await client.request('/api/review-plan', { method: 'PUT', headers: writeHeaders, body: { revision: 0, dailyBudget } });
+      assert.equal(invalid.status, 400);
+      assert.equal(invalid.json<{ error: { code: string } }>().error.code, 'INVALID_REVIEW_BUDGET');
+    }
     assert.equal((await client.request('/api/review-plan', { method: 'PUT', body: { revision: 0, dailyBudget: 7 }, headers: headers(current, false) })).status, 401);
     assert.equal((await client.request('/api/review-plan', { method: 'PUT', body: { revision: 0, dailyBudget: 7 }, headers: { ...writeHeaders, 'x-lm-source-id': 'wrong-source' } })).status, 409);
 
     const budget = await client.request('/api/review-plan?timeZone=UTC', {
-      method: 'PUT', headers: writeHeaders, body: { revision: 0, dailyBudget: 7 },
+      method: 'PUT', headers: writeHeaders, body: { revision: 0, dailyBudget: 0 },
     });
     assert.equal(budget.status, 200);
     const budgetResponse = budget.json<ReviewPlanResponse>();
     assert.equal(budgetResponse.plan.revision, 1);
-    assert.equal(budgetResponse.plan.dailyBudget, 7);
+    assert.equal(budgetResponse.plan.dailyBudget, 0);
     assert.equal(budgetResponse.timeZone, 'UTC');
     assert.deepEqual((await client.request('/api/review-plan?timeZone=UTC')).json<ReviewPlanResponse>().plan, budgetResponse.plan);
 
     const staleSame = await client.request('/api/review-plan', {
-      method: 'PUT', headers: writeHeaders, body: { revision: 0, dailyBudget: 7 },
+      method: 'PUT', headers: writeHeaders, body: { revision: 0, dailyBudget: 0 },
     });
     assert.equal(staleSame.status, 200);
     assert.deepEqual(staleSame.json<ReviewPlanResponse>().plan, budgetResponse.plan);
@@ -209,7 +214,7 @@ test('account sessions keep review plans in separate private namespaces', async 
     const ownerSession = owner.json<{ writeToken: string; sourceId: string }>();
     const ownerHeaders = headers(ownerSession);
     const ownerUpdate = await client.request('/api/review-plan', {
-      method: 'PUT', cookie: ownerCookie, headers: ownerHeaders, body: { revision: 0, dailyBudget: 9 },
+      method: 'PUT', cookie: ownerCookie, headers: ownerHeaders, body: { revision: 0, dailyBudget: 0 },
     });
     assert.equal(ownerUpdate.status, 200);
 
@@ -244,7 +249,7 @@ test('account sessions keep review plans in separate private namespaces', async 
     })).status, 200);
     const ownerPlan = await client.request('/api/review-plan', { cookie: ownerCookie, headers: { 'x-lm-source-id': ownerSession.sourceId } });
     assert.equal(ownerPlan.status, 200);
-    assert.equal(ownerPlan.json<ReviewPlanResponse>().plan.dailyBudget, 9);
+    assert.equal(ownerPlan.json<ReviewPlanResponse>().plan.dailyBudget, 0);
     const memberPlan = await client.request('/api/review-plan', { cookie: memberCookie, headers: { 'x-lm-source-id': memberSession.sourceId } });
     assert.equal(memberPlan.json<ReviewPlanResponse>().plan.dailyBudget, 11);
     assert.equal((await client.request('/api/review-plan', {

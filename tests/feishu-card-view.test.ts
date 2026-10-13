@@ -115,6 +115,21 @@ function checkBudgets(view: FeishuBrowseView, rendered: FeishuCardViewPlan) {
   assert.ok(rendered.actions.length <= 16);
 }
 
+test('zero daily budget produces no due candidates or start controls and preserves ordinary knowledge navigation', () => {
+  const input = snapshot([node('own')]);
+  const progress = plan(); progress.plan.dailyBudget = 0;
+  const before = structuredClone({ input, progress });
+  assert.deepEqual(select(input, progress, null, 5).candidates, []);
+  assert.equal(select(input, progress, 'Math', 3).remaining, 0);
+  const due = render({ kind: 'due', domainId: null, limit: 3 }, readContext(input), progress);
+  assert.match(text(due), /每日复习预算为 0.*日常复习已暂停/);
+  assert.ok(!due.actions.some(action => action.target.kind === 'review-start' || action.target.kind === 'review-batch-start'));
+  assert.ok(due.actions.some(action => action.target.kind === 'list'));
+  const list = render(listView, readContext(input), progress);
+  assert.ok(list.actions.some(action => action.target.kind === 'read'));
+  assert.deepEqual({ input, progress }, before);
+});
+
 test('V2 cards use callback behaviors with only opaque navigation identifiers and forwarding disabled', () => {
   const rendered = render(listView, readContext(snapshot([node('own')])), plan());
   const payload = card(rendered);

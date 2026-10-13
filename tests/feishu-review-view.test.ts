@@ -145,6 +145,49 @@ function batchOperation(value: FeishuReviewRenderInput, index: number, status: F
   return result;
 }
 
+test('zero daily budget preserves current-item actions and recovery but hides entry to later batch items', () => {
+  const value = batchInput(); value.dailyBudgetPaused = true;
+  assert.deepEqual(verbs(value), ['reveal', 'pause', 'finish']);
+  assert.match(wire(value), /日常复习已暂停.*当前条目仍可完成/);
+  value.session!.state.phase = 'revealed';
+  assert.ok(verbs(value).includes('rate-clear'));
+  assert.ok(!verbs(value).includes('skip'));
+  value.session!.state.phase = 'saved';
+  value.operations = [batchOperation(value, 0, 'applied')];
+  assert.deepEqual(verbs(value), ['confirm-review', 'pause', 'finish']);
+  value.operations = [batchOperation(value, 0, 'pending')];
+  assert.deepEqual(verbs(value), ['retry', 'pause']);
+  value.session!.state.paused = true;
+  assert.deepEqual(verbs(value), ['resume']);
+  value.session!.state.paused = false;
+  const batch = value.session!.state.batch!; batch.cursor = 2;
+  value.session!.state.conceptId = batch.items[2].conceptId;
+  value.session!.state.sourceRevision = batch.items[2].sourceRevision;
+  value.operations = [batchOperation(value, 2, 'applied')];
+  assert.deepEqual(verbs(value), ['confirm-review', 'next', 'finish']);
+  assert.match(wire(value), /完成本轮/);
+  const empty = input(); empty.dailyBudgetPaused = true;
+  empty.session = null; empty.concept = null; empty.availability = 'no-candidate';
+  assert.match(wire(empty), /每日复习预算为 0.*仍可浏览知识和主动学习/);
+  empty.availability = 'no-session';
+  assert.match(wire(empty), /每日复习预算为 0.*仍可浏览知识和主动学习/);
+  assert.doesNotMatch(wire(empty), /发送.*开始/);
+});
+
+test('zero budget never promises completion of an invalid or conflicted current item', () => {
+  for (const availability of ['expired', 'source-changed', 'ineligible'] as const) {
+    const value = batchInput(); value.dailyBudgetPaused = true; value.availability = availability;
+    assert.doesNotMatch(wire(value), /当前条目仍可完成/);
+    assert.match(wire(value), /原进度和已保存记录保留/);
+    assert.ok(!verbs(value).includes('skip'));
+    if (availability === 'ineligible') assert.ok(verbs(value).includes('pause'));
+  }
+  const value = batchInput(); value.dailyBudgetPaused = true;
+  value.operations = [batchOperation(value, 0, 'conflict')];
+  assert.doesNotMatch(wire(value), /当前条目仍可完成/);
+  assert.deepEqual(verbs(value), ['finish']);
+});
+
 test('batch fronts show fixed progress with explicit skipping and saved items offer independent next and rewarm', () => {
   const value = batchInput();
   assert.match(wire(value), /第 1\/3 项/); assert.ok(verbs(value).includes('skip'));

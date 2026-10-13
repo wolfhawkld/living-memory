@@ -38,18 +38,24 @@ export function createFeishuReviewController(options: ReviewOptions) {
     const concept = context.source.index.concepts.find(item => item.id === session.state.conceptId);
     if (session.namespace !== context.source.namespace || session.sourceFingerprint !== fingerprint(context.source)
       || !concept || concept.source.revision !== session.state.sourceRevision) return 'source-changed';
-    if (session.state.phase === 'front' && !candidates(context, session.state.domainId, session.state.conceptId).length) return 'ineligible';
+    if (session.state.phase === 'front' && !candidates(context, session.state.domainId, session.state.conceptId, true).length) return 'ineligible';
     return 'ready';
   }
-  function candidates(context: FeishuReviewContext, domainId: string | null, conceptId?: string) {
+  function candidates(context: FeishuReviewContext, domainId: string | null, conceptId?: string, currentItem = false) {
     const asOf = now().toISOString();
     const store = context.store; const source = context.source;
     const concepts = conceptId ? source.index.concepts.filter(item => item.id === conceptId) : source.index.concepts;
     const snapshot: Snapshot = { ...source.index, concepts, states: store.getStates(concepts, asOf),
       asOf, config: store.getConfig(), observationsCount: 0 };
+    const plan = store.getReviewPlan();
+    const completedConceptIds = store.getCompletedConceptIds(asOf, timeZone);
+    // Zero pauses new daily work, but does not discard the current mental attempt.
+    // Keep all other eligibility checks, including today's completed concepts.
+    const effectivePlan = currentItem && plan.dailyBudget === 0
+      ? { ...plan, dailyBudget: new Set(completedConceptIds).size + 1 } : plan;
     return selectFeishuReviewCandidates(snapshot, { sourceId: source.namespace, asOf, timeZone,
-      dayKey: reviewDayKey(asOf, timeZone), plan: store.getReviewPlan(),
-      completedConceptIds: store.getCompletedConceptIds(asOf, timeZone) }, domainId, 5).candidates;
+      dayKey: reviewDayKey(asOf, timeZone), plan: effectivePlan,
+      completedConceptIds }, domainId, 5).candidates;
   }
   function create(context: FeishuReviewContext, target: FeishuReviewResolvedTarget | null, command?: FeishuReviewCommand): FeishuReviewMutation {
     const domainId = target?.kind === 'review-start' || target?.kind === 'review-batch-start' ? target.domainId : null;
@@ -97,6 +103,9 @@ export function createFeishuReviewController(options: ReviewOptions) {
       // Recover the original request first; even successful recovery needs another explicit advance.
       if (pending) return { kind: 'update', state };
       if (!state.batch || state.paused || (status !== 'ready' && status !== 'ineligible')) return null;
+      if (context.store.getReviewPlan().dailyBudget === 0 && state.batch.cursor < state.batch.items.length - 1) {
+        return { kind: 'update', state };
+      }
       if (verb === 'next') return state.phase === 'saved' && !conflict
         ? { kind: 'advance', disposition: 'completed' } : null;
       if (conflict) return { kind: 'advance', disposition: 'conflict' };
@@ -200,7 +209,8 @@ export function createFeishuReviewController(options: ReviewOptions) {
       const status = session ? availability(session, context) : command?.kind === 'start' || trigger.kind === 'card' ? 'no-candidate' : 'no-session';
       const concept = session && status === 'ready'
         ? context.source.index.concepts.find(item => item.id === session!.state.conceptId) ?? null : null;
-      const plan = planFeishuReviewView({ session, operations, concept, availability: status });
+      const plan = planFeishuReviewView({ session, operations, concept, availability: status,
+        dailyBudgetPaused: context.store.getReviewPlan().dailyBudget === 0 });
       const snapshot = session;
       return { operationId: claimed.operationId, plan,
         stillAuthorized: () => !snapshot || (accounts.isFeishuReviewVersionAuthorized(snapshot.id, snapshot.version, actor, authorization)

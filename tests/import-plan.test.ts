@@ -89,6 +89,17 @@ const movedLiveConcept: Concept = {
   source: { path: 'moved/Alpha.md', revision: 'rev-3' },
 };
 
+test('review-plan import accepts zero and the maximum but rejects invalid daily budgets', () => {
+  for (const dailyBudget of [0, 50]) {
+    const prepared = plan(baseExport({ reviewPlan: { revision: 2, dailyBudget, concepts: {} } }));
+    assert.equal(prepared.preview.canImport, true, JSON.stringify(prepared.preview.issues));
+    assert.equal(prepared.mergedReviewPlan.dailyBudget, dailyBudget);
+  }
+  for (const dailyBudget of [-1, 0.5, 51]) {
+    assert.throws(() => plan(baseExport({ reviewPlan: { revision: 2, dailyBudget, concepts: {} } })), /dailyBudget/);
+  }
+});
+
 function movedCurrent(): ExportData {
   return currentExport({ concepts: [{ id: movedLiveConcept.id, title: movedLiveConcept.title, source: movedLiveConcept.source }] });
 }

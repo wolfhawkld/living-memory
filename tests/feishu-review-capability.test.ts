@@ -88,6 +88,150 @@ function pendingGrade(f: Awaited<ReturnType<typeof fixture>>) {
   return pending;
 }
 
+function pauseDailyBudget(f: Awaited<ReturnType<typeof fixture>>) {
+  f.store.updateReviewPlan({ revision: f.store.getReviewPlan().revision, dailyBudget: 0 });
+}
+
+test('zero daily budget blocks new reviews and stale due entries while ordinary knowledge reading remains available', async () => {
+  for (const entry of ['message', 'single', 'batch'] as const) {
+    const f = await fixture(true); try {
+      const due = f.send('知识 待复习');
+      const action = entry === 'single' ? f.action(due, '回忆 1')
+        : entry === 'batch' ? f.action(due, '开始本轮 3 项') : null;
+      pauseDailyBudget(f);
+      const before = f.export();
+      const reply = action ? f.accept(f.cards.prepareAction(action)!) : f.send('知识 复习');
+      assert.match(f.payload(reply), /每日复习预算为 0.*日常复习已暂停/);
+      assert.equal(f.session(), null);
+      for (const command of ['知识 复习 3', '知识 复习 5']) {
+        assert.match(f.payload(f.send(command)), /日常复习已暂停/);
+        assert.equal(f.session(), null);
+      }
+      const pausedDue = f.send('知识 待复习');
+      assert.match(f.payload(pausedDue), /每日复习预算为 0/);
+      assert.ok(!cardButtons(pausedDue.card).some(button => /回忆|开始本轮/.test(button.text?.content ?? '')));
+      const reading = f.click(f.send('知识 卡片'), '阅读 1');
+      assert.match(f.payload(reading), /SECRET_BODY|OTHER_BODY/);
+      unchanged(f, before);
+    } finally { f.cleanup(); }
+  }
+});
+
+test('zero daily budget lets an existing front finish its frozen self-report and explicit rewarm', async () => {
+  const f = await fixture(); try {
+    const front = f.send('知识 复习');
+    pauseDailyBudget(f);
+    const anchors = f.export().anchors;
+    const revealed = f.click(front, '查看资料');
+    assert.match(f.payload(revealed), /SECRET_BODY_START/);
+    const frozen = structuredClone(f.session().state.frozen);
+    const saved = f.click(revealed, '清楚');
+    assert.equal(f.store.countObservations(), 1);
+    assert.deepEqual(f.session().state.frozen, frozen);
+    assert.deepEqual(f.export().anchors, anchors);
+    f.click(saved, '确认已重温，更新时间');
+    assert.equal(f.export().anchors.length, anchors.length + 1);
+    assert.equal(f.store.getReviewPlan().dailyBudget, 0);
+  } finally { f.cleanup(); }
+});
+
+test('zero daily budget does not bypass other eligibility checks on an existing front', async () => {
+  for (const reason of ['retained', 'deferred', 'recent', 'completed', 'source', 'expiry'] as const) {
+    const f = await fixture(); try {
+      const front = f.send('知识 复习'); pauseDailyBudget(f);
+      const occurredAt = '2026-10-07T01:00:00Z';
+      if (reason === 'retained') f.store.addRetention({ eventId: 'zero-retained', conceptId: f.concept.id,
+        sourceRevision: f.concept.source.revision, active: true, previousEventId: null, occurredAt }, null);
+      if (reason === 'deferred') f.store.updateReviewPlan({ revision: f.store.getReviewPlan().revision,
+        concept: { conceptId: f.concept.id, sourceRevision: f.concept.source.revision, focus: false, deferUntil: '2026-10-08T01:00:00Z' } });
+      if (reason === 'recent') f.store.addReview({ eventId: 'zero-recent', conceptId: f.concept.id,
+        sourceRevision: f.concept.source.revision, kind: 'review', occurredAt });
+      if (reason === 'completed') f.store.addObservation({ eventId: 'zero-completed', conceptId: f.concept.id,
+        sourceRevision: f.concept.source.revision, observedAt: occurredAt, configRevision: 1, anchorEventId: 'original-anchor',
+        answer: 'synthetic answer', rating: 'clear', exposure: 'unexposed', observedExposure: false }, 'original-anchor');
+      if (reason === 'source') f.changeSource();
+      if (reason === 'expiry') f.advance(25 * 60 * 60_000);
+      const before = f.export();
+      // Source changes invalidate the entire original card before controller dispatch.
+      if (reason === 'source' || reason === 'expiry') {
+        const blocked = f.send('知识 继续复习');
+        assert.doesNotMatch(f.payload(blocked), /SECRET_BODY|NEW_SECRET_BODY/);
+      } else {
+        const blocked = f.click(front, '查看资料');
+        assert.match(f.payload(blocked), /当前已不在待复习范围/);
+        assert.doesNotMatch(f.payload(blocked), /SECRET_BODY/);
+        assert.equal(f.session().state.frozen, null);
+      }
+      unchanged(f, before);
+    } finally { f.cleanup(); }
+  }
+});
+
+test('zero daily budget recovers an immutable pending grade once across restart', async () => {
+  for (const settlementFailure of [false, true]) {
+    const f = await fixture(); try {
+      if (settlementFailure) {
+        const revealed = f.click(f.send('知识 复习'), '查看资料');
+        f.accounts.settleFeishuReviewOperation = () => { throw new Error('synthetic settlement failure'); };
+        f.click(revealed, '清楚');
+      } else pendingGrade(f);
+      const operation = structuredClone(f.operations()[0]);
+      pauseDailyBudget(f); f.reopen();
+      if (!settlementFailure) f.sql('DROP TRIGGER reject_observation');
+      const saved = f.send('知识 继续复习');
+      assert.equal(f.operations()[0].status, 'applied');
+      assert.deepEqual(f.operations()[0].intent, operation.intent);
+      assert.equal(f.operations()[0].id, operation.id);
+      assert.equal(f.store.countObservations(), 1);
+      const confirmed = f.click(saved, '确认已重温，更新时间');
+      assert.ok(confirmed);
+      f.send('知识 继续复习');
+      assert.equal(f.store.countObservations(), 1);
+      assert.equal(f.export().anchors.length, 2);
+    } finally { f.cleanup(); }
+  }
+});
+
+test('zero daily budget blocks old next and skip actions without advancing or rewriting the batch queue', async () => {
+  for (const verb of ['next', 'skip'] as const) {
+    const f = await fixture(true); try {
+      const front = f.send('知识 复习 3');
+      const current = verb === 'next' ? f.click(f.click(front, '查看资料'), '清楚') : front;
+      const oldAction = f.action(current, verb === 'next' ? '下一条' : '跳过本条');
+      const queue = structuredClone(f.session().state.batch);
+      pauseDailyBudget(f);
+      const blocked = f.accept(f.cards.prepareAction(oldAction)!);
+      assert.deepEqual(f.session().state.batch, queue);
+      assert.match(f.payload(blocked), /日常复习已暂停/);
+      assert.ok(!cardButtons(blocked.card).some(button => ['下一条', '跳过本条'].includes(button.text?.content ?? '')));
+      const paused = f.click(blocked, '暂停复习');
+      assert.ok(paused);
+      f.reopen(); f.send('知识 继续复习');
+      assert.deepEqual(f.session().state.batch, queue);
+      f.store.updateReviewPlan({ revision: f.store.getReviewPlan().revision, dailyBudget: 5 });
+      const resumed = f.send('知识 继续复习');
+      f.click(resumed, verb === 'next' ? '下一条' : '跳过本条');
+      assert.equal(f.session().state.batch!.cursor, 1);
+      assert.deepEqual(f.session().state.batch!.items.map(item => item.id), queue!.items.map(item => item.id));
+    } finally { f.cleanup(); }
+  }
+});
+
+test('zero daily budget allows the last batch item to finish without creating another item', async () => {
+  const f = await fixture(); try {
+    const front = f.send('知识 复习 3');
+    assert.equal(f.session().state.batch!.items.length, 1);
+    pauseDailyBudget(f);
+    const saved = f.click(f.click(front, '查看资料'), '清楚');
+    const sessionId = f.session().id;
+    const summary = f.click(saved, '完成本轮');
+    assert.match(f.payload(summary), /本轮复习已结束/);
+    assert.equal(f.session(), null);
+    assert.equal(f.operations(sessionId).length, 1);
+    assert.equal(f.store.countObservations(), 1);
+  } finally { f.cleanup(); }
+});
+
 test('front card omits private body, summary and history; browsing, pause and paging are read only', async () => {
   const f = await fixture(); try {
     f.store.addObservation({ eventId: 'old-written-history', conceptId: f.concept.id, sourceRevision: f.concept.source.revision,

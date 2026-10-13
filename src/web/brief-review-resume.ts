@@ -40,7 +40,9 @@ export function prepareBriefReviewResume(
   // An already-started answer may finish after a budget change. A new question
   // must fit today's budget; fixed submitted payloads remain safe to retry.
   if (!checkpoint.attempt) {
-    if (!allowance.remaining) throw new Error('今日预算已用完，可明天继续，或调整每日预算。');
+    if (!allowance.remaining) throw new Error(response.plan.dailyBudget === 0
+      ? '每日复习推荐已暂停，原进度仍保留；调高每日预算后可继续新题。'
+      : '今日预算已用完，可明天继续，或调整每日预算。');
     allowance.excludedIds.forEach((id) => excluded.add(id));
   }
   const ready = resolveBriefReviewItem(session, snapshot, excluded, { preferences: response.plan.concepts, asOf: response.asOf });

@@ -17,6 +17,8 @@ import type { CorrectionEvent } from '../shared/corrections.js';
 import type { PracticeAttempt, PracticeCardEvent } from '../shared/practice.js';
 import {
   DEFAULT_DAILY_REVIEW_BUDGET,
+  MIN_DAILY_REVIEW_BUDGET,
+  MAX_DAILY_REVIEW_BUDGET,
   type ConceptReviewPreference,
   type ReviewPlan,
 } from '../shared/review-plan.js';
@@ -1410,7 +1412,7 @@ function validateReviewPlan(value: unknown, label: string): ReviewPlan {
   const revision = finite(record.revision, `${label}.revision`);
   if (!Number.isSafeInteger(revision) || revision < 0) invalid(`${label}.revision 无效。`);
   const dailyBudget = finite(record.dailyBudget, `${label}.dailyBudget`);
-  if (!Number.isSafeInteger(dailyBudget) || dailyBudget < 1 || dailyBudget > 50) invalid(`${label}.dailyBudget 超出范围。`);
+  if (!Number.isSafeInteger(dailyBudget) || dailyBudget < MIN_DAILY_REVIEW_BUDGET || dailyBudget > MAX_DAILY_REVIEW_BUDGET) invalid(`${label}.dailyBudget 超出范围。`);
   const concepts = requireRecord(record.concepts, `${label}.concepts`);
   const result = Object.create(null) as Record<string, ConceptReviewPreference>;
   for (const [conceptId, raw] of Object.entries(concepts)) {

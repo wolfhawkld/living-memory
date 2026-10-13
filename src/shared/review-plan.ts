@@ -25,6 +25,7 @@ export interface ReviewPlanResponse {
   completedConceptIds: string[];
 }
 
+export const MIN_DAILY_REVIEW_BUDGET = 0;
 export const DEFAULT_DAILY_REVIEW_BUDGET = 5;
 export const MAX_DAILY_REVIEW_BUDGET = 50;
 

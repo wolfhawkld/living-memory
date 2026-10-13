@@ -65,9 +65,9 @@ test('review plan defaults are read-only, namespace isolated, CAS protected, and
       db.close();
     }
 
-    const budget = first.store.updateReviewPlan({ revision: 0, dailyBudget: 7 });
-    assert.deepEqual(budget, { revision: 1, dailyBudget: 7, concepts: {} });
-    assert.deepEqual(first.store.updateReviewPlan({ revision: 0, dailyBudget: 7 }), budget, 'same stale payload is idempotent');
+    const budget = first.store.updateReviewPlan({ revision: 0, dailyBudget: 0 });
+    assert.deepEqual(budget, { revision: 1, dailyBudget: 0, concepts: {} });
+    assert.deepEqual(first.store.updateReviewPlan({ revision: 0, dailyBudget: 0 }), budget, 'same stale payload is idempotent');
     assertStoreError(() => first.store.updateReviewPlan({ revision: 0, dailyBudget: 8 }), 'REVIEW_PLAN_CONFLICT');
     assert.deepEqual(second.getReviewPlan(), { revision: 0, dailyBudget: 5, concepts: {} });
 
@@ -111,6 +111,37 @@ test('review plan defaults are read-only, namespace isolated, CAS protected, and
     try { first.store.close(); } catch { /* already closed */ }
     second.close();
     rmSync(first.dataDir, { recursive: true, force: true });
+  }
+});
+
+test('zero budget survives calendar days without learning writes or debt and can resume a positive budget', () => {
+  const current = fixture();
+  try {
+    const { store } = current;
+    store.addReview({ eventId: 'existing-anchor', conceptId: concept.id, sourceRevision: concept.source.revision,
+      kind: 'review', occurredAt: '2026-01-01T00:00:00Z' });
+    store.addObservation(observation({ anchorEventId: 'existing-anchor' }), 'existing-anchor');
+    const zero = store.updateReviewPlan({ revision: 0, dailyBudget: 0 });
+    const before = store.exportData({ name: 'test', mode: 'local', conceptCount: 1, limit: 1, diagnostics: [] }, [concept]);
+    for (const now of ['2026-01-03T01:00:00Z', '2026-02-03T01:00:00Z']) {
+      current.setNow(now);
+      assert.deepEqual(store.getReviewPlan(), zero);
+      assert.deepEqual(store.getCompletedConceptIds(now, 'Asia/Shanghai'), []);
+    }
+    const asOf = '2026-02-03T01:00:00Z';
+    const beforeResume = store.getStates([concept], asOf);
+    const resumed = store.updateReviewPlan({ revision: zero.revision, dailyBudget: 3 });
+    assert.deepEqual(resumed, { revision: 2, dailyBudget: 3, concepts: {} }, 'resuming restores only the requested daily budget');
+    assert.deepEqual(store.getStates([concept], asOf), beforeResume);
+    const after = store.exportData({ name: 'test', mode: 'local', conceptCount: 1, limit: 1, diagnostics: [] }, [concept]);
+    assert.deepEqual(after.anchors, before.anchors);
+    assert.deepEqual(after.observations, before.observations);
+    for (const dailyBudget of [-1, 0.5, 51]) {
+      assertStoreError(() => store.updateReviewPlan({ revision: resumed.revision, dailyBudget }), 'INVALID_REVIEW_BUDGET');
+    }
+    assert.deepEqual(store.getReviewPlan(), resumed);
+  } finally {
+    current.cleanup();
   }
 });
 

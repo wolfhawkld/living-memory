@@ -10,6 +10,7 @@ export interface FeishuReviewRenderInput {
   operations: FeishuReviewOperation[];
   concept: Concept | null;
   availability: 'ready' | 'source-changed' | 'expired' | 'no-candidate' | 'no-session' | 'ineligible';
+  dailyBudgetPaused?: boolean;
 }
 interface Control { caption: string; target: FeishuCardView }
 const FOOTER = '脑中回忆为自报，不记录原答，不计入独立成功或信心校准。阅读和脑中自报均不会更新记忆时间；只有明确确认重温才更新锚点。仅最新卡可操作，未收到新卡请发送“知识 继续复习”。';
@@ -21,6 +22,7 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
   const { session, concept } = input;
   const operations = session ? feishuReviewCurrentOperations(session, input.operations) : [];
   const batch = session?.state.batch;
+  const canAdvance = !input.dailyBudgetPaused || !batch || batch.cursor === batch.items.length - 1;
   const view: FeishuCardView = session ? { kind: 'review', sessionId: session.id, version: session.version, verb: 'show', page: session.state.page } : { kind: 'help' };
   const controls: Control[] = [];
   const due = { kind: 'due', domainId: session?.state.domainId ?? null, limit: 3 } as const;
@@ -47,14 +49,17 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
     content = input.availability === 'source-changed' ? '资料或来源已变化，本次复习不可继续。请重新选择候选。'
       : input.availability === 'expired' ? '复习会话已过期，请重新选择候选。'
         : input.availability === 'ineligible' ? batch ? '当前已不在待复习范围，可跳过本条或结束本轮。' : '当前已不在待复习范围，请结束后重新选择。'
-          : input.availability === 'no-candidate' ? '当前没有可用候选。浏览不会扣复习预算。'
+          : input.availability === 'no-candidate' || (input.availability === 'no-session' && input.dailyBudgetPaused) ? input.dailyBudgetPaused
+            ? '每日复习预算为 0，日常复习已暂停。仍可浏览知识和主动学习。'
+            : '当前没有可用候选。浏览不会扣复习预算。'
           : '发送“知识 复习”开始；“知识 继续复习”恢复；“知识 暂停复习”暂停；“知识 结束复习”结束。';
     controls.push({ caption: '查看待复习', target: due });
     if (session) {
       if (pending && session.state.paused) add('继续复习', 'resume');
       else if (pending) { add('重试同步', 'retry'); add('暂停复习', 'pause'); }
       else {
-        if (batch && input.availability === 'ineligible' && !session.state.paused) add('跳过资格变化项', 'skip');
+        if (batch && canAdvance && input.availability === 'ineligible' && !session.state.paused) add('跳过资格变化项', 'skip');
+        if (batch && !canAdvance && input.availability === 'ineligible' && !session.state.paused) add('暂停复习', 'pause');
         if (batch && input.availability === 'ineligible' && session.state.paused) add('继续复习', 'resume');
         add('结束复习', 'finish');
       }
@@ -62,7 +67,7 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
   } else if (conflict) {
     step = '核对写入冲突'; template = 'red';
     content = '有记录写入冲突，请核对下方状态，结束后检查，不会覆盖已保存记录。';
-    if (batch) add(session.state.paused ? '继续复习' : '略过冲突项，继续', session.state.paused ? 'resume' : 'skip');
+    if (batch && (session.state.paused || canAdvance)) add(session.state.paused ? '继续复习' : '略过冲突项，继续', session.state.paused ? 'resume' : 'skip');
     add('结束复习', 'finish');
   } else if (session.state.paused) {
     step = '复习已暂停'; template = 'grey';
@@ -79,7 +84,7 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
     title = metadata(concept.title, 200);
     content = '想想它的原理，以及会用在哪个场景';
     add('查看资料', 'reveal'); add('暂停复习', 'pause'); add('结束复习', 'finish');
-    if (batch) add('跳过本条', 'skip');
+    if (batch && canAdvance) add('跳过本条', 'skip');
   } else if (session.state.phase === 'revealed') {
     step = '对照资料';
     title = metadata(concept.title, 200);
@@ -96,19 +101,25 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
         add('清楚', 'rate-clear'); add('模糊', 'rate-partial'); add('想不起', 'rate-blank');
       }
       add('暂停复习', 'pause'); add('结束复习', 'finish');
-      if (batch) add('跳过本条', 'skip');
+      if (batch && canAdvance) add('跳过本条', 'skip');
     }
   } else {
     step = '回忆记录回执'; layout = 'saved';
     const reviewed = operations.some((operation) => operation.intent.kind === 'review' && operation.status === 'applied');
     content = reviewed ? '脑中回忆记录已保存。\n确认重温：已保存，本次明确确认的重温时间已保存。' : '脑中回忆记录已保存。\n记忆时间尚未更新；是否已完成重温由你另行确认。';
     if (!operations.some((operation) => operation.intent.kind === 'review')) add('确认已重温，更新时间', 'confirm-review');
-    if (batch) add(batch.cursor === batch.items.length - 1 ? '完成本轮' : '下一条', 'next');
+    if (batch && canAdvance) add(batch.cursor === batch.items.length - 1 ? '完成本轮' : '下一条', 'next');
+    if (batch && !canAdvance) add('暂停复习', 'pause');
     add('结束复习', 'finish');
-    recoveryNote = batch ? '如刚恢复待写操作，请再次点击下一条或结束本轮。' : '如刚恢复待写操作，请再次点击结束本条。';
+    recoveryNote = batch ? canAdvance ? '如刚恢复待写操作，请再次点击下一条或结束本轮。' : '如刚恢复待写操作，可暂停或结束本轮；调高每日预算后可进入下一条。' : '如刚恢复待写操作，请再次点击结束本条。';
   }
   const batchNote = batch && session?.state.phase !== 'finished'
     ? `请求 ${batch.requestedSize} 项${batch.items.length < batch.requestedSize ? '，候选或预算不足，按实际数量进行' : ''}。队列固定，继续不会补位或重排。` : '';
+  if (input.dailyBudgetPaused && session && session.state.phase !== 'finished') {
+    content += input.availability === 'ready' && !conflict
+      ? '\n每日复习预算为 0，日常复习已暂停。当前条目仍可完成；后续条目暂不开始。'
+      : '\n每日复习预算为 0，新题已暂停；原进度和已保存记录保留。';
+  }
   for (const [kind, label] of [['observation', '脑中自评'], ['review', '确认重温']] as const) {
     const operation = operations.find((entry) => entry.intent.kind === kind);
     if (operation && layout !== 'saved') content += `\n${label}：${operation.status === 'applied' ? '已保存' : operation.status === 'pending' ? '待保存' : '未保存(冲突)'}`;

@@ -239,7 +239,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
       const concept = context.concepts.find((item) => item.id === candidate.conceptId)!;
       return { title: `${index + 1}. ${metadata(concept.title)}`, content: `目录域：${metadata(domainIdOf(concept), 240)}\n${candidate.focus ? '重点 · ' : ''}${candidate.estimated ? '估算锚点 · ' : ''}距锚点 ${candidate.elapsedDays.toFixed(1)} 天`, caption: `阅读 ${index + 1}`, target: toRead(concept.id, concept.source.revision, view), extra: { caption: `回忆 ${index + 1}`, target: { kind: 'review-start', reference: references.get(concept.id)!, revision: hash(concept.source.revision).slice(0, 12), domainId: view.domainId } } };
     });
-    const intro = `时间提示候选（非记忆能力测量）\n日期：${metadata(result.dayKey, 60)} · 时区：${metadata(result.timeZone, 100)}\n今日已落库概念回忆 ${result.completedCount} 项 · 剩余预算 ${result.remaining} 项\n不计场景记录；浏览器待同步/已访问信息在聊天中不可见。${rows.length ? '' : '\n当前没有可用候选。'}`;
+    const intro = `时间提示候选（非记忆能力测量）\n日期：${metadata(result.dayKey, 60)} · 时区：${metadata(result.timeZone, 100)}\n今日已落库概念回忆 ${result.completedCount} 项 · 剩余预算 ${result.remaining} 项\n不计场景记录；浏览器待同步/已访问信息在聊天中不可见。${reviewPlan.plan.dailyBudget === 0 ? '\n每日复习预算为 0，日常复习已暂停。仍可浏览知识和主动学习。' : rows.length ? '' : '\n当前没有可用候选。'}`;
     const controls: CardControl[] = [{ caption: view.limit === 3 ? '查看 5 项' : '查看 3 项', target: { ...view, limit: view.limit === 3 ? 5 : 3 } },
       { caption: '全部领域候选', target: { ...view, domainId: null } }, { caption: '知识领域', target: { kind: 'domains', page: 1 } },
       { caption: '本领域全部节点', target: { ...DEFAULT_LIST, domainId: view.domainId } }];

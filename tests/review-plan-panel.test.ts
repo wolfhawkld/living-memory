@@ -87,6 +87,25 @@ test('daily exhaustion prevents starting a new round but keeps the plan entry av
   assert.match(html, /class="brief-review-start" disabled=""[^>]*>开始复习/);
 });
 
+test('zero budget explains a persistent pause and preserves started-draft resume controls', () => {
+  const html = panel({ candidateCount: 0,
+    daily: { budget: 0, completed: 2, pending: 1, remaining: 0, timeZone: 'Asia/Shanghai' },
+    suspended: { domainLabel: '数学', index: 0, total: 3, savedAt: '2026-09-27T07:00:00.000Z', hasAnswer: true },
+    onResume: () => undefined, onOpenPlan: () => undefined,
+  });
+  assert.match(html, /每日复习推荐已暂停/);
+  assert.doesNotMatch(html, /今日预算已用完|明天继续/);
+  assert.match(html, /class="brief-review-start" disabled=""/);
+  assert.doesNotMatch(html.match(/<button[^>]*>继续复习<\/button>/)?.[0] ?? '', /disabled/);
+  const dialog = renderToStaticMarkup(createElement(ReviewPlanDialog, {
+    response: response({ plan: { revision: 4, dailyBudget: 0, concepts: {} } }),
+    loading: false, error: null, onClose: () => undefined, onRefresh: () => undefined, onSaveBudget: () => undefined,
+  }));
+  assert.match(dialog, /value="0"/);
+  assert.match(dialog, /调高后恢复/);
+  assert.match(dialog, /class="brief-review-plan-save" disabled=""/);
+});
+
 test('resume is blocked by its guard while discard and copy remain available', () => {
   const html = panel({
     suspended: { domainLabel: 'AI', index: 0, total: 1, savedAt: '2026-09-27T07:00:00.000Z', hasAnswer: true },
@@ -122,7 +141,7 @@ test('review plan dialog renders bounded budget, unique daily recall count, time
     onSaveBudget: () => undefined,
   }));
   assert.match(html, /每日复习预算/);
-  assert.match(html, /min="1"/);
+  assert.match(html, /min="0"/);
   assert.match(html, /max="50"/);
   assert.match(html, /今日已保存概念回忆.*2 个/);
   assert.match(html, /同一节点每天只计 1 次/);

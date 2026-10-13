@@ -99,6 +99,7 @@ export function BriefReviewPanel({
   const dailyPending = daily ? displayCount(daily.pending) : 0;
   const dailyRemaining = daily ? displayCount(daily.remaining) : 0;
   const dailyExhausted = daily !== undefined && dailyRemaining === 0;
+  const dailyPaused = daily !== undefined && daily.budget === 0;
   const suspendedTotal = suspended ? Math.max(displayCount(suspended.total), 1) : 0;
   const suspendedIndex = suspended ? displayCount(suspended.index) : 0;
   const suspendedPosition = suspended ? `${Math.min(suspendedIndex + 1, suspendedTotal)} / ${suspendedTotal}` : null;
@@ -123,7 +124,8 @@ export function BriefReviewPanel({
           <div><span>剩余</span><strong>{dailyRemaining} 个概念</strong></div>
         </div>
         <p>今日预算跨领域共享，按概念数统计，不代表掌握分数；待同步 {dailyPending} 条。时区：{daily.timeZone || '浏览器时区'}</p>
-        {dailyExhausted ? <p className="brief-review-daily-notice" role="status">今日预算已用完；可以打开复习安排调整预算，或处理已暂停的复习。</p> : null}
+        {dailyPaused ? <p className="brief-review-daily-notice" role="status">每日复习推荐已暂停；调高每日预算后恢复。已开始的作答仍可完成，也可手动选择节点回忆。</p>
+          : dailyExhausted ? <p className="brief-review-daily-notice" role="status">今日预算已用完；可以打开复习安排调整预算，或处理已暂停的复习。</p> : null}
       </div> : null}
       {suspended ? <div className="brief-review-suspended" role="status">
         <div className="brief-review-suspended-heading"><strong>有一轮复习已暂停</strong><span>{suspendedPosition} · {suspended.domainLabel || '当前领域'}</span></div>

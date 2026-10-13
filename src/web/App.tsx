@@ -1255,7 +1255,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         preferences: arrangement.plan.concepts, asOf: arrangement.asOf,
       });
       if (!candidates.length) {
-        showNotice({ tone: 'info', text: allowance.remaining ? '当前领域没有符合安排的时间候选，仍可手动选择概念回忆。' : '今日预算已用完，可以休息；仍可手动回忆或调整预算。' });
+        showNotice({ tone: 'info', text: arrangement.plan.dailyBudget === 0 ? '每日复习推荐已暂停，调高每日预算后恢复；仍可手动选择节点回忆。'
+          : allowance.remaining ? '当前领域没有符合安排的时间候选，仍可手动选择概念回忆。' : '今日预算已用完，可以休息；仍可手动回忆或调整预算。' });
         return;
       }
       const session: BriefReviewSession = {
@@ -1372,7 +1373,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       const [latest, arrangement] = await Promise.all([loadSnapshot(undefined, sourceId), reviewPlan.refresh()]);
       if (!latest || !arrangement || writeLockedRef.current || sourceIdRef.current !== sourceId) return;
       if (!reviewAllowance(arrangement, getPendingWrites(sourceId)).remaining) {
-        showNotice({ tone: 'info', text: '今日预算已用完，可暂停本轮明天继续。' });
+        showNotice({ tone: 'info', text: arrangement.plan.dailyBudget === 0 ? '每日复习推荐已暂停，当前进度已保留；调高预算后可继续下一条。' : '今日预算已用完，可暂停本轮明天继续。' });
         return;
       }
       const ready = resolveBriefReviewItem(next, latest, briefExclusions(arrangement), { preferences: arrangement.plan.concepts, asOf: arrangement.asOf });

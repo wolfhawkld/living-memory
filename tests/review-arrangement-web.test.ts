@@ -86,6 +86,29 @@ test('resume honors retained and deferred state while preserving drafts, and a s
   assert.throws(() => prepareBriefReviewResume(saved, retained, response, []), /长期保持/);
 });
 
+test('zero budget preserves started answers and frozen pending writes but blocks an unstarted item across days', () => {
+  const saved = checkpoint();
+  const response = arrangement();
+  response.plan.dailyBudget = 0;
+  const original = structuredClone(saved);
+  assert.deepEqual(prepareBriefReviewResume(saved, snapshot(), response, []).attempt, saved.attempt);
+  assert.throws(() => prepareBriefReviewResume({ ...saved, attempt: null }, snapshot(), response, []), /推荐已暂停/);
+  saved.attempt!.eventId = 'frozen-zero-observation';
+  const restored = prepareBriefReviewResume(saved, snapshot(), response, [pending('a', 'frozen-zero-observation')]);
+  assert.equal(restored.session.results.a, 'queued');
+  assert.equal(restored.attempt, null);
+  assert.deepEqual(saved.session, original.session);
+  for (const day of ['2026-09-28', '2026-10-02']) {
+    response.dayKey = day;
+    response.asOf = `${day}T08:00:00.000Z`;
+    assert.equal(reviewAllowance(response, [pending('a', 'old')]).remaining, 0);
+    assert.throws(() => prepareBriefReviewResume({ ...original, attempt: null }, snapshot(), response, []), /推荐已暂停/);
+  }
+  response.plan.dailyBudget = 3;
+  assert.equal(reviewAllowance(response, [pending('a', 'old')]).remaining, 3);
+  assert.ok(prepareBriefReviewResume({ ...original, attempt: null }, snapshot(), response, []).state);
+});
+
 test('resume reconciles queued observations and confirmed reviews without creating another attempt or event', () => {
   const saved = checkpoint();
   saved.attempt!.eventId = 'frozen-observation';
