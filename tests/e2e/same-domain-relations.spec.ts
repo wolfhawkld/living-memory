@@ -61,13 +61,22 @@ test('complete directed relations disclose on demand and navigate within the sel
   await page.getByRole('button', { name: '文字列表', exact: true }).click();
   await page.getByRole('button', { name: '查看真实记录', exact: true }).click();
   const list = page.getByRole('list', { name: '概念文字列表', exact: true });
+  const panel = page.locator('.same-domain-relations');
+  const expectSingleClosedPanel = async () => {
+    // The heading can update before the keyed details replacement finishes.
+    // Inspect the complete match set atomically, retrying until only the new,
+    // collapsed panel remains rather than selecting an arbitrary duplicate.
+    await expect.poll(() => panel.evaluateAll(elements =>
+      elements.map(element => (element as HTMLDetailsElement).open),
+    )).toEqual([false]);
+  };
   const select = async (title: string) => {
     await expect(page.getByRole('button', { name: '返回图谱', exact: true })).toBeEnabled();
     await list.getByRole('button').filter({ has: page.getByText(title, { exact: true }) }).click();
     await expect(page.locator('.detail-head h2')).toHaveText(title);
+    await expectSingleClosedPanel();
   };
   await select(origin.title);
-  const panel = page.locator('.same-domain-relations');
   const summary = panel.locator('summary');
   await expect(summary).toHaveText('查看同域关系（4条）');
   await expect(panel.locator('.same-domain-relations-list')).toBeHidden();
@@ -80,7 +89,7 @@ test('complete directed relations disclose on demand and navigate within the sel
   await summary.click({ force: true });
   await summary.press('Enter');
   await summary.press('Space');
-  expect(await panel.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false);
+  await expectSingleClosedPanel();
   await expect(page.locator('.viewed-label')).toHaveCount(0);
   await settings.click();
   await expect(summary).toHaveAttribute('aria-disabled', 'false');
@@ -99,7 +108,7 @@ test('complete directed relations disclose on demand and navigate within the sel
   await expect(panel.locator('li').filter({ hasText: 'synthetic-parallel' })).toBeVisible();
   await outgoing.getByRole('button', { name: `查看关联概念：${neighbor.title}`, exact: true }).click();
   await expect(page.locator('.detail-head h2')).toHaveText(neighbor.title);
-  expect(await panel.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false);
+  await expectSingleClosedPanel();
 
   await select(origin.title);
   const cross = page.locator('.cross-domain-item').filter({ has: page.getByRole('heading', { name: external.title, exact: true }) });
@@ -112,13 +121,14 @@ test('complete directed relations disclose on demand and navigate within the sel
   await panel.getByRole('button', { name: `查看关联概念：${externalNeighbor.title}`, exact: true }).click();
   await expect(page.getByRole('combobox', { name: '知识域', exact: true })).toHaveValue(externalDomain);
   await expect(page.locator('.detail-head h2')).toHaveText(externalNeighbor.title);
-  expect(await panel.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false);
+  await expectSingleClosedPanel();
 
   await select(external.title);
   const returnCross = page.locator('.cross-domain-item').filter({ has: page.getByRole('heading', { name: origin.title, exact: true }) });
   await returnCross.getByRole('button', { name: '前往该领域', exact: true }).click();
   await expect(page.getByRole('combobox', { name: '知识域', exact: true })).toHaveValue(domain);
   await expect(page.locator('.detail-head h2')).toHaveText(origin.title);
+  await expectSingleClosedPanel();
   await expect(page.locator('.graph-canvas')).toHaveCount(0);
   await page.getByRole('button', { name: '查看示例状态', exact: true }).click();
   await page.getByRole('button', { name: '返回图谱', exact: true }).click();
