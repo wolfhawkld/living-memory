@@ -63,12 +63,14 @@ test('complete directed relations disclose on demand and navigate within the sel
   const list = page.getByRole('list', { name: '概念文字列表', exact: true });
   const panel = page.locator('.same-domain-relations');
   const expectSingleClosedPanel = async () => {
-    // The heading can update before the keyed details replacement finishes.
-    // Inspect the complete match set atomically, retrying until only the new,
-    // collapsed panel remains rather than selecting an arbitrary duplicate.
+    // Assert the complete match set so duplicate sibling keys cannot leave
+    // orphaned panels unnoticed after navigation. History loads asynchronously;
+    // wait for its panels without assuming any particular learning records.
     await expect.poll(() => panel.evaluateAll(elements =>
       elements.map(element => (element as HTMLDetailsElement).open),
     )).toEqual([false]);
+    await expect(page.locator('.learning-progress-panel')).toHaveCount(1);
+    await expect(page.locator('.concept-history-panel')).toHaveCount(1);
   };
   const select = async (title: string) => {
     await expect(page.getByRole('button', { name: '返回图谱', exact: true })).toBeEnabled();

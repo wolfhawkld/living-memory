@@ -2024,15 +2024,15 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
                 onChange={(preference) => void saveReviewPlan({ concept: { ...preference, conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision } })} /> : null}
               <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{selectedSourceViewed ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => openReader()} disabled={sourceReloadPending}><span>打开大窗阅读</span><span aria-hidden="true">↗</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{selectedSourceViewed ? <SourceBlock concept={selectedConcept} sourceId={sourceId} onOpen={openReader} /> : null}</div>
               {listMode ? <SameDomainRelationsPanel
-                key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}
+                key={JSON.stringify(['same-domain-relations', sourceId, selectedConcept.id, selectedConcept.source.revision])}
                 selectedConcept={selectedConcept} relations={sameDomainRelations} disabled={domainBusy}
                 onReveal={() => markConceptSourceViewed(selectedConcept)} onNavigate={selectSearchResult} /> : null}
               {historyEnabled ? <LearningSummaryPanel summary={conceptHistory.history?.learning} /> : null}
               {historyEnabled && conceptHistory.history ? <LearningProgressPanel
-                key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}
+                key={JSON.stringify(['learning-progress', sourceId, selectedConcept.id, selectedConcept.source.revision])}
                 progress={conceptHistory.history.progress} simulated={simulated} /> : null}
               {historyEnabled && selectedConcept ? <ConceptHistoryPanel
-                key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}
+                key={JSON.stringify(['concept-history', sourceId, selectedConcept.id, selectedConcept.source.revision])}
                 {...conceptHistory} pendingCount={pendingLearningCount} simulated={simulated}
                 concept={selectedConcept}
                 onSaveCorrection={saveCorrection}
