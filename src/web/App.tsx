@@ -58,8 +58,10 @@ import './brief-review.css';
 import { createDemoRecord, extendDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
 import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
-import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDomainConcepts, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
+import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, getSameDomainRelations, listDomainConcepts, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
 import { CrossDomainPanel, DomainPicker } from './DomainControls';
+import { SameDomainRelationsPanel } from './SameDomainRelationsPanel';
+import './same-domain-relations.css';
 import { summarizeDomainVisibility } from '../core/domain-visibility';
 import { GraphDisplayControls } from './GraphDisplayControls';
 import { graphDisplayPreferenceKey, readGraphLimitPreference, writeGraphLimitPreference, type GraphLimitPreference } from './graph-display-preference';
@@ -896,6 +898,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     return displaySnapshot.states[selectedId] ?? null;
   }, [displaySnapshot, selectedId]);
   const crossDomainNeighbors = useMemo(() => snapshot && selectedId ? getCrossDomainNeighbors(snapshot, selectedId) : [], [selectedId, snapshot]);
+  const sameDomainRelations = useMemo(() => snapshot && selectedId ? getSameDomainRelations(snapshot, selectedId) : [], [selectedId, snapshot]);
 
   const listedConcepts = useMemo(() => displaySnapshot && domainId
     ? listDomainConcepts(displaySnapshot, domainId, visibleExpandedIds) : [], [displaySnapshot, domainId, visibleExpandedIds]);
@@ -2020,6 +2023,10 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
                 disabled={writeLocked || domainBusy || !reviewPlan.response || reviewPlan.loading}
                 onChange={(preference) => void saveReviewPlan({ concept: { ...preference, conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision } })} /> : null}
               <div className="source-section"><div className="section-heading"><span className="eyebrow">知识资料</span>{selectedSourceViewed ? <span className="viewed-label">本次已查看</span> : null}</div><button type="button" className="source-reveal" onClick={() => openReader()} disabled={sourceReloadPending}><span>打开大窗阅读</span><span aria-hidden="true">↗</span></button><div className="source-hint">本次查阅会标记为已查看，不会自动重置重温时间。</div>{selectedSourceViewed ? <SourceBlock concept={selectedConcept} sourceId={sourceId} onOpen={openReader} /> : null}</div>
+              {listMode ? <SameDomainRelationsPanel
+                key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}
+                selectedConcept={selectedConcept} relations={sameDomainRelations} disabled={domainBusy}
+                onReveal={() => markConceptSourceViewed(selectedConcept)} onNavigate={selectSearchResult} /> : null}
               {historyEnabled ? <LearningSummaryPanel summary={conceptHistory.history?.learning} /> : null}
               {historyEnabled && conceptHistory.history ? <LearningProgressPanel
                 key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`}

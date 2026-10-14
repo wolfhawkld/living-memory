@@ -33,6 +33,13 @@ export interface CrossDomainNeighbor {
   links: GraphLink[];
 }
 
+export interface SameDomainRelation {
+  link: GraphLink;
+  sourceConcept: Concept;
+  targetConcept: Concept;
+  direction: 'outgoing' | 'incoming' | 'self';
+}
+
 /** Normalize a source path for stable domain IDs across Windows and POSIX hosts. */
 function normalizeSourcePath(value: string): string {
   return value
@@ -134,6 +141,54 @@ function clampLimit(value: number | undefined): number {
 
 function conceptById(snapshot: KnowledgeGraph): Map<string, Concept> {
   return new Map(snapshot.concepts.map((concept) => [concept.id, concept]));
+}
+
+/** Read every resolved incident relation in the selected concept's directory. */
+export function getSameDomainRelations(
+  snapshot: KnowledgeGraph,
+  conceptId: string,
+): SameDomainRelation[] {
+  const byId = conceptById(snapshot);
+  const selected = byId.get(conceptId);
+  if (!selected) return [];
+  const domainId = domainIdOf(selected);
+  const seen = new Set<string>();
+  const relations: SameDomainRelation[] = [];
+  for (const link of snapshot.links) {
+    if (link.source !== conceptId && link.target !== conceptId) continue;
+    const sourceConcept = byId.get(link.source);
+    const targetConcept = byId.get(link.target);
+    if (!sourceConcept || !targetConcept
+      || domainIdOf(sourceConcept) !== domainId || domainIdOf(targetConcept) !== domainId) continue;
+    const identity = JSON.stringify([link.id, link.source, link.target, link.type, link.description]);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    relations.push({
+      link,
+      sourceConcept,
+      targetConcept,
+      direction: link.source === conceptId
+        ? (link.target === conceptId ? 'self' : 'outgoing') : 'incoming',
+    });
+  }
+  const rank = { outgoing: 0, incoming: 1, self: 2 };
+  const compare = (left: string, right: string): number => (
+    left.localeCompare(right, 'zh-Hans-CN') || (left < right ? -1 : left > right ? 1 : 0)
+  );
+  const other = (relation: SameDomainRelation): Concept => (
+    relation.direction === 'incoming' ? relation.sourceConcept : relation.targetConcept
+  );
+  return relations.sort((left, right) => {
+    const leftOther = other(left);
+    const rightOther = other(right);
+    return rank[left.direction] - rank[right.direction]
+      || compare(leftOther.title, rightOther.title)
+      || compare(leftOther.source.path, rightOther.source.path)
+      || compare(leftOther.id, rightOther.id)
+      || compare(left.link.type, right.link.type)
+      || compare(left.link.description, right.link.description)
+      || compare(left.link.id, right.link.id);
+  });
 }
 
 /** List a complete directory domain and explicitly visible cross-domain concepts. */

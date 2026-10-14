@@ -41,6 +41,12 @@
   background: var(--ui-selected, var(--panel-soft));
 }
 
+:root[data-theme="dark"] .graph-list-fallback .fallback-node.is-selected {
+  border-color: var(--accent);
+  background: #1b3556;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .graph-list-fallback .fallback-node:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
