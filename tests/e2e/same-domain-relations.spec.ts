@@ -101,12 +101,26 @@ test('complete directed relations disclose on demand and navigate within the sel
   await expect(page.locator('.viewed-label')).toBeVisible();
   const outgoing = panel.locator('li').filter({ hasText: 'synthetic-outgoing' });
   const incoming = panel.locator('li').filter({ hasText: 'synthetic-incoming' });
-  await expect(outgoing.locator('.same-domain-relations-direction')).toHaveText('出向');
-  await expect(incoming.locator('.same-domain-relations-direction')).toHaveText('入向');
-  await expect(outgoing.locator('.same-domain-relations-endpoints strong')).toHaveText([origin.title, neighbor.title]);
-  await expect(incoming.locator('.same-domain-relations-endpoints strong')).toHaveText([neighbor.title, origin.title]);
+  await expect(outgoing.getByRole('group')).toHaveAttribute('aria-label',
+    `当前概念 ${origin.title} 指向同域概念 ${neighbor.title}；关系类型：synthetic-outgoing`);
+  await expect(incoming.getByRole('group')).toHaveAttribute('aria-label',
+    `同域概念 ${neighbor.title} 指向当前概念 ${origin.title}；关系类型：synthetic-incoming`);
+  await expect(outgoing.locator('[data-endpoint="source"]')).toHaveAttribute('data-concept-role', 'current');
+  await expect(outgoing.locator('[data-endpoint="target"]')).toHaveAttribute('data-concept-role', 'neighbor');
+  await expect(incoming.locator('[data-endpoint="source"]')).toHaveAttribute('data-concept-role', 'neighbor');
+  await expect(incoming.locator('[data-endpoint="target"]')).toHaveAttribute('data-concept-role', 'current');
+  await expect(outgoing.locator('[data-endpoint] strong')).toHaveText([origin.title, neighbor.title]);
+  await expect(incoming.locator('[data-endpoint] strong')).toHaveText([neighbor.title, origin.title]);
+  await expect(outgoing.locator('[data-concept-role="current"]')).toContainText('当前概念');
+  await expect(incoming.locator('[data-concept-role="neighbor"]')).toContainText('同域概念');
   await expect(outgoing).toContainText('完整出向说明，另一端不在图谱前二十项。');
-  await expect(panel.locator('li').filter({ hasText: 'synthetic-self' }).getByRole('button')).toHaveCount(0);
+  const self = panel.locator('li').filter({ hasText: 'synthetic-self' });
+  await expect(self.getByRole('group')).toHaveAttribute('aria-label',
+    `当前概念 ${origin.title} 关联自身；关系类型：synthetic-self`);
+  await expect(self.locator('[data-endpoint]')).toHaveCount(1);
+  await expect(self.locator('[data-endpoint]')).toHaveAttribute('data-concept-role', 'current');
+  await expect(self).toContainText('关联自身');
+  await expect(self.getByRole('button')).toHaveCount(0);
   await expect(panel.locator('li').filter({ hasText: 'synthetic-parallel' })).toBeVisible();
   await outgoing.getByRole('button', { name: `查看关联概念：${neighbor.title}`, exact: true }).click();
   await expect(page.locator('.detail-head h2')).toHaveText(neighbor.title);

@@ -18,8 +18,7 @@
 .same-domain-relations button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .same-domain-relations-content { padding: 0 12px 12px; }
 .same-domain-relations-content p { margin: 6px 0; white-space: pre-wrap; }
-.same-domain-relations-scope span,
-.same-domain-relations-endpoints div > span { display: block; color: var(--muted); }
+.same-domain-relations-scope span { display: block; color: var(--muted); }
 .same-domain-relations-hint { color: var(--muted); }
 .same-domain-relations-list {
   display: grid;
@@ -32,9 +31,39 @@
   scrollbar-width: thin;
 }
 .same-domain-relations-list li { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
-.same-domain-relations-direction { color: var(--accent); }
-.same-domain-relations-endpoints { display: grid; gap: 4px; margin: 6px 0; }
-.same-domain-relations-endpoints div { min-width: 0; white-space: pre-wrap; }
+.same-domain-relations-endpoints { display: grid; gap: 8px; margin: 2px 0 10px; }
+.same-domain-relations-node {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--ui-input, var(--panel-soft));
+  white-space: pre-wrap;
+}
+.same-domain-relations-node.is-current {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--ui-input, var(--panel-soft)));
+}
+.same-domain-relations-node-role { font-size: 10px; color: var(--muted); }
+.same-domain-relations-node.is-current .same-domain-relations-node-role { color: var(--accent); font-weight: 600; }
+.same-domain-relations-node strong { font-size: 12px; line-height: 1.5; }
+.same-domain-relations-node-path { color: var(--muted); font-size: 10px; }
+.same-domain-relations-connector {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 0 10px;
+  color: var(--accent);
+}
+.same-domain-relations-connector svg { width: 24px; height: 32px; flex: 0 0 24px; }
+.same-domain-relations-connector path { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.same-domain-relations-edge-type { display: grid; gap: 1px; min-width: 0; white-space: pre-wrap; }
+.same-domain-relations-type-label { color: var(--muted); font-size: 10px; }
+.same-domain-relations-edge-type strong { color: var(--text); font-weight: 500; }
+.same-domain-relations-self-label { font-weight: 600; }
 .same-domain-relations button {
   max-width: 100%;
   margin-top: 6px;
