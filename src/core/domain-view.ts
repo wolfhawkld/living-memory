@@ -4,6 +4,7 @@ import type {
   KnowledgeGraph,
   Layout,
   LayoutPosition,
+  MemoryStatus,
   Snapshot,
 } from '../shared/types.js';
 
@@ -133,6 +134,31 @@ function clampLimit(value: number | undefined): number {
 
 function conceptById(snapshot: KnowledgeGraph): Map<string, Concept> {
   return new Map(snapshot.concepts.map((concept) => [concept.id, concept]));
+}
+
+/** List a complete directory domain and explicitly visible cross-domain concepts. */
+export function listDomainConcepts(
+  snapshot: Snapshot,
+  domainId: string,
+  expandedIds: readonly string[] = [],
+): Concept[] {
+  const normalizedDomainId = normalizeSourcePath(domainId) || '__root__';
+  const requested = new Set(expandedIds);
+  const byId = new Map<string, Concept>();
+  for (const concept of snapshot.concepts) {
+    if (domainIdOf(concept) === normalizedDomainId || requested.has(concept.id)) {
+      if (!byId.has(concept.id)) byId.set(concept.id, concept);
+    }
+  }
+  const rank: Record<MemoryStatus, number> = {
+    stale: 0, revisit: 1, unknown: 2, pending: 3, recent: 4, retained: 5,
+  };
+  return [...byId.values()].sort((left, right) => (
+    rank[snapshot.states[left.id]?.status ?? 'unknown']
+      - rank[snapshot.states[right.id]?.status ?? 'unknown']
+    || left.title.localeCompare(right.title, 'zh-CN')
+    || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+  ));
 }
 
 function connectedToVisiblePrimary(

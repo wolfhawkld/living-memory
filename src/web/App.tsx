@@ -30,7 +30,10 @@ import {
   type PendingWrite,
   type PendingSyncResult,
 } from './api';
-import { GraphFallbackList, GraphView } from './GraphView';
+import { GraphView } from './GraphView';
+import { GraphFallbackList } from './GraphFallbackList';
+import { STATUS_LABELS } from './memory-status';
+import './graph-fallback-list.css';
 import { GraphSourceContent } from './GraphSourceContent';
 import { ThemeSelector } from './ThemeSelector';
 import { BriefReviewPanel, BriefReviewProgress } from './BriefReviewPanel';
@@ -55,7 +58,7 @@ import './brief-review.css';
 import { createDemoRecord, extendDemoRecord, isDemoRecord, projectDemoSnapshot, type DemoRecord } from '../core/demo-snapshot';
 import { DemoPanel } from './DemoPanel';
 import { createDeferredChangeController, subscribeToChanges } from './change-sync';
-import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
+import { chooseDomain, domainIdOf, domainLabel, getCrossDomainNeighbors, listDomainConcepts, listDomains, mergeLayout, projectDomainView } from '../core/domain-view';
 import { CrossDomainPanel, DomainPicker } from './DomainControls';
 import { summarizeDomainVisibility } from '../core/domain-visibility';
 import { GraphDisplayControls } from './GraphDisplayControls';
@@ -108,14 +111,6 @@ type OverviewSelection = { kind: 'concept'; item: LearningOverviewItem }
   | { kind: 'relation'; item: RelationOverviewItem };
 
 const DAY_MS = 86_400_000;
-const STATUS_LABELS: Record<MemoryState['status'], string> = {
-  unknown: '尚未评估',
-  recent: '近期重温',
-  revisit: '建议再看',
-  stale: '较久未重温',
-  pending: '待确认',
-  retained: '长期保持（本人确认）',
-};
 
 type Notice = { tone: 'info' | 'success' | 'error'; text: string } | null;
 
@@ -811,12 +806,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
   const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
   const changeGraphLimit = useCallback((value: GraphLimitPreference) => {
-    if (domainBusy || !graphPreferenceKey) return;
+    if (domainBusy || listMode || !graphPreferenceKey) return;
     setGraphPreference({ key: graphPreferenceKey, value });
     if (!writeGraphLimitPreference(graphPreferenceKey, value)) {
       showNotice({ tone: 'info', text: '图谱显示范围已在本页生效；浏览器未允许记住这次选择。' });
     }
-  }, [domainBusy, graphPreferenceKey, showNotice]);
+  }, [domainBusy, listMode, graphPreferenceKey, showNotice]);
   const changeRenderQuality = useCallback((value: GraphRenderQuality) => {
     if (domainBusy || listMode || !renderQualityKey) return;
     setRenderQualityPreference({ key: renderQualityKey, value });
@@ -902,17 +897,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [displaySnapshot, selectedId]);
   const crossDomainNeighbors = useMemo(() => snapshot && selectedId ? getCrossDomainNeighbors(snapshot, selectedId) : [], [selectedId, snapshot]);
 
-  const listedConcepts = useMemo(() => {
-    if (!displaySnapshot) return [];
-    const matches = displaySnapshot.concepts.filter((concept) =>
-      domainIdOf(concept) === domainId || visibleExpandedIds.includes(concept.id));
-    return matches.sort((left, right) => {
-      const leftState = displaySnapshot.states[left.id];
-      const rightState = displaySnapshot.states[right.id];
-      const rank: Record<MemoryState['status'], number> = { stale: 0, revisit: 1, unknown: 2, pending: 3, recent: 4, retained: 5 };
-      return (rank[leftState?.status ?? 'unknown'] - rank[rightState?.status ?? 'unknown']) || left.title.localeCompare(right.title, 'zh-CN');
-    });
-  }, [displaySnapshot, domainId, visibleExpandedIds]);
+  const listedConcepts = useMemo(() => displaySnapshot && domainId
+    ? listDomainConcepts(displaySnapshot, domainId, visibleExpandedIds) : [], [displaySnapshot, domainId, visibleExpandedIds]);
 
   const changeDomain = useCallback((nextDomainId: string, targetId?: string) => {
     if (domainBusy || !snapshot || !domains.some((domain) => domain.id === nextDomainId)) return;
@@ -1920,7 +1906,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       <div className="domain-view-bar">
         <DomainPicker domains={domains} value={domainId ?? ''} onChange={changeDomain} disabled={domainBusy} />
         {graphVisibility ? <GraphDisplayControls preference={graphLimitPreference} serverLimit={displaySnapshot.source.limit}
-          summary={graphVisibility} disabled={domainBusy || !graphPreferenceKey} onChange={changeGraphLimit} /> : null}
+          summary={graphVisibility} disabled={domainBusy || listMode || !graphPreferenceKey} onChange={changeGraphLimit} /> : null}
         {visibleExpandedIds.length > 0 ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={() => {
           setExpandedIds([]);
           if (selectedConcept && domainIdOf(selectedConcept) !== domainId) {
@@ -1963,7 +1949,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
           <div className="concept-list" aria-label="概念列表">
             {listedConcepts.map((concept) => {
               const state = displaySnapshot.states[concept.id] ?? { status: 'unknown' as const };
-              return <button type="button" key={concept.id} className={`concept-row${selectedId === concept.id ? ' is-selected' : ''}`} onClick={() => selectConcept(concept.id)}><span className="row-status" style={{ '--status-color': `var(--memory-${state.status})` } as React.CSSProperties}><span /></span><span className="row-content"><strong>{concept.title}</strong><small>{domainLabel(domainIdOf(concept))}{domainIdOf(concept) !== domainId ? ' · 跨域' : ''}</small></span><span className="row-chevron">›</span></button>;
+              return <button type="button" key={concept.id} className={`concept-row${selectedId === concept.id ? ' is-selected' : ''}`} aria-pressed={selectedId === concept.id} onClick={() => selectConcept(concept.id)}><span className="row-status" style={{ '--status-color': `var(--memory-${state.status})` } as React.CSSProperties}><span /></span><span className="row-content"><strong>{concept.title}</strong><small>{domainLabel(domainIdOf(concept))}{domainIdOf(concept) !== domainId ? ' · 跨域' : ''}</small></span><span className="row-chevron">›</span></button>;
             })}
             {listedConcepts.length === 0 ? <EmptyPanel title={snapshot.concepts.length ? '当前领域暂无概念' : '知识空间还没有概念'} text={snapshot.concepts.length ? '切换知识域，或搜索知识库中的其他概念。' : '请先将知识 Markdown 放入此账号的知识目录，再点击刷新知识源。'} /> : null}
           </div>
@@ -1973,16 +1959,16 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
         <section className="graph-panel">
           <div className="graph-toolbar">
-            <div><span className="eyebrow">空间视图</span><h2>{twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div>
+            <div><span className="eyebrow">{listMode ? '领域概念' : '空间视图'}</span><h2>{listMode ? '概念文字列表' : twoDimensional ? '平面阅读' : '时间图谱'} <span className="live-dot" /></h2></div>
             <div className="graph-tools">
               <GraphQualityControl quality={renderQuality} disabled={domainBusy || listMode || !renderQualityKey} onChange={changeRenderQuality} />
               {selectedId ? <button type="button" className="tool-button" disabled={domainBusy} onClick={clearSelection}>取消选中</button> : null}
-              <button type="button" className={`tool-button${listMode ? ' active' : ''}`} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button>
+              <button type="button" className={`tool-button${listMode ? ' active' : ''}`} aria-pressed={listMode} disabled={domainBusy} onClick={() => setListMode((mode) => !mode)}>{listMode ? '返回图谱' : '文字列表'}</button>
               <button type="button" className={`tool-button${autoRotateEnabled ? ' active' : ''}`} aria-pressed={autoRotateEnabled} disabled={twoDimensional || listMode} title="手动开启后立即旋转；后续操作暂停 2 分钟。系统要求减少动态效果时默认关闭。" onClick={() => {
                 if (!autoRotateEnabled) rotationClock.resume();
                 setAutoRotateEnabled((value) => !value);
               }}>自动旋转</button>
-              <button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button>
+              <button type="button" className={`tool-button${glowEnabled ? ' active' : ''}`} aria-pressed={glowEnabled} disabled={listMode} onClick={() => setGlowEnabled((value) => !value)}>发光效果</button>
               <div className="view-mode-toggle" role="group" aria-label="图谱维度">
                 <button type="button" className={`tool-button${!twoDimensional ? ' active' : ''}`} aria-pressed={!twoDimensional} disabled={listMode} onClick={() => setTwoDimensional(false)}>3D 纵深</button>
                 <button type="button" className={`tool-button${twoDimensional ? ' active' : ''}`} aria-pressed={twoDimensional} disabled={listMode} onClick={() => setTwoDimensional(true)}>2D 阅读</button>
@@ -2000,9 +1986,16 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
               refreshHint={demoEnabled ? '请先点击「查看真实记录」，再刷新知识源。' : simulated ? '请先点击「恢复实时」，再刷新知识源。' : undefined}
               onRefresh={() => void refreshSource()}>
               {/* Separate graph lifetimes prevent preview coordinates or late engine callbacks from reaching the real layout. */}
-              {listMode ? <GraphFallbackList concepts={viewSnapshot.concepts} states={viewSnapshot.states} selectedId={selectedId} onSelect={selectConcept} /> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={learningOverlayOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} renderQuality={renderQuality} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
-              <div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown', ...(!demoEnabled ? ['retained' as const] : [])] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': `var(--memory-${status})` } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
-              <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div>
+              {listMode ? <div className="graph-text-mode">
+                <p className="graph-text-scope" role="status">
+                  {domainId ? domainLabel(domainId) : '当前领域'} · 当前领域全部 {graphVisibility?.domainTotalNodes ?? 0} 个概念
+                  {visibleExpandedIds.length ? ` · 另有 ${visibleExpandedIds.length} 个已展开跨域概念` : ''}
+                  <span>{demoEnabled ? '示例状态 · 非真实记忆' : simulated ? '模拟时间 · 不写入' : '真实记录 · 实时状态'} · 按时间状态排序</span>
+                </p>
+                <GraphFallbackList concepts={listedConcepts} states={displaySnapshot.states} selectedId={selectedId} currentDomainId={domainId} onSelect={selectConcept} />
+              </div> : <GraphView key={`${sourceId}:${domainId}:${demoEnabled ? 'demo' : simulated ? 'forecast' : 'real'}`} snapshot={viewSnapshot} layout={layout} selectedId={selectedId} focusRevision={focusRevision} simulated={demoEnabled || simulated} paused={learningOverlayOpen || readerVisible} twoDimensional={twoDimensional} glowEnabled={glowEnabled} renderQuality={renderQuality} autoRotateEnabled={autoRotateEnabled} rotationPaused={domainBusy} rotationClock={rotationClock} onRotationStatusChange={setRotationStatus} onSelect={selectConcept} onLayoutChange={saveLayout} />}
+              {!listMode ? <><div className="graph-legend"><span className="legend-title">{demoEnabled ? '示例时间颜色' : '记忆时间状态'}</span>{(['recent', 'revisit', 'stale', 'unknown', ...(!demoEnabled ? ['retained' as const] : [])] as const).map((status) => <span className="legend-item" key={status}><i style={{ '--status-color': `var(--memory-${status})` } as React.CSSProperties} />{STATUS_LABELS[status]}</span>)}</div>
+              <div className="graph-hint">{viewSnapshot.links.length} 条可见关系 · {selectedId ? '亮线连接选中概念' : '点击节点或搜索结果以高亮'} · 悬停看关系</div></> : null}
             </GraphSourceContent>
           </div>
           <div className="time-control"><div className="timeline-label"><span className="eyebrow">时间预览</span><strong>{simulated ? `+${simDays} 天` : demoEnabled ? '初始模拟值' : '实时状态'}</strong>{simulated ? <span className="simulation-tag">模拟中 · 不写入</span> : null}</div><input aria-label="模拟时间，单位天" type="range" min="0" max="30" step="1" value={simDays} onChange={(event) => setSimulatedDays(Number(event.target.value))} disabled={Boolean(attempt) || sourceReloadPending} /><div className="range-labels"><span>{demoEnabled ? '模拟起点' : '现在'}</span><span>+7 天</span><span>+14 天</span><span>+30 天</span></div>{simulated ? <button type="button" className="real-time-button" onClick={() => setSimulatedDays(0)}>{demoEnabled ? '回到初始值' : '恢复实时'}</button> : null}</div>

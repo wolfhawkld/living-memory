@@ -179,14 +179,15 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   box-shadow: var(--ui-shadow);
 }
 .simulation-watermark { position: absolute; top: 13px; left: 50%; padding: 6px 10px; transform: translateX(-50%); border: 1px solid var(--ui-warning-border, rgba(244, 189, 112, .3)); border-radius: 99px; background: var(--ui-warning-soft, rgba(61, 45, 26, .7)); color: var(--amber); font-size: 10px; letter-spacing: .08em; }
-.graph-fallback { position: absolute; top: 50%; left: 50%; display: flex; width: 230px; flex-direction: column; align-items: center; gap: 8px; transform: translate(-50%, -50%); color: var(--muted); font-size: 11px; line-height: 1.5; text-align: center; }
+.graph-fallback-panel { position: absolute; inset: 45px 18px 52px; display: flex; min-height: 0; flex-direction: column; }
+.graph-fallback { display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 8px; padding: 0 12px 14px; color: var(--muted); font-size: 11px; line-height: 1.5; text-align: center; }
 .graph-fallback strong { color: var(--text); font-size: 13px; }
 .fallback-icon { color: var(--accent); font-size: 38px; text-shadow: 0 0 20px var(--accent); }
-.graph-fallback-items { position: absolute; inset: 104px 18px 52px; overflow: auto; border-top: 1px solid var(--line); }
-.graph-fallback-items .graph-list-fallback { height: auto; min-height: 100%; padding: 16px 0; }
-.graph-list-fallback { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 9px; height: 100%; overflow-y: auto; padding: 28px; }
-.fallback-node { display: flex; align-items: center; gap: 9px; min-height: 45px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--ui-raised, rgba(16, 29, 48, .68)); color: var(--text); cursor: pointer; text-align: left; }
-.fallback-node:hover, .fallback-node.is-selected { border-color: var(--line-strong); background: var(--ui-selected, rgba(56, 91, 147, .28)); }
+.graph-fallback-items { flex: 1 1 0; min-height: 0; overflow: auto; border-top: 1px solid var(--line); }
+.graph-text-mode { display: flex; height: 100%; min-height: 0; flex-direction: column; }
+.graph-text-scope { flex: 0 0 auto; margin: 0; padding: 16px 22px 12px; border-bottom: 1px solid var(--line); color: var(--text); font-size: 12px; line-height: 1.6; }
+.graph-text-scope span { display: block; color: var(--muted); font-size: 11px; }
+.graph-text-mode .graph-list-fallback { flex: 1 1 0; min-height: 0; }
 .status-dot { display: inline-block; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: currentColor; box-shadow: 0 0 9px currentColor; }
 .graph-legend { position: absolute; bottom: 17px; left: 18px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 13px; max-width: calc(100% - 36px); padding: 8px 10px; border: 1px solid var(--ui-border, rgba(112, 150, 204, .17)); border-radius: 7px; background: var(--ui-raised, rgba(6, 12, 22, .74)); backdrop-filter: blur(10px); font-size: 9px; }
 .legend-title { margin-right: 3px; color: var(--subtle); letter-spacing: .08em; }

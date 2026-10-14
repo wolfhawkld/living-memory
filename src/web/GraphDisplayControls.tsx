@@ -48,15 +48,16 @@ export function GraphDisplayControls({
       </div>
       <p className="graph-display-help" id={GRAPH_LIMIT_HELP_ID}>
         仅调整图谱显示范围，不影响学习或查询。
+        文字列表展示完整当前领域，节点上限只对图谱生效。
       </p>
       <p className="graph-display-summary">
-        当前领域节点：{summary.visiblePrimaryNodes} / {summary.domainTotalNodes}；
+        图谱内当前领域节点：{summary.visiblePrimaryNodes} / {summary.domainTotalNodes}；
         主动展开跨域节点：{summary.visibleCrossDomainNodes}；
         域内关系：{summary.visibleInternalLinks} / {summary.totalInternalLinks}
       </p>
       {summary.hiddenPrimaryNodes > 0 ? (
         <p className="graph-display-truncation" role="status">
-          因节点上限暂未显示：{summary.hiddenPrimaryNodes} 个当前领域节点、{summary.hiddenInternalLinks} 条域内关系。
+          图谱因节点上限暂未显示：{summary.hiddenPrimaryNodes} 个当前领域节点、{summary.hiddenInternalLinks} 条域内关系。
         </p>
       ) : null}
     </div>

@@ -6,6 +6,7 @@ import {
   domainIdOf,
   domainLabel,
   getCrossDomainNeighbors,
+  listDomainConcepts,
   listDomains,
   mergeLayout,
   projectDomainView,
@@ -104,6 +105,73 @@ test('domain choice honors a valid saved choice, initial hint, then Math and fir
   assert.equal(chooseDomain(withoutMath, null), 'Cognition/Biology');
 
   assert.equal(chooseDomain({ ...snapshot, concepts: [] }, null), null);
+});
+
+test('domain concept list includes the complete domain beyond both graph display limits', () => {
+  const concepts = Array.from({ length: 325 }, (_, index) => (
+    concept(`math-${index}`, `Cognition/Math/${index}.md`)
+  ));
+  const snapshot = { ...makeSnapshot(), concepts, states: {} };
+  for (const limit of [20, 300]) {
+    snapshot.source = { ...snapshot.source, limit };
+    assert.equal(projectDomainView(snapshot, 'Cognition/Math').concepts.length, limit);
+    const listed = listDomainConcepts(snapshot, 'Cognition/Math');
+    assert.equal(listed.length, 325);
+    assert.equal(new Set(listed.map((item) => item.id)).size, 325);
+    assert.ok(listed.every((item) => concepts.includes(item)));
+  }
+});
+
+test('domain concept list sorts by memory state, localized title, then stable ID', () => {
+  const snapshot = makeSnapshot();
+  snapshot.concepts = [
+    concept('retained', 'Math/r.md', 'A'),
+    concept('same-z', 'Math/z.md', '相同'),
+    concept('recent', 'Math/c.md', 'A'),
+    concept('stale', 'Math/s.md', 'Z'),
+    concept('unknown-zh', 'Math/u.md', '中'),
+    concept('pending', 'Math/p.md', 'A'),
+    concept('same-a', 'Math/a.md', '相同'),
+    concept('revisit', 'Math/v.md', 'Z'),
+    concept('unknown-a', 'Math/b.md', '阿'),
+  ];
+  snapshot.states = {};
+  const base = makeSnapshot().states['math-a'];
+  for (const status of ['stale', 'revisit', 'pending', 'recent', 'retained'] as const) {
+    snapshot.states[status] = { ...base, conceptId: status, status };
+  }
+  assert.deepEqual(listDomainConcepts(snapshot, 'Math').map((item) => item.id), [
+    'stale', 'revisit', 'unknown-a', 'same-a', 'same-z', 'unknown-zh',
+    'pending', 'recent', 'retained',
+  ]);
+  snapshot.concepts.reverse();
+  assert.deepEqual(listDomainConcepts(snapshot, 'Math').map((item) => item.id), [
+    'stale', 'revisit', 'unknown-a', 'same-a', 'same-z', 'unknown-zh',
+    'pending', 'recent', 'retained',
+  ]);
+});
+
+test('domain concept list normalizes Windows and root paths and only adds explicit expansion IDs', () => {
+  const snapshot = makeSnapshot();
+  snapshot.concepts.push(concept('math-windows', '.\\Cognition\\Math\\windows.md'));
+  const expandedIds = ['model-a', 'missing', 'model-a', 'math-a'];
+  const before = structuredClone(snapshot);
+  const beforeExpanded = [...expandedIds];
+  const listed = listDomainConcepts(snapshot, '.\\Cognition\\Math\\', expandedIds);
+  assert.deepEqual(new Set(listed.map((item) => item.id)), new Set([
+    'math-a', 'math-b', 'math-windows', 'model-a',
+  ]));
+  assert.equal(listed.length, 4);
+  assert.ok(listed.every((item) => snapshot.concepts.includes(item)));
+  assert.deepEqual(listDomainConcepts(snapshot, 'Cognition/Math').map((item) => item.id), [
+    'math-windows', 'math-a', 'math-b',
+  ]);
+  assert.deepEqual(listDomainConcepts(snapshot, '__root__').map((item) => item.id), ['root-a']);
+  assert.deepEqual(listDomainConcepts(snapshot, './').map((item) => item.id), ['root-a']);
+  assert.deepEqual(listDomainConcepts(snapshot, 'missing'), []);
+  assert.deepEqual(listDomainConcepts({ ...snapshot, concepts: [] }, 'Math', ['model-a']), []);
+  assert.deepEqual(snapshot, before);
+  assert.deepEqual(expandedIds, beforeExpanded);
 });
 
 test('domain projection caps primary nodes, keeps a focused node, and expands only linked requests', () => {

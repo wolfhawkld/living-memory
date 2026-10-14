@@ -16,6 +16,7 @@ import { useTheme } from './ThemeProvider';
 import { applyNodeTheme, applySceneTheme, type GraphThemeResources, type NodeVisual } from './graph-theme';
 import { applyGraphPixelRatio, resolveGraphPixelRatio, type GraphRenderQuality } from './graph-render-quality';
 import { createGraphActivityController } from './graph-activity';
+import { GraphFallbackList } from './GraphFallbackList';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -801,53 +802,24 @@ function GraphViewInstance({
       <div
         ref={hostRef}
         className={`graph-canvas${graphError ? ' graph-canvas-hidden' : ''}`}
+        data-node-count={snapshot.concepts.length}
         data-edge-count={edgeCount}
         data-selected-edge-count={selectedEdgeCount}
       />
       {graphError ? (
-        <>
+        <div className="graph-fallback-panel">
           <div className="graph-fallback" role="status">
             <span className="fallback-icon">◎</span>
-            <strong>文字列表模式</strong>
+            <strong>图谱范围文字列表</strong>
             <span>{graphError}</span>
+            <span>切换「文字列表」可查看当前领域全部概念。</span>
           </div>
           <div className="graph-fallback-items">
             <GraphFallbackList concepts={snapshot.concepts} states={snapshot.states} selectedId={selectedId} onSelect={onSelect} />
           </div>
-        </>
+        </div>
       ) : null}
       {simulated ? <div className="simulation-watermark">模拟时间 · 只读</div> : null}
-    </div>
-  );
-}
-
-export function GraphFallbackList({
-  concepts,
-  states,
-  selectedId,
-  onSelect,
-}: {
-  concepts: Concept[];
-  states: Record<string, MemoryState>;
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <div className="graph-list-fallback" aria-label="概念文字列表">
-      {concepts.map((concept) => {
-        const state = states[concept.id];
-        return (
-          <button
-            type="button"
-            className={`fallback-node${selectedId === concept.id ? ' is-selected' : ''}`}
-            key={concept.id}
-            onClick={() => onSelect(concept.id)}
-          >
-            <span className="status-dot" style={{ backgroundColor: `var(--memory-${state?.status ?? 'unknown'})` }} />
-            <span>{concept.title}</span>
-          </button>
-        );
-      })}
     </div>
   );
 }
