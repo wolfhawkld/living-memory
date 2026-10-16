@@ -1,7 +1,13 @@
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { chooseDomain, domainIdOf } from '../../src/core/domain-view';
 import type { ExportData, ObservationRequest, Snapshot } from '../../src/shared/types';
+
+/** Nested help, counters and option text belong to the native label too.
+ * Match its exact title, then resolve the unique control in that label. */
+function field(page: Page, dialog: Locator, title: string, control: 'textarea' | 'select') {
+  return dialog.locator('label').filter({ has: page.getByText(title, { exact: true }) }).locator(control);
+}
 
 async function exported(request: APIRequestContext) {
   const response = await request.get('/api/export');
@@ -52,18 +58,18 @@ async function begin(page: Page, problem: string, answer: string, expectedInitia
   await expect(dialog.getByRole('listbox', { name: '匹配的概念', exact: true })).toHaveCount(0);
   await expect(dialog.locator('.scenario-selected-concept')).toHaveCount(0);
   if (expectedInitialProblem !== undefined) {
-    await expect(dialog.getByLabel('要解决的问题 / 场景', { exact: true })).toHaveValue(expectedInitialProblem);
+    await expect(field(page, dialog, '要解决的问题 / 场景', 'textarea')).toHaveValue(expectedInitialProblem);
     await expect(dialog.locator('.scenario-revisit-note')).toHaveCount(0);
   }
-  await dialog.getByLabel('要解决的问题 / 场景', { exact: true }).fill(problem);
-  await dialog.getByLabel('开始前的信心', { exact: true }).selectOption('75');
+  await field(page, dialog, '要解决的问题 / 场景', 'textarea').fill(problem);
+  await field(page, dialog, '开始前的信心', 'select').selectOption('75');
   await dialog.getByRole('button', { name: '开始先回忆', exact: true }).click();
   await expect(dialog.getByRole('listbox', { name: '匹配的概念', exact: true })).toHaveCount(0);
   await expect(dialog.locator('.scenario-summary')).toHaveCount(0);
-  await dialog.getByLabel('先写下想到的概念和理由', { exact: true }).fill(answer);
+  await field(page, dialog, '先写下想到的概念和理由', 'textarea').fill(answer);
   await dialog.getByRole('button', { name: '提交回答，进入核对', exact: true }).click();
   await expect(dialog.locator('.scenario-answer-echo').filter({ has: page.getByText('你的回答', { exact: true }) }).locator('p')).toHaveText(answer || '（空白回答）');
-  await expect(dialog.getByLabel('先写下想到的概念和理由', { exact: true })).toHaveCount(0);
+  await expect(field(page, dialog, '先写下想到的概念和理由', 'textarea')).toHaveCount(0);
   return dialog;
 }
 
@@ -95,19 +101,19 @@ test('query reflection hides the workspace until the original answer freezes and
   await dialog.getByRole('option').filter({ has: page.getByText(external.title, { exact: true }) }).click();
   await expect(dialog.locator('.scenario-selected-concept')).toContainText(external.title);
   await expect(dialog.locator('.scenario-summary')).toContainText('query-reflection-summary-marker');
-  const cue = dialog.getByLabel('获得概念的线索', { exact: true });
+  const cue = field(page, dialog, '获得概念的线索', 'select');
   await expect(cue.locator('option[value="independent"]')).toBeDisabled();
-  await expect(dialog.getByLabel('提交前是否看过资料', { exact: true })).toHaveValue('unknown');
+  await expect(field(page, dialog, '提交前是否看过资料', 'select')).toHaveValue('unknown');
   await cue.selectOption('lookup');
-  await dialog.getByLabel('这次调用结果', { exact: true }).selectOption('partial');
-  await dialog.getByLabel('判断依据', { exact: true }).selectOption('self-check');
-  await dialog.getByLabel('为什么适用或不适用（可在核对后补充）', { exact: true }).fill('核对后补充的适用条件。');
+  await field(page, dialog, '这次调用结果', 'select').selectOption('partial');
+  await field(page, dialog, '判断依据', 'select').selectOption('self-check');
+  await field(page, dialog, '为什么适用或不适用（可在核对后补充）', 'textarea').fill('核对后补充的适用条件。');
   await lookup.fill(primary.title);
   await dialog.getByRole('option').filter({ has: page.getByText(primary.title, { exact: true }) }).click();
   await expect(cue).toHaveValue('hinted'); // Current domain names were visible before entering.
-  await expect(dialog.getByLabel('这次调用结果', { exact: true })).toHaveValue('unverified');
-  await expect(dialog.getByLabel('判断依据', { exact: true })).toHaveValue('unknown');
-  await expect(dialog.getByLabel('为什么适用或不适用（可在核对后补充）', { exact: true })).toHaveValue('');
+  await expect(field(page, dialog, '这次调用结果', 'select')).toHaveValue('unverified');
+  await expect(field(page, dialog, '判断依据', 'select')).toHaveValue('unknown');
+  await expect(field(page, dialog, '为什么适用或不适用（可在核对后补充）', 'textarea')).toHaveValue('');
   await discard(page);
   expect(writes).toEqual([]);
   expect(await exported(request)).toEqual(before);
@@ -119,7 +125,7 @@ test('blank original answer cannot become independent after looking up a concept
   const dialog = await begin(page, '有一个暂时想不出模型的问题。', '');
   await dialog.getByRole('combobox', { name: '你认为哪个概念适用于这个场景？', exact: true }).fill('query-reflection-alias');
   await dialog.getByRole('option').filter({ has: page.getByText(external.title, { exact: true }) }).click();
-  await expect(dialog.getByLabel('获得概念的线索', { exact: true }).locator('option[value="independent"]')).toBeDisabled();
+  await expect(field(page, dialog, '获得概念的线索', 'select').locator('option[value="independent"]')).toBeDisabled();
   await discard(page);
   expect(await exported(request)).toEqual(before);
 });
@@ -132,10 +138,10 @@ test('voluntary query observation retains the frozen answer without changing mem
   const dialog = await begin(page, problem, originalAnswer);
   await dialog.getByRole('combobox', { name: '你认为哪个概念适用于这个场景？', exact: true }).fill('query-reflection-alias');
   await dialog.getByRole('option').filter({ has: page.getByText(external.title, { exact: true }) }).click();
-  await dialog.getByLabel('获得概念的线索', { exact: true }).selectOption('lookup');
-  await dialog.getByLabel('这次调用结果', { exact: true }).selectOption('partial');
-  await dialog.getByLabel('判断依据', { exact: true }).selectOption('self-check');
-  await dialog.getByLabel('为什么适用或不适用（可在核对后补充）', { exact: true }).fill('核对资料后识别适用条件，此说明不替换原回答。');
+  await field(page, dialog, '获得概念的线索', 'select').selectOption('lookup');
+  await field(page, dialog, '这次调用结果', 'select').selectOption('partial');
+  await field(page, dialog, '判断依据', 'select').selectOption('self-check');
+  await field(page, dialog, '为什么适用或不适用（可在核对后补充）', 'textarea').fill('核对资料后识别适用条件，此说明不替换原回答。');
   const pending = page.waitForRequest(req => req.method() === 'POST' && new URL(req.url()).pathname === '/api/observations');
   await dialog.getByRole('button', { name: '保存这次场景观察', exact: true }).click();
   const payload = (await pending).postDataJSON() as ObservationRequest;
@@ -168,9 +174,9 @@ test('an unexpanded cross-domain relation name is a hint without exposing its so
   const dialog = await begin(page, '需要针对输入和规则选择可解释模型。', '先辨识业务约束，再确定建模工具。');
   await dialog.getByRole('combobox', { name: '你认为哪个概念适用于这个场景？', exact: true }).fill('query-reflection-alias');
   await dialog.getByRole('option').filter({ has: page.getByText(external.title, { exact: true }) }).click();
-  await expect(dialog.getByLabel('获得概念的线索', { exact: true })).toHaveValue('hinted');
-  await expect(dialog.getByLabel('获得概念的线索', { exact: true }).locator('option[value="independent"]')).toBeDisabled();
-  await expect(dialog.getByLabel('提交前是否看过资料', { exact: true })).toHaveValue('unknown');
+  await expect(field(page, dialog, '获得概念的线索', 'select')).toHaveValue('hinted');
+  await expect(field(page, dialog, '获得概念的线索', 'select').locator('option[value="independent"]')).toBeDisabled();
+  await expect(field(page, dialog, '提交前是否看过资料', 'select')).toHaveValue('unknown');
   await discard(page);
   expect(await exported(request)).toEqual(before);
 });
