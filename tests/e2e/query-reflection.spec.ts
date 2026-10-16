@@ -114,7 +114,8 @@ test('query reflection hides the workspace until the original answer freezes and
   await expect(dialog.locator('.scenario-selected-concept')).toContainText(external.title);
   await expect(dialog.locator('.scenario-summary')).toContainText('query-reflection-summary-marker');
   const cue = field(page, dialog, '获得概念的线索', 'select');
-  await expect(cue.locator('option[value="independent"]')).toBeDisabled();
+  // toBeDisabled follows the enclosing label to its select; inspect the option itself.
+  await expect(cue.locator('option[value="independent"]')).toHaveJSProperty('disabled', true);
   await expect(field(page, dialog, '提交前是否看过资料', 'select')).toHaveValue('unknown');
   await cue.selectOption('lookup');
   await field(page, dialog, '这次调用结果', 'select').selectOption('partial');
@@ -137,7 +138,7 @@ test('blank original answer cannot become independent after looking up a concept
   const dialog = await begin(page, '有一个暂时想不出模型的问题。', '');
   await dialog.getByRole('combobox', { name: '你认为哪个概念适用于这个场景？', exact: true }).fill('query-reflection-alias');
   await chooseCandidate(dialog, external);
-  await expect(field(page, dialog, '获得概念的线索', 'select').locator('option[value="independent"]')).toBeDisabled();
+  await expect(field(page, dialog, '获得概念的线索', 'select').locator('option[value="independent"]')).toHaveJSProperty('disabled', true);
   await discard(page);
   expect(await exported(request)).toEqual(before);
 });
@@ -187,7 +188,7 @@ test('an unexpanded cross-domain relation name is a hint without exposing its so
   await dialog.getByRole('combobox', { name: '你认为哪个概念适用于这个场景？', exact: true }).fill('query-reflection-alias');
   await chooseCandidate(dialog, external);
   await expect(field(page, dialog, '获得概念的线索', 'select')).toHaveValue('hinted');
-  await expect(field(page, dialog, '获得概念的线索', 'select').locator('option[value="independent"]')).toBeDisabled();
+  await expect(field(page, dialog, '获得概念的线索', 'select').locator('option[value="independent"]')).toHaveJSProperty('disabled', true);
   await expect(field(page, dialog, '提交前是否看过资料', 'select')).toHaveValue('unknown');
   await discard(page);
   expect(await exported(request)).toEqual(before);
