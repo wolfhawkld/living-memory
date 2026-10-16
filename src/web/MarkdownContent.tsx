@@ -1,17 +1,23 @@
-import { useId, useMemo, type AnchorHTMLAttributes, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, type AnchorHTMLAttributes, type ReactElement, type ReactNode } from 'react';
 import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { decodeString } from 'micromark-util-decode-string';
 import { MarkdownImage } from './MarkdownImage';
 import { isImageReference, markdownImageUrl, type MarkdownMediaSource } from './markdown-media';
 import { MermaidDiagram } from './MermaidDiagram';
 import { normalizeDisplayMath } from './markdown-math';
+import { remarkKnowledgeHeadingIds, scanWikiReferences, type KnowledgeReference } from '../shared/knowledge-references';
 
 export interface MarkdownContentProps {
   content: string;
   compact?: boolean;
   source?: MarkdownMediaSource;
+  references?: readonly KnowledgeReference[];
+  onNavigateReference?: (reference: KnowledgeReference) => void;
+  onNavigateSection?: (sectionId: string) => void;
+  onRendered?: () => void;
 }
 
 type MarkdownNode = {
@@ -20,6 +26,7 @@ type MarkdownNode = {
   url?: string;
   alt?: string;
   children?: MarkdownNode[];
+  position?: { start: { offset?: number }; end: { offset?: number } };
   data?: {
     hProperties?: Record<string, unknown>;
   };
@@ -48,8 +55,7 @@ type MarkdownPreProps = ExtraProps & {
   children?: ReactNode;
 };
 
-const WIKI_LINK_PATTERN = /(!?)\[\[([^\]\n|]+?)(?:\|([^\]\n]*?))?\]\]/g;
-const WIKI_SKIP_NODES = new Set(['code', 'inlineCode', 'math', 'inlineMath', 'html', 'link']);
+const WIKI_SKIP_NODES = new Set(['code', 'inlineCode', 'math', 'inlineMath', 'html', 'link', 'linkReference', 'definition']);
 const ID_REFERENCE_PROPERTIES = new Set([
   'ariaDescribedBy',
   'aria-describedby',
@@ -60,75 +66,71 @@ const ID_REFERENCE_PROPERTIES = new Set([
   'for',
 ]);
 
-function splitWikiLinks(value: string): MarkdownNode[] | null {
-  WIKI_LINK_PATTERN.lastIndex = 0;
-  const nodes: MarkdownNode[] = [];
-  let lastIndex = 0;
-  let matched = false;
-  let match: RegExpExecArray | null;
+function decodedText(value: string): string {
+  return decodeString(value);
+}
 
-  while ((match = WIKI_LINK_PATTERN.exec(value))) {
-    matched = true;
-    if (match.index > lastIndex) {
-      nodes.push({ type: 'text', value: value.slice(lastIndex, match.index) });
-    }
-    const target = match[2].trim();
-    const label = match[3]?.trim() || target;
-    if (match[1] && isImageReference(target)) {
-      const size = match[3]?.trim().match(/^(\d{1,4})(?:x(\d{1,4}))?$/);
+function splitWikiLinks(node: MarkdownNode, content: string): MarkdownNode[] | null {
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (typeof node.value !== 'string' || start === undefined || end === undefined) return null;
+  const raw = content.slice(start, end);
+  // Text positions use the normalized Markdown source. Never guess after an
+  // unfamiliar parser transform: an unbound, readable wiki token is safer.
+  if (decodedText(raw) !== node.value) return null;
+  const matches = scanWikiReferences(raw);
+  if (!matches.length) return null;
+  const nodes: MarkdownNode[] = [];
+  let previous = 0;
+  for (const match of matches) {
+    const offset = decodedText(raw.slice(0, match.index)).length;
+    const finish = decodedText(raw.slice(0, match.index + match.length)).length;
+    if (offset < previous) return null;
+    if (offset > previous) nodes.push({ type: 'text', value: node.value.slice(previous, offset) });
+    const target = match.target;
+    const label = decodedText(match.label);
+    if (match.embedded && isImageReference(target)) {
+      const size = match.label.trim().match(/^(\d{1,4})(?:x(\d{1,4}))?$/);
       const width = size && Number(size[1]) > 0 && Number(size[1]) <= 5000 ? Number(size[1]) : undefined;
       const height = width && size?.[2] && Number(size[2]) > 0 && Number(size[2]) <= 5000 ? Number(size[2]) : undefined;
       nodes.push({ type: 'image', url: target, alt: size ? target.split('/').at(-1) ?? target : label,
         data: { hProperties: { 'data-wiki-target': target, ...(width ? { width } : {}), ...(height ? { height } : {}) } } });
-    } else nodes.push({ type: 'text', value: label });
-    lastIndex = match.index + match[0].length;
+    } else if (match.embedded) nodes.push({ type: 'text', value: label });
+    else nodes.push({ type: 'link', url: '#', children: [{ type: 'text', value: label }], data: { hProperties: {
+      'data-wiki-reference': true, 'data-reference-syntax': 'wiki', 'data-reference-offset': start + match.index,
+    } } });
+    previous = finish;
   }
-
-  if (!matched) return null;
-  if (lastIndex < value.length) {
-    nodes.push({ type: 'text', value: value.slice(lastIndex) });
-  }
+  if (previous < node.value.length) nodes.push({ type: 'text', value: node.value.slice(previous) });
   return nodes;
 }
 
-function rewriteWikiLinks(node: MarkdownNode): void {
-  if (WIKI_SKIP_NODES.has(node.type)) return;
-
-  if (node.type === 'text' && typeof node.value === 'string') return;
-
-  if (!node.children) return;
-
+function rewriteWikiLinks(node: MarkdownNode, content: string): void {
+  if (node.type === 'heading' && typeof node.data?.hProperties?.id === 'string') {
+    node.data.hProperties['data-knowledge-section'] = node.data.hProperties.id;
+  }
+  if (node.type === 'link' || node.type === 'linkReference') {
+    const offset = node.position?.start.offset;
+    if (offset !== undefined) {
+      node.data ??= {};
+      node.data.hProperties ??= {};
+      Object.assign(node.data.hProperties, { 'data-reference-syntax': 'markdown', 'data-reference-offset': offset });
+    }
+  }
+  if (WIKI_SKIP_NODES.has(node.type) || !node.children) return;
   const nextChildren: MarkdownNode[] = [];
   for (const child of node.children) {
-    if (WIKI_SKIP_NODES.has(child.type)) {
-      nextChildren.push(child);
-      continue;
-    }
-    if (child.type === 'text' && typeof child.value === 'string') {
-      nextChildren.push(...(splitWikiLinks(child.value) ?? [child]));
-      continue;
-    }
-    rewriteWikiLinks(child);
-    nextChildren.push(child);
+    if (child.type === 'text') nextChildren.push(...(splitWikiLinks(child, content) ?? [child]));
+    else { rewriteWikiLinks(child, content); nextChildren.push(child); }
   }
   node.children = nextChildren;
 }
 
-/**
- * Turn Obsidian links into readable labels and image embeds into media nodes. This
- * runs on mdast text nodes, so code spans/fences and math nodes are untouched.
- */
+/** Preserve original source coordinates and escapes when rendering wiki links. */
 function remarkWikiLinks() {
-  return (tree: unknown) => {
-    if (tree && typeof tree === 'object') {
-      rewriteWikiLinks(tree as MarkdownNode);
-    }
+  return (tree: unknown, file: { value?: unknown }) => {
+    if (tree && typeof tree === 'object' && typeof file.value === 'string') rewriteWikiLinks(tree as MarkdownNode, file.value);
   };
-}
-
-function markdownNodeText(node: MarkdownNode): string {
-  if (typeof node.value === 'string') return node.value;
-  return node.children?.map(markdownNodeText).join('') ?? '';
 }
 
 function safeUrlTransform(url: string): string {
@@ -154,37 +156,6 @@ function isExternalUrl(url: string): boolean {
   return /^(?:https?:|mailto:)/i.test(url);
 }
 
-function headingSlug(value: string): string {
-  return value
-    .normalize('NFKC')
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[^\p{L}\p{N}\s_-]+/gu, '')
-    .replace(/[\s_-]+/g, '-');
-}
-
-/** Assign heading ids before React renders so StrictMode cannot mutate identity. */
-function remarkHeadingIds() {
-  return (tree: unknown) => {
-    const usedIds = new Map<string, number>();
-    const visit = (node: MarkdownNode): void => {
-      if (node.type === 'heading') {
-        const base = headingSlug(markdownNodeText(node));
-        if (base) {
-          const count = usedIds.get(base) ?? 0;
-          usedIds.set(base, count + 1);
-          const id = count === 0 ? base : `${base}-${count + 1}`;
-          node.data ??= {};
-          node.data.hProperties ??= {};
-          node.data.hProperties.id = id;
-        }
-      }
-      node.children?.forEach(visit);
-    };
-    if (tree && typeof tree === 'object') visit(tree as MarkdownNode);
-  };
-}
-
 function scopeId(prefix: string, value: string): string {
   return `${prefix}-${value}`;
 }
@@ -204,14 +175,24 @@ function scopeIdReferences(prefix: string, value: unknown): unknown {
 /** Scope every generated id and local fragment in one Markdown instance. */
 function createScopeIdsPlugin(prefix: string) {
   return () => (tree: unknown) => {
+    const sectionIds = new Set<string>();
+    const collect = (node: HastNode): void => {
+      const logicalId = node.properties?.['data-knowledge-section'];
+      if (typeof logicalId === 'string') sectionIds.add(logicalId);
+      node.children?.forEach(collect);
+    };
+    if (tree && typeof tree === 'object') collect(tree as HastNode);
     const visit = (node: HastNode): void => {
       if (node.type === 'element' && node.properties) {
         const properties = node.properties;
         if (typeof properties.id === 'string' && properties.id) {
-          properties.id = scopeId(prefix, properties.id);
+          properties.id = scopeId(prefix, typeof properties['data-knowledge-section'] === 'string' ? `section-${properties.id}` : properties.id);
         }
         if (typeof properties.href === 'string' && properties.href.startsWith('#') && properties.href.length > 1) {
-          properties.href = `#${scopeId(prefix, properties.href.slice(1))}`;
+          const target = safelyDecodeTarget(properties.href.slice(1));
+          const footnote = ['dataFootnoteRef', 'dataFootnoteBackref', 'data-footnote-ref', 'data-footnote-backref']
+            .some((key) => properties[key] !== undefined);
+          properties.href = `#${scopeId(prefix, !footnote && sectionIds.has(target) ? `section-${target}` : target)}`;
         }
         for (const property of ID_REFERENCE_PROPERTIES) {
           if (properties[property]) properties[property] = scopeIdReferences(prefix, properties[property]);
@@ -283,9 +264,26 @@ function MarkdownPre({ children, node }: MarkdownPreProps): ReactElement {
   return <pre className="markdown-content-pre">{children}</pre>;
 }
 
-function createMarkdownComponents(source?: MarkdownMediaSource): Components {
+function createMarkdownComponents(source: MarkdownMediaSource | undefined, references: readonly KnowledgeReference[] | undefined,
+  onNavigateReference: MarkdownContentProps['onNavigateReference'], onNavigateSection: MarkdownContentProps['onNavigateSection']): Components {
   return {
-    a: MarkdownLink,
+    a: ({ node, ...props }) => {
+      const wikiTarget = node?.properties['data-wiki-reference'];
+      const syntax = node?.properties['data-reference-syntax'];
+      const offset = node?.properties['data-reference-offset'];
+      const reference = references?.find((entry) => entry.syntax === syntax && entry.bodyRange.startOffset === Number(offset));
+      if (reference && onNavigateReference) return <button type="button" className="markdown-reference-link" data-reference-id={reference.referenceId}
+        onClick={() => onNavigateReference(reference)}>{props.children}</button>;
+      if (wikiTarget) return <span className="markdown-content-link-placeholder" title="此引用暂不可用">{props.children}<span>（引用暂不可用）</span></span>;
+      const footnote = ['dataFootnoteRef', 'dataFootnoteBackref', 'data-footnote-ref', 'data-footnote-backref']
+        .some((key) => node?.properties[key] !== undefined);
+      if (props.href?.startsWith('#') && onNavigateSection && !footnote) return <button type="button" className="markdown-reference-link"
+        onClick={() => onNavigateSection(safelyDecodeTarget(props.href!.slice(1)))}>{props.children}</button>;
+      const safeProps = { ...props };
+      delete (safeProps as Record<string, unknown>)['data-reference-syntax'];
+      delete (safeProps as Record<string, unknown>)['data-reference-offset'];
+      return <MarkdownLink {...safeProps} />;
+    },
     code: MarkdownCode,
     img: ({ node, ...props }) => {
       // Keep wiki targets literal: mdast encodes image URLs, but Obsidian filenames
@@ -301,10 +299,16 @@ function createMarkdownComponents(source?: MarkdownMediaSource): Components {
   };
 }
 
-export function MarkdownContent({ content, compact = false, source }: MarkdownContentProps): ReactElement {
+function safelyDecodeTarget(value: string): string {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
+export function MarkdownContent({ content, compact = false, source, references, onNavigateReference, onNavigateSection, onRendered }: MarkdownContentProps): ReactElement {
   const instanceId = useId();
   const scopePrefix = `markdown-${instanceId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
-  const components = useMemo(() => createMarkdownComponents(source), [source?.sourceId, source?.conceptId, source?.sourceRevision]);
+  const components = useMemo(() => createMarkdownComponents(source, references, onNavigateReference, onNavigateSection ? (id) => onNavigateSection(id.startsWith(`${scopePrefix}-section-`) ? id.slice(scopePrefix.length + 9) : id.startsWith(`${scopePrefix}-`) ? id.slice(scopePrefix.length + 1) : id) : undefined), [source?.sourceId, source?.conceptId, source?.sourceRevision, references, onNavigateReference, onNavigateSection, scopePrefix]);
+
+  useEffect(() => { onRendered?.(); }, [content, onRendered]);
 
   return (
     <div className={`markdown-content${compact ? ' markdown-content-compact' : ''}`}>
@@ -312,7 +316,7 @@ export function MarkdownContent({ content, compact = false, source }: MarkdownCo
         allowElement={(element) => element.tagName !== 'script' && element.tagName !== 'style'}
         components={components}
         remarkRehypeOptions={{ allowDangerousHtml: false }}
-        remarkPlugins={[remarkGfm, remarkMath, remarkWikiLinks, remarkHeadingIds]}
+        remarkPlugins={[remarkGfm, remarkMath, remarkKnowledgeHeadingIds, remarkWikiLinks]}
         rehypePlugins={[[rehypeKatex, {
           errorColor: 'var(--ui-warning, #f4bd70)',
           strict: 'ignore',

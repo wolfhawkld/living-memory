@@ -1,17 +1,102 @@
-import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import type { Concept } from '../shared/types';
 import { MarkdownView } from './MarkdownView';
-import { relativeSource, type ReaderSection } from './concept-reader-state';
+import { referencesMatchConcept, relativeSource, sectionNavigationMessage, type ReaderSection } from './concept-reader-state';
+import type { KnowledgeReference, KnowledgeReferences } from '../shared/knowledge-references';
 
-export function ConceptReader({ concept, sourceId, initialSection, onClose }: {
+export interface ConceptReaderProps {
   concept: Concept; sourceId: string; initialSection: ReaderSection; onClose: () => void;
-}) {
+  loadReferences?: (concept: Concept, signal?: AbortSignal) => Promise<KnowledgeReferences>;
+  onNavigateReference?: (reference: KnowledgeReference) => void | Promise<void>;
+  initialSectionId?: string;
+}
+export function ConceptReader({ concept, sourceId, initialSection, onClose, loadReferences, onNavigateReference,
+  initialSectionId }: ConceptReaderProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const backdropDown = useRef(false);
   const titleId = useId();
   const [section, setSection] = useState(initialSection);
   const [fontSize, setFontSize] = useState(17);
+  const identity = JSON.stringify([sourceId, concept.id, concept.source.revision]);
+  const [referenceState, setReferenceState] = useState<{ identity: string; data: KnowledgeReferences | null; failed: boolean } | null>(null);
+  const [currentSection, setCurrentSection] = useState<string | null>(null);
+  const [navigationMessage, setNavigationMessage] = useState('');
+  const [renderedBody, setRenderedBody] = useState<{ identity: string; section: ReaderSection; version: number } | null>(null);
+  const renderVersion = renderedBody?.identity === identity && renderedBody.section === section ? renderedBody.version : 0;
+  const initialLocated = useRef<string | null>(null);
+  const navigationEpoch = useRef(0);
+  const navigationPending = useRef(false);
+  const references = referenceState?.identity === identity && referencesMatchConcept(referenceState.data, concept) ? referenceState.data : null;
+  const rendered = useCallback(() => setRenderedBody((value) => ({ identity, section, version: (value?.version ?? 0) + 1 })), [identity, section]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    navigationEpoch.current += 1;
+    navigationPending.current = false;
+    let active = true;
+    setReferenceState(null);
+    setCurrentSection(null);
+    setNavigationMessage('');
+    setSection(initialSectionId ? 'body' : initialSection);
+    initialLocated.current = null;
+    if (loadReferences) void Promise.resolve().then(() => {
+      if (controller.signal.aborted) return null;
+      return loadReferences(concept, controller.signal);
+    }).then((data) => {
+      if (!active || controller.signal.aborted || !data) return;
+      setReferenceState({ identity, data: referencesMatchConcept(data, concept) ? data : null, failed: !referencesMatchConcept(data, concept) });
+    }).catch(() => { if (active && !controller.signal.aborted) setReferenceState({ identity, data: null, failed: true }); });
+    return () => { active = false; controller.abort(); navigationEpoch.current += 1; };
+  }, [identity, loadReferences, initialSection, initialSectionId]);
+
+  const locateSection = useCallback((sectionId: string): boolean => {
+    if (section !== 'body' || !references?.sections.some((entry) => entry.sectionId === sectionId)) {
+      setNavigationMessage(sectionNavigationMessage('missing-section'));
+      return false;
+    }
+    const target = [...(bodyRef.current?.querySelectorAll<HTMLElement>('[data-knowledge-section]') ?? [])]
+      .find((element) => element.dataset.knowledgeSection === sectionId);
+    if (!target) { setNavigationMessage(sectionNavigationMessage('missing-section')); return false; }
+    target.scrollIntoView({ block: 'start', behavior: 'auto' });
+    setCurrentSection(sectionId);
+    setNavigationMessage('');
+    return true;
+  }, [section, references]);
+
+  useEffect(() => {
+    if (section === 'body' && initialSectionId && renderVersion && references && initialLocated.current !== identity + initialSectionId) {
+      initialLocated.current = identity + initialSectionId;
+      locateSection(initialSectionId);
+    }
+  }, [identity, initialSectionId, references, renderVersion, locateSection, section]);
+
+  const navigateReference = async (reference: KnowledgeReference) => {
+    if (navigationPending.current) return;
+    if (!references || reference.sourceConceptId !== concept.id || reference.sourceRevision !== concept.source.revision) {
+      setNavigationMessage(sectionNavigationMessage('missing-section')); return;
+    }
+    if (reference.status !== 'resolved-document' && reference.status !== 'resolved-section') {
+      setNavigationMessage(sectionNavigationMessage(reference.status)); return;
+    }
+    if (reference.targetConceptId === concept.id && reference.targetRevision === concept.source.revision) {
+      if (reference.sectionId) locateSection(reference.sectionId);
+      else { bodyRef.current?.scrollTo({ top: 0 }); setCurrentSection(null); setNavigationMessage(''); }
+    } else if (onNavigateReference) {
+      const epoch = navigationEpoch.current;
+      navigationPending.current = true;
+      setNavigationMessage('正在打开引用资料…');
+      try {
+        await onNavigateReference(reference);
+        if (epoch === navigationEpoch.current) setNavigationMessage('');
+      } catch (error) {
+        if (epoch === navigationEpoch.current) setNavigationMessage(error instanceof Error
+          ? error.message : '引用资料暂时无法打开，可以继续阅读当前全文。');
+      } finally {
+        if (epoch === navigationEpoch.current) navigationPending.current = false;
+      }
+    } else setNavigationMessage('引用导航暂不可用，可以继续阅读当前全文。');
+  };
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -29,6 +114,8 @@ export function ConceptReader({ concept, sourceId, initialSection, onClose }: {
 
   const switchSection = (next: ReaderSection) => {
     setSection(next);
+    setCurrentSection(null);
+    setNavigationMessage('');
     bodyRef.current?.scrollTo({ top: 0 });
   };
 
@@ -57,10 +144,38 @@ export function ConceptReader({ concept, sourceId, initialSection, onClose }: {
         <button type="button" aria-label="增大字号" disabled={fontSize >= 25} onClick={() => setFontSize((size) => Math.min(25, size + 2))}>A＋</button>
       </div>
     </div>
-    <div ref={bodyRef} className="reader-scroll" tabIndex={0} role="region" aria-label={section === 'body' ? '完整资料正文' : '核心摘要正文'}
+    <div className="reader-location" aria-live="polite">
+      <span>{section === 'summary' ? '核心摘要' : `当前章节：${references?.sections.find((entry) => entry.sectionId === currentSection)?.title ?? '全文'}`}</span>
+      <span>来源版本：{concept.source.revision.slice(0, 12)}</span>
+    </div>
+    {referenceState?.identity === identity && referenceState.failed && <p className="reader-navigation-notice" role="status">章节与引用暂不可用，正文仍可阅读。</p>}
+    {initialSectionId && !loadReferences && <p className="reader-navigation-notice" role="status">章节定位暂不可用，已显示全文。</p>}
+    {navigationMessage && <p className="reader-navigation-notice" role="status">{navigationMessage}</p>}
+    <div className="reader-content-layout">
+    {section === 'body' && references && references.sections.length > 0 && <nav className="reader-toc" aria-label="资料目录">
+      <span className="eyebrow">目录</span>
+      {references.sections.map((entry) => <button type="button" key={entry.sectionId}
+        style={{ paddingInlineStart: `${10 + (entry.level - 1) * 10}px` }} aria-current={entry.sectionId === currentSection ? 'location' : undefined}
+        onClick={() => locateSection(entry.sectionId)}>{entry.title}</button>)}
+    </nav>}
+    <div ref={bodyRef} className="reader-scroll" onScroll={() => {
+      const container = bodyRef.current;
+      if (!container || section !== 'body' || !references) return;
+      const top = container.getBoundingClientRect().top;
+      let visible: string | null = null;
+      for (const heading of container.querySelectorAll<HTMLElement>('[data-knowledge-section]')) {
+        if (heading.getBoundingClientRect().top <= top + 80) visible = heading.dataset.knowledgeSection ?? null;
+        else break;
+      }
+      setCurrentSection(visible);
+    }} tabIndex={0} role="region" aria-label={section === 'body' ? '完整资料正文' : '核心摘要正文'}
       style={{ '--reader-font-size': `${fontSize}px` } as CSSProperties}>
-      <MarkdownView key={section} content={section === 'body' ? concept.body || '此概念暂无正文。' : concept.summary || '此概念暂无摘要。'}
-        source={{ sourceId, conceptId: concept.id, sourceRevision: concept.source.revision }} />
+      <MarkdownView key={`${identity}:${section}`} content={section === 'body' ? concept.body || '此概念暂无正文。' : concept.summary || '此概念暂无摘要。'}
+        source={{ sourceId, conceptId: concept.id, sourceRevision: concept.source.revision }}
+        references={section === 'body' ? references?.references : undefined}
+        onNavigateReference={section === 'body' ? navigateReference : undefined}
+        onNavigateSection={section === 'body' ? locateSection : undefined} onRendered={rendered} />
+    </div>
     </div>
     <footer className="reader-footer"><span>阅读不会自动确认重温</span><span>Esc 关闭</span></footer>
   </dialog>;

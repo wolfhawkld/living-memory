@@ -94,6 +94,7 @@ import { RetentionConfirmation } from './RetentionConfirmation';
 import { useConceptHistory } from './useConceptHistory';
 import { parseSourceExposure, sourceExposureKey, SOURCE_EXPOSURE_STORAGE_KEY } from './source-exposure';
 import { ConceptReader } from './ConceptReader';
+import type { KnowledgeReference } from '../shared/knowledge-references';
 import { MarkdownView } from './MarkdownView';
 import { canShowConceptReader, relativeSource, type ReaderRequest, type ReaderSection } from './concept-reader-state';
 import { createIdleRotationClock, trackRotationActivity, type RotationStatus } from './graph-rotation';
@@ -271,6 +272,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const [pendingWrites, setPendingWrites] = useState<PendingWrite[]>([]);
   const [sourceViewedKeys, setSourceViewedKeys] = useState<string[]>([]);
   const [readerRequest, setReaderRequest] = useState<ReaderRequest | null>(null);
+  const [referenceReaders, setReferenceReaders] = useState<Array<{ sourceId: string; concept: Concept; sectionId?: string }>>([]);
+  const referenceNavigationRef = useRef(0);
   const [attempt, setAttempt] = useState<RecallAttempt | null>(null);
   const [briefBudget, setBriefBudget] = useState<3 | 5>(3);
   const [briefSession, setBriefSession] = useState<BriefReviewSession | null>(null);
@@ -865,6 +868,21 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     : briefItem && briefReviewConfirmationSuperseded(reviewEventRef.current, snapshot?.states[briefItem.conceptId]?.anchor)
       ? '已有更新的重温记录，本轮的旧确认无需再次提交。' : null;
   const readerVisible = canShowConceptReader(readerRequest, sourceId, selectedConcept, attempt?.stage ?? null, sourceReloadPending);
+  const referenceReaderOriginRef = useRef(false);
+  referenceReaderOriginRef.current = readerVisible || Boolean(scenarioOpen && scenarioReader);
+  const referenceReader = referenceReaders.at(-1);
+  const visibleReferenceReader = referenceReader?.sourceId === sourceId && !sourceReloadPending
+    && referenceReaderOriginRef.current ? referenceReader : null;
+  useEffect(() => {
+    referenceNavigationRef.current += 1;
+    setReferenceReaders([]);
+  }, [sourceId]);
+  useEffect(() => {
+    if (!referenceReaderOriginRef.current || sourceReloadPending) {
+      referenceNavigationRef.current += 1;
+      setReferenceReaders((current) => current.length ? [] : current);
+    }
+  }, [readerVisible, scenarioOpen, scenarioReader, sourceReloadPending]);
   useEffect(() => {
     if (readerRequest && !readerVisible) setReaderRequest(null);
   }, [readerRequest, readerVisible]);
@@ -962,7 +980,35 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     markSourceViewed(selectedConcept.id);
     setReaderRequest({ sourceId, conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision, section });
   }, [selectedConcept, sourceId, sourceReloadPending, attempt?.stage, markSourceViewed]);
-  const closeReader = useCallback(() => setReaderRequest(null), []);
+  const closeReader = useCallback(() => {
+    referenceNavigationRef.current += 1;
+    setReferenceReaders([]);
+    setReaderRequest(null);
+  }, []);
+  const loadReaderReferences = useCallback((concept: Concept, signal?: AbortSignal) =>
+    api.getKnowledgeReferences(concept.id, concept.source.revision, sourceId, signal), [sourceId]);
+  const navigateReaderReference = useCallback(async (reference: KnowledgeReference) => {
+    if (sourceReloadPending || !sourceId || !referenceReaderOriginRef.current) throw new Error('当前阅读来源已变化，请关闭窗口后重新打开。');
+    if (!['resolved-document', 'resolved-section'].includes(reference.status) || !reference.targetConceptId || !reference.targetRevision) {
+      throw new Error('该引用尚未定位，当前资料仍可阅读。');
+    }
+    if (referenceReaders.length >= 20) throw new Error('已连续打开多份引用，请先返回上层资料。');
+    const ticket = ++referenceNavigationRef.current;
+    const sourceAtStart = sourceId;
+    const latest = await api.getSnapshot(undefined, sourceAtStart, 'all');
+    if (ticket !== referenceNavigationRef.current || sourceIdRef.current !== sourceAtStart || !referenceReaderOriginRef.current) return;
+    const origin = latest.concepts.find((item) => item.id === reference.sourceConceptId);
+    const target = latest.concepts.find((item) => item.id === reference.targetConceptId);
+    if (!origin || origin.source.revision !== reference.sourceRevision) throw new Error('原引用的资料版本已变化，请重新加载后核对。');
+    if (!target || target.source.revision !== reference.targetRevision) throw new Error('引用目标已变化或移除，请重新加载后核对章节。');
+    // A conservative source-hint marker, independent of later presentation facts.
+    markConceptSourceViewed(target);
+    setReferenceReaders((current) => [...current, { sourceId: sourceAtStart, concept: target, sectionId: reference.sectionId }]);
+  }, [markConceptSourceViewed, referenceReaders.length, sourceId, sourceReloadPending]);
+  const closeReferenceReader = useCallback(() => {
+    referenceNavigationRef.current += 1;
+    setReferenceReaders((current) => current.slice(0, -1));
+  }, []);
 
   const selectConcept = useCallback((conceptId: string) => {
     if (briefSession || applicationDraft || overviewOpen || briefActionRef.current) return;
@@ -2141,13 +2187,15 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       {scenarioOpen ? <ScenarioPractice key={sourceId} snapshot={snapshot} sourceId={sourceId} busy={busyAction === 'scenario'}
         variant={queryReflection ? 'query' : 'scenario'} initialScenario={queryReflection?.query ?? ''}
         nameHintedConceptIds={queryReflection?.nameHintedConceptIds}
-        onClose={() => { setScenarioOpen(false); setQueryReflection(null); setScenarioReader(null); }} onSave={saveScenarioObservation}
+        onClose={() => { referenceNavigationRef.current += 1; setReferenceReaders([]); setScenarioOpen(false); setQueryReflection(null); setScenarioReader(null); }} onSave={saveScenarioObservation}
         onLoadPrompts={queryReflection ? undefined : (options) => api.getScenarioPrompts(sourceId, options)}
         onContinueApplication={continueScenarioApplication}
         wasSourceViewed={(concept) => sourceViewedKeys.includes(sourceExposureKey(sourceId, concept))}
         onSourceExposed={(concept) => markSourceViewed(concept.id)}
         onReadSource={(concept) => { markSourceViewed(concept.id); setScenarioReader(concept); }} /> : null}
-      {scenarioOpen && scenarioReader ? <ConceptReader key={`scenario:${sourceId}:${scenarioReader.id}`} concept={scenarioReader} sourceId={sourceId} initialSection="body" onClose={() => setScenarioReader(null)} /> : null}
+      {scenarioOpen && scenarioReader && !visibleReferenceReader ? <ConceptReader key={`scenario:${sourceId}:${scenarioReader.id}`} concept={scenarioReader} sourceId={sourceId} initialSection="body"
+        loadReferences={loadReaderReferences} onNavigateReference={navigateReaderReference}
+        onClose={() => { referenceNavigationRef.current += 1; setReferenceReaders([]); setScenarioReader(null); }} /> : null}
       {practiceOpen ? <PracticeCardsDialog key={sourceId} sourceId={sourceId} concepts={snapshot.concepts}
         initialConceptId={selectedId ?? undefined} lockedReason={sourceReloadPending ? '知识空间已变化，请保留当前输入后重新连接。'
           : writeLocked || !hasSession ? '当前无法写入真实学习记录。' : null}
@@ -2156,7 +2204,11 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         onSourceExposed={markConceptSourceViewed} /> : null}
       {retentionConfirmation ? <RetentionConfirmation active={retentionConfirmation.active} busy={busyAction === 'retention'} onClose={() => setRetentionConfirmation(null)} onConfirm={() => void saveRetention()} /> : null}
 
-      {readerVisible && readerRequest && selectedConcept ? <ConceptReader key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`} concept={selectedConcept} sourceId={sourceId} initialSection={readerRequest.section} onClose={closeReader} /> : null}
+      {readerVisible && readerRequest && selectedConcept && !visibleReferenceReader ? <ConceptReader key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`} concept={selectedConcept} sourceId={sourceId} initialSection={readerRequest.section}
+        loadReferences={loadReaderReferences} onNavigateReference={navigateReaderReference} onClose={closeReader} /> : null}
+      {visibleReferenceReader ? <ConceptReader key={`reference:${sourceId}:${visibleReferenceReader.concept.id}:${referenceReaders.length}`}
+        concept={visibleReferenceReader.concept} sourceId={sourceId} initialSection="body" initialSectionId={visibleReferenceReader.sectionId}
+        loadReferences={loadReaderReferences} onNavigateReference={navigateReaderReference} onClose={closeReferenceReader} /> : null}
 
       {notice ? <div className={`notice notice-${notice.tone}`} role="status">{notice.text}</div> : null}
     </div>

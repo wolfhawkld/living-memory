@@ -22,6 +22,7 @@ import type { RelationReviewRequest, RelationReviewResponse } from '../shared/re
 import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
 import type { ImportPreviewRequest, ImportPreview, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
+import type { KnowledgeReferences } from '../shared/knowledge-references';
 import { PendingCoordinationError, withPendingStorageLock, withPendingSyncLock } from './pending-coordination';
 import { BULK_REQUEST_TIMEOUT_MS, RequestDeadlineError, withRequestDeadline } from './request-deadline';
 
@@ -487,6 +488,13 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 }
 
 export const api = {
+  getKnowledgeReferences: (conceptId: string, sourceRevision: string, sourceId: string, signal?: AbortSignal) => {
+    if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识空间。', { code: 'SOURCE_REQUIRED' }));
+    const params = new URLSearchParams({ conceptId, sourceRevision });
+    return requestJson<KnowledgeReferences>(`/knowledge/references?${params}`, {
+      cache: 'no-store', headers: { 'x-lm-source-id': sourceId }, signal,
+    });
+  },
   getFeishuBindingStatus: (sourceId: string, signal?: AbortSignal) => requestJson<FeishuBindingStatus>('/feishu/binding', {
     cache: 'no-store', headers: { 'x-lm-source-id': sourceId }, signal,
   }),

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MarkdownContent } from '../src/web/MarkdownContent.js';
+import type { KnowledgeReference } from '../src/shared/knowledge-references.ts';
 
 function render(content: string, compact = false): string {
   return renderToStaticMarkup(createElement(MarkdownContent, { content, compact }));
@@ -140,4 +141,117 @@ test('assigns stable in-page ids for duplicate long headings without rendering o
   assert.match(html, /id="[^"]+-a-very-long-heading-/);
   assert.match(html, /id="[^"]+-a-very-long-heading-.*-2"/);
   assert.match(html, /markdown-content/);
+});
+
+test('rendered heading section ids match normalized parser metadata across collisions, math and wiki headings', async () => {
+  const { parseMarkdownSections } = await import('../src/core/markdown-sections.ts');
+  const content = '# A\n\n# A\n\n# A-2\n\n## [[Target|Label]]\n\n$$x\n+y$$\n\n## **格式** $z$';
+  const expected = parseMarkdownSections(content).map((section) => section.sectionId);
+  const html = render(content);
+  const actual = [...html.matchAll(/data-knowledge-section="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(actual, expected);
+  assert.equal(new Set(actual).size, actual.length);
+});
+
+test('controlled knowledge references render buttons without exposing filesystem or unsafe hrefs', async () => {
+  const { parseMarkdownReferenceTokens } = await import('../src/core/markdown-sections.ts');
+  const content = '[[Other#Detail|Wiki]] [document](Other.md#Detail) [unsafe](file:///private/secret.md)';
+  const references = parseMarkdownReferenceTokens(content).map((token, index) => ({
+    referenceId: `r-${index}`, sourceConceptId: 'c', sourceRevision: 'v1', rawTarget: token.rawTarget, syntax: token.syntax,
+    label: token.label, bodyRange: token.bodyRange, status: 'unsafe' as const,
+  }));
+  const html = renderToStaticMarkup(createElement(MarkdownContent, { content, references, onNavigateReference() {} }));
+  assert.equal((html.match(/class="markdown-reference-link"/g) ?? []).length, 3);
+  assert.doesNotMatch(html, /href=|file:|private\/secret/);
+  assert.match(html, />Wiki<\/button>/);
+});
+
+test('internal section navigation is controlled while safe external links remain external', () => {
+  const html = renderToStaticMarkup(createElement(MarkdownContent, {
+    content: '# Overview\n\n[jump](#overview) [external](https://example.com)', onNavigateSection() {},
+  }));
+  assert.match(html, /<button[^>]*class="markdown-reference-link"[^>]*>jump<\/button>/);
+  assert.match(html, /href="https:\/\/example.com"[^>]*target="_blank"/);
+  assert.doesNotMatch(html, /href="#/);
+});
+
+test('controlled chapter navigation preserves scoped GFM footnote links', () => {
+  const html = renderToStaticMarkup(createElement(MarkdownContent, {
+    content: 'A note.[^1]\n\n[^1]: Footnote.', onNavigateSection() {},
+  }));
+  const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
+  const hrefs = [...html.matchAll(/href="#([^"]+)"/g)].map((match) => match[1]);
+  assert.ok(hrefs.length >= 2);
+  for (const href of hrefs) assert.ok(ids.has(href));
+});
+
+test('reference metadata alone never enables uncontrolled local document navigation', async () => {
+  const { parseMarkdownReferenceTokens } = await import('../src/core/markdown-sections.ts');
+  const content = '[document](Other.md)';
+  const token = parseMarkdownReferenceTokens(content)[0]!;
+  const html = renderToStaticMarkup(createElement(MarkdownContent, { content, references: [{
+    referenceId: 'r', sourceConceptId: 'c', sourceRevision: 'v1', rawTarget: token.rawTarget, syntax: token.syntax,
+    label: token.label, bodyRange: token.bodyRange, status: 'resolved-document', targetConceptId: 'other', targetRevision: 'v2',
+  }] }));
+  assert.doesNotMatch(html, /href=|<button/);
+  assert.match(html, /链接暂不可用/);
+});
+
+test('source positions and syntax bind repeated identical targets to their own resolver result', async () => {
+  const { parseMarkdownReferenceTokens } = await import('../src/core/markdown-sections.ts');
+  const content = '# A\n\n# A\n\n[[#a|wiki]] [slug](#a) [[#a|again]]';
+  const references: KnowledgeReference[] = parseMarkdownReferenceTokens(content).map((token, index) => ({
+    referenceId: `ref-${index}`, sourceConceptId: 'c', sourceRevision: 'v', rawTarget: token.rawTarget,
+    syntax: token.syntax, label: token.label, bodyRange: token.bodyRange,
+    status: token.syntax === 'wiki' ? 'ambiguous' : 'resolved-section',
+  }));
+  const html = renderToStaticMarkup(createElement(MarkdownContent, { content, references, onNavigateReference() {} }));
+  const bound = [...html.matchAll(/data-reference-id="([^"]+)"[^>]*>([^<]+)<\/button>/g)].map((match) => [match[1], match[2]]);
+  assert.deepEqual(bound, [['ref-0', 'wiki'], ['ref-1', 'slug'], ['ref-2', 'again']]);
+});
+
+test('wiki source matching preserves escaped syntax, entities, Chinese and CRLF offsets', async () => {
+  const { parseMarkdownReferenceTokens } = await import('../src/core/markdown-sections.ts');
+  const content = '# 中文\r\n\r\n&amp; 前缀 \\[[Same]] [[Same|真实]]\r\n后面 [[Same|再次]]';
+  const references: KnowledgeReference[] = parseMarkdownReferenceTokens(content).map((token, index) => ({
+    referenceId: `ref-${index}`, sourceConceptId: 'c', sourceRevision: 'v', rawTarget: token.rawTarget,
+    syntax: token.syntax, label: token.label, bodyRange: token.bodyRange, status: 'resolved-document',
+  }));
+  const html = renderToStaticMarkup(createElement(MarkdownContent, { content, references, onNavigateReference() {} }));
+  assert.match(html, /&amp; 前缀 \[\[Same\]\]/);
+  assert.match(html, /data-reference-id="ref-0"[^>]*>真实<\/button>/);
+  assert.match(html, /data-reference-id="ref-1"[^>]*>再次<\/button>/);
+  assert.equal((html.match(/data-reference-id=/g) ?? []).length, 2);
+});
+
+test('generated footnote headings never enter the source chapter coordinate space', async () => {
+  const { parseMarkdownSections } = await import('../src/core/markdown-sections.ts');
+  const content = '# Heading\n\nA note.[^1]\n\n[^1]: Note.';
+  const html = render(content);
+  const sections = [...html.matchAll(/data-knowledge-section="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(sections, parseMarkdownSections(content).map((section) => section.sectionId));
+  assert.match(html, /footnote-label/);
+});
+
+test('source headings never collide with generated footnote ids or ARIA references', () => {
+  const html = render('# footnote-label\n\n# user-content-fn-1\n\n[chapter](#footnote-label) [other chapter](#user-content-fn-1) A note.[^1]\n\n[^1]: Note.');
+  const allIds = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
+  const ids = new Set(allIds);
+  assert.equal(ids.size, allIds.length);
+  const hrefs = [...html.matchAll(/href="#([^"]+)"/g)].map((match) => match[1]);
+  for (const href of hrefs) assert.ok(ids.has(href), `missing link target ${href}`);
+  for (const match of html.matchAll(/aria-(?:describedby|labelledby)="([^"]+)"/g)) {
+    for (const target of match[1]!.split(/\s+/)) assert.ok(ids.has(target), `missing ARIA target ${target}`);
+  }
+  assert.match(html, /href="#[^"]+-section-footnote-label"[^>]*>chapter<\/a>/);
+  assert.match(html, /href="#[^"]+-section-user-content-fn-1"[^>]*>other chapter<\/a>/);
+  assert.match(html, /data-knowledge-section="footnote-label"/);
+});
+
+test('native encoded Chinese chapter fragments use the source heading namespace', () => {
+  const html = render('# 中文章节\n\n[jump](#%E4%B8%AD%E6%96%87%E7%AB%A0%E8%8A%82)');
+  const id = html.match(/<h1 id="([^"]+)"/)?.[1];
+  const href = html.match(/href="#([^"]+)"/)?.[1];
+  assert.equal(href, id);
+  assert.match(id ?? '', /-section-中文章节$/);
 });

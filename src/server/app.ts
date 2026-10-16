@@ -25,6 +25,7 @@ import { feishuReadOperationId, type PreparedFeishuReadReply } from './feishu-re
 import { createFeishuCardCapabilities } from './feishu-cards.js';
 import { requestSessionToken, renewOwnerDevice, setSessionCookie, SESSION_COOKIE } from './account-session.js';
 import { validateStoragePaths } from './storage-paths.js';
+import { getKnowledgeReferences } from './knowledge-references.js';
 import {
   parseApplicationRequest,
   parseCorrectionRequest,
@@ -582,6 +583,15 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       observationsCount: store.countObservations(),
     };
     res.json(snapshot);
+  }));
+  app.get('/api/knowledge/references', asyncRoute((req, res) => {
+    const conceptId = req.query.conceptId;
+    const revision = req.query.sourceRevision;
+    if (typeof conceptId !== 'string' || !conceptId.trim() || conceptId.length > 256
+      || typeof revision !== 'string' || !revision.trim() || revision.length > 256) {
+      throw new StoreError('INVALID_REFERENCE_REQUEST', '请选择明确的概念及资料版本。');
+    }
+    res.set('Cache-Control', 'no-store').json(getKnowledgeReferences(contextOf(req).source, conceptId, revision));
   }));
   app.get('/api/concepts/:conceptId/history', asyncRoute((req, res) => {
     const { source, store, changes } = contextOf(req);

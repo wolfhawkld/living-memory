@@ -29,3 +29,20 @@ test('reader path labels preserve relative knowledge paths without exposing the 
   assert.equal(relativeSource('/home/private-owner/progressive-kg/Cognition/Math/Boolean.md'), 'Cognition/Math/Boolean.md');
   assert.equal(relativeSource('C:\\Users\\private-owner\\progressive-kg\\Cognition\\Math\\Boolean.md'), 'Cognition/Math/Boolean.md');
 });
+
+test('chapter metadata is accepted only for the rendered concept and source revision', async () => {
+  const { referencesMatchConcept } = await import('../src/web/concept-reader-state.ts');
+  assert.equal(referencesMatchConcept({ conceptId: concept.id, sourceRevision: 'revision-1' }, concept), true);
+  assert.equal(referencesMatchConcept({ conceptId: concept.id, sourceRevision: 'stale' }, concept), false);
+  assert.equal(referencesMatchConcept({ conceptId: 'other', sourceRevision: 'revision-1' }, concept), false);
+  assert.equal(referencesMatchConcept(null, concept), false);
+});
+
+test('unresolved chapter references give distinct safe full-document fallbacks', async () => {
+  const { sectionNavigationMessage } = await import('../src/web/concept-reader-state.ts');
+  assert.match(sectionNavigationMessage('ambiguous'), /多个匹配/);
+  assert.match(sectionNavigationMessage('unsupported-block'), /块引用/);
+  assert.match(sectionNavigationMessage('unsafe'), /未打开本地文件/);
+  assert.match(sectionNavigationMessage('missing-section'), /全文/);
+  assert.match(sectionNavigationMessage('missing-concept'), /未找到/);
+});

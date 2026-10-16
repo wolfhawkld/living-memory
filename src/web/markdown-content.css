@@ -258,3 +258,5 @@
     font-size: 11px;
   }
 }
+.markdown-content button.markdown-reference-link { display: inline; padding: 0; border: 0; background: transparent; color: var(--ui-accent, #9bc4ff); font: inherit; text-align: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; cursor: pointer; }
+.markdown-content button.markdown-reference-link:focus-visible { outline: 2px solid var(--ui-accent, #78aaff); outline-offset: 2px; }

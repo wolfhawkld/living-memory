@@ -1,5 +1,5 @@
 import { Component, lazy, Suspense, type ReactNode } from 'react';
-import type { MarkdownMediaSource } from './markdown-media';
+import type { MarkdownContentProps } from './MarkdownContent';
 
 const MarkdownContent = lazy(() => import('./MarkdownContent').then((module) => ({ default: module.MarkdownContent })));
 
@@ -16,8 +16,8 @@ class MarkdownFallback extends Component<{ content: string; children: ReactNode 
 }
 
 /** Load the Markdown/math parser only when someone opens knowledge material. */
-export function MarkdownView({ content, compact = false, source }: { content: string; compact?: boolean; source?: MarkdownMediaSource }) {
+export function MarkdownView({ content, compact = false, source, ...navigation }: MarkdownContentProps) {
   return <MarkdownFallback content={content}><Suspense fallback={<p className="markdown-loading" role="status">正在排版资料…</p>}>
-    <MarkdownContent content={content} compact={compact} source={source} />
+    <MarkdownContent content={content} compact={compact} source={source} {...navigation} />
   </Suspense></MarkdownFallback>;
 }
