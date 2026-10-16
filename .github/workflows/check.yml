@@ -27,7 +27,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: Browser regression checks
         id: e2e
-        run: npm run test:e2e
+        run: npm run test:e2e -- --reporter=line --max-failures=1 --global-timeout=600000
       - name: Upload failed browser diagnostics
         if: ${{ failure() && steps.e2e.outcome == 'failure' }}
         uses: actions/upload-artifact@v7
