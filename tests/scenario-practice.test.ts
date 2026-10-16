@@ -9,6 +9,8 @@ import {
   freezeScenarioSnapshot,
   hasUnsavedScenarioDraft,
   ScenarioPractice,
+  selectScenarioConcept,
+  independentQueryBlockedReason,
   startScenarioPractice,
   submitScenarioAnswer,
   validateScenarioPractice,
@@ -202,4 +204,86 @@ test('a supplied revisit prompt stays in blind setup and does not expose concept
   assert.doesNotMatch(html, /布尔逻辑/);
   assert.doesNotMatch(html, /用真值与逻辑联结词表达规则/);
   assert.doesNotMatch(html, /搜索概念、别名或领域/);
+});
+
+test('query reflection freezes name hints and never treats seeded problem text as scenario revisit', () => {
+  const hints = [concept.id];
+  const state = createScenarioPracticeState(snapshot, {}, '如何做规则校验？', true, { variant: 'query', nameHintedConceptIds: hints });
+  hints.push('another');
+  assert.equal(state.variant, 'query');
+  assert.equal(state.scenarioRevisit, false);
+  assert.deepEqual(state.nameHintedConceptIds, [concept.id]);
+  assert.equal(Object.isFrozen(state.nameHintedConceptIds), true);
+  assert.equal(state.cue, 'unknown');
+  assert.equal(state.exposure, 'unknown');
+});
+
+function queryFeedback(options: { hints?: string[]; exposed?: boolean; answer?: string } = {}) {
+  let state = createScenarioPracticeState(snapshot, { [concept.id]: Boolean(options.exposed) }, '如何做规则校验？', false,
+    { variant: 'query', nameHintedConceptIds: options.hints });
+  state = startScenarioPractice(state, '2026-09-22T10:00:00.000Z');
+  state = { ...state, answer: options.answer ?? '用布尔逻辑表达约束，合取所有强校验条件。' };
+  state = submitScenarioAnswer(state, '2026-09-22T10:01:00.000Z', 'query-1');
+  return selectScenarioConcept(state, concept.id);
+}
+
+test('query name hint sets a prompted cue without inventing source exposure', () => {
+  const state = queryFeedback({ hints: [concept.id] });
+  assert.equal(state.cue, 'hinted');
+  assert.equal(state.exposure, 'unknown');
+  const request = buildScenarioObservationRequest(state);
+  assert.equal(request.exposure, 'unknown');
+  assert.equal(request.observedExposure, false);
+  assert.equal(request.learning?.task, 'scenario');
+  assert.equal(request.learning?.scenarioRevisit, undefined);
+});
+
+test('query independent claim is rejected by both validation and payload building for prior hints, source views and blank recall', () => {
+  for (const state of [queryFeedback({ hints: [concept.id] }), queryFeedback({ exposed: true }), queryFeedback({ answer: '  ' }), { ...queryFeedback(), exposure: 'exposed' as const }]) {
+    const unsafe = { ...state, cue: 'independent' as const };
+    assert.match(validateScenarioPractice(unsafe) ?? '', /不能记录为独立想到/);
+    assert.throws(() => buildScenarioObservationRequest(unsafe), /不能记录为独立想到/);
+  }
+  const confirmed = { ...queryFeedback(), cue: 'independent' as const };
+  assert.equal(validateScenarioPractice(confirmed), null);
+  assert.equal(buildScenarioObservationRequest(confirmed).learning?.cue, 'independent');
+});
+
+test('query prior source view forces exposure, while choosing another concept resets all judgments and preserves original answer time', () => {
+  const previous = queryFeedback({ exposed: true });
+  assert.equal(buildScenarioObservationRequest(previous).exposure, 'exposed');
+  assert.equal(buildScenarioObservationRequest(previous).observedExposure, true);
+  const second = { ...concept, id: 'ai:other', domain: 'AI', title: '另一个概念' };
+  const state = { ...previous, snapshot: freezeScenarioSnapshot({ ...snapshot, concepts: [concept, second] }), cue: 'lookup' as const, outcome: 'success' as const, basis: 'application' as const, applicability: '旧判断' };
+  const next = selectScenarioConcept(state, second.id);
+  assert.equal(next.cue, 'unknown');
+  assert.equal(next.outcome, 'unverified');
+  assert.equal(next.basis, 'unknown');
+  assert.equal(next.applicability, '');
+  assert.equal(next.exposure, 'unknown');
+  assert.equal(next.answer, state.answer);
+  assert.equal(next.observedAt, state.observedAt);
+  assert.equal(next.eventId, state.eventId);
+  assert.equal(selectScenarioConcept({ ...next, submittedRequest: buildScenarioObservationRequest(next) }, concept.id).conceptId, second.id);
+});
+
+test('query setup offers blind problem input without candidate, summary or history prompt exposure', () => {
+  const html = renderToStaticMarkup(createElement(ScenarioPractice, {
+    snapshot, sourceId: 'test', busy: false, variant: 'query', initialScenario: '我的问题',
+    nameHintedConceptIds: [concept.id], onClose: () => {}, onSave: async () => true,
+    onReadSource: () => {}, wasSourceViewed: () => false,
+    onLoadPrompts: async () => { throw new Error('must not load'); },
+  }));
+  assert.match(html, /查询前先想一下/);
+  assert.match(html, /要解决的问题 \/ 场景/);
+  assert.doesNotMatch(html, /回访已保存场景|scenario-concept-results|布尔逻辑|完整资料|用真值/);
+});
+
+
+test('query explains independent-option restrictions with blank answer and source exposure taking priority over name hints', () => {
+  assert.match(independentQueryBlockedReason(queryFeedback({ answer: '', exposed: true, hints: [concept.id] })) ?? '', /原回答留空/);
+  const alreadyRead = { ...queryFeedback({ exposed: true, hints: [concept.id] }), exposure: 'unexposed' as const };
+  assert.match(independentQueryBlockedReason(alreadyRead) ?? '', /进入前已看过/);
+  assert.match(independentQueryBlockedReason(queryFeedback({ hints: [concept.id] })) ?? '', /原页面已显示.*名称/);
+  assert.equal(independentQueryBlockedReason(queryFeedback()), null);
 });

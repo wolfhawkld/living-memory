@@ -44,13 +44,33 @@
 | AC-22 记忆目标独立且依据可检查 | **已有分任务 / 版本证据，统一多目标模型未实现**：概念 / 场景观察分组；私人卡有独立 ID、版本、阶段判断和暂停。 | [learning-progress.test.ts](../../tests/learning-progress.test.ts)：`filters by concept and revision, classifies bad times before old revisions, and keeps all current records in totals`；`separates legacy concept and scenario tasks and orders ties by observed, recorded, then event ID`；`keeps the two newest records, computes actual interval, and preserves historical model values`；卡片契约见 [practice.ts](../../src/shared/practice.ts)。 | 概念时间状态仍统一 time-only-v0，没有核心解释 / 细节 / 场景提取 / 适用判断四类目标的统一状态及独立间隔调度。手工卡的软件能力不代表本人已接受日常维护流程。 | 开发者另定目标与旧数据兼容；手工卡暂停保留，实际收益需要本人延迟试用。 |
 | AC-23 反馈驱动巩固与保守调度 | **信心对照有软件证据，反馈调度未实现**：事前信心与明确自评按任务比较，提示 / 曝光 / 回访条件保留。 | [learning-evidence.test.ts](../../tests/learning-evidence.test.ts)：`calibration compares prospectively recorded confidence with explicit outcomes and separates tasks` 核对分组、Brier / gap；`legacy, assisted, partial, unknown and retrospective confidence do not imply calibration evidence` 排除不符合条件的样本；`same-scenario revisits remain prediction evidence with explicit counts, not transfer scores` 保留回访计数。 | 尚无一般回忆评分更正 / 争议、遗漏 / 误解 / 前提误用分类、按反馈生成巩固动作及独立延迟调度。应用文字 / 关系修正不等于观察评分更正。统计是样本自评对照，不是当前节点回忆成功概率。 | 开发者先定反馈、更正与调度规则；本人后续核对内容及延迟收益，不自动拟合 H。 |
 
+## 2026-10-16 增补：三个软件子范围的交付证据
+
+以下补记接续固定基线，原 23 条 AC 的矩阵文字及原验收规格保持不变。上述 2026-10-13～14 补记与下表 AC-16 / AC-19 的未完成表述应按各自日期读取，不再把以下三个软件子范围列为未开始任务。CI 为对应精确提交的既有成功记录，本次文档整理未重新运行应用回归。
+
+| 已完成软件子范围 | 具体断言入口 | 精确提交与 CI |
+| --- | --- | --- |
+| **日常复习预算 0**：Web / 飞书持续暂停新题，跨日不自动恢复或积债；已开始回答、冻结待写和原队列保留，手动学习仍可用；安排支持 0–50 及导出恢复。 | [review-plan-store.test.ts](../../tests/review-plan-store.test.ts)：`zero budget survives calendar days without learning writes or debt and can resume a positive budget`；[review-arrangement-web.test.ts](../../tests/review-arrangement-web.test.ts)：`zero budget preserves started answers and frozen pending writes but blocks an unstarted item across days`；[import-store.test.ts](../../tests/import-store.test.ts)：`zero budget exports, imports idempotently and survives reopening without changing learning history`；[feishu-review-capability.test.ts](../../tests/feishu-review-capability.test.ts)：`zero daily budget blocks new reviews and stale due entries while ordinary knowledge reading remains available`；[zz-review-budget-zero.spec.ts](../../tests/e2e/zz-review-budget-zero.spec.ts)：`zero budget persists a pause, rejects an empty draft and leaves manual learning available`。 | `5109db4`：[CI 38367853690](https://github.com/wolfhawkld/living-memory/actions/runs/38367853690) |
+| **完整领域文字列表**：主动文字模式独立于图谱上限，包含完整当前目录域及有效主动跨域项；完整名称 / 路径、文字记忆状态、选中语义及键盘操作；返回图谱保留原上限，自动 WebGL 回退仍使用图谱范围。 | [domain-view.test.ts](../../tests/domain-view.test.ts)：`domain concept list includes the complete domain beyond both graph display limits`；[graph-fallback-list.test.ts](../../tests/graph-fallback-list.test.ts)：`text list renders all six memory labels with decorative dots and explicit pressed states` 与 `long titles and paths retain their complete escaped text without inline truncation`；[graph-text-list.spec.ts](../../tests/e2e/graph-text-list.spec.ts)：`full domain text list retains states and keyboard selection independently of the graph cap`。 | `578ea69`：[CI 38501301999](https://github.com/wolfhawkld/living-memory/actions/runs/38501301999) |
+| **完整同域关系与图例**：按选中概念自身目录读取完整邻接，保留原方向、多关系及自关联；默认折叠，展开仅标记会话资料曝光，不写学习事件；邻接导航保留文字模式并按需切域。图例以当前 / 同域概念框、原方向箭头和关系类型展示双端，自关联使用单节点循环箭头，原说明与路径保留。 | [domain-view.test.ts](../../tests/domain-view.test.ts)：`same-domain relations retain directions and distinct payloads while deduplicating exact edges` 与 `same-domain relations read the full snapshot beyond small graph caps and 300 nodes`；[same-domain-relations-panel.test.ts](../../tests/same-domain-relations-panel.test.ts)：`diagram identifies the current endpoint while preserving original source to target direction` 与 `self relation presents one current concept with a loop and accessible explanation`；[same-domain-relations.spec.ts](../../tests/e2e/same-domain-relations.spec.ts)：`complete directed relations disclose on demand and navigate within the selected concept directory`。 | `79d52ab`：[CI 38524945547](https://github.com/wolfhawkld/living-memory/actions/runs/38524945547) |
+
+本人已确认完整文字列表的四项操作及增强后的深色选中对比；2026-10-16 的新增反馈限于「看到图例效果了」。这不代表同域关系的全部异常路径、真实知识内容正确性、目标设备性能或延迟记忆收益均已验收。每周 3 个概念是本人试用节奏，不是系统周配额、自动推送或已证明的记忆收益。完整 LM-016、LM-017、LM-018、AC-19 与 v0.1 均不因这些子范围而视为整体完成；记忆模型仍为 `time-only-v0`。
+
+## 2026-10-16 增补：查询前回忆的 Web 子范围
+
+搜索区新增可选「先想一下再查」，保留普通直接查询。窗口沿用进入时冻结的知识版本，先固定问题、原回答、回答时间及可选信心，再展示全库检索结果。已知的列表 / 图谱、右侧跨域关联和已展示搜索名称会作为名称提示；此前正文查阅保持独立曝光。空答、已知名称提示或提交前查阅不能记录为独立想到；切换核对概念会清空原概念的判断。使用与边界见[日常查询前回忆](scenario-confidence-retention.md#日常查询前先想一下)。
+
+[scenario-practice.test.ts](../../tests/scenario-practice.test.ts) 的 `query reflection freezes name hints and never treats seeded problem text as scenario revisit`、`query independent claim is rejected by both validation and payload building for prior hints, source views and blank recall`、`query prior source view forces exposure, while choosing another concept resets all judgments and preserves original answer time` 核对冻结、提示限制及概念切换；[query-reflection.spec.ts](../../tests/e2e/query-reflection.spec.ts) 覆盖工作区遮蔽、搜索词带入、关闭下拉后的提示、未展开跨域名称、查询零写与显式保存原回答。
+
+本次完整 1001 项 Node / HTTP 回归、TypeScript / 生产构建及 8 项主题产物检查通过。四条新增浏览器用例仅列入远端 CI，精确提交结果另行核对；不运行本地浏览器。原 AC-05 行保留固定基线，本次只补 Web 查询前回忆流程：尚无完整查询事件、章节呈现或近期曝光账本。未观测到提示不代表没有提示，独立条件仍依本人确认；观察沿用原场景记录，不改变记忆投影或证明新场景迁移。
+
 ## 后续分工与启动条件
 
-可继续独立开发的较小软件项，先登记为候选：
+固定基线登记的三个小软件候选现已完成上述软件子集，证据见「2026-10-16 增补」；下列保留原范围说明，不再作为未开始任务：
 
-1. **日常复习预算允许 0**：统一 Web、服务校验和飞书候选语义，确认已有预算兼容、零预算跨日不产生任务债务；不改变长期保持或时间模型。
-2. **文字列表信息完整性**：主动文字模式使用完整当前领域列表，补文字状态、选中语义和模式状态提示，核对纯键盘路径；已有搜索和键盘能力复用。
-3. **文字模式同域关系阅读**：独立显示方向、类型和说明，使用完整邻接数据并保留跨域跳转；与图谱显示截断分别处理。
+1. **日常复习预算允许 0（已完成软件子集）**：统一 Web、服务校验和飞书候选语义，确认已有预算兼容、零预算跨日不产生任务债务；不改变长期保持或时间模型。
+2. **文字列表信息完整性（已完成软件子集）**：主动文字模式使用完整当前领域列表，补文字状态、选中语义和模式状态提示，核对纯键盘路径；已有搜索和键盘能力复用。
+3. **文字模式同域关系阅读（已完成软件子集）**：独立显示方向、类型和说明，使用完整邻接数据并保留跨域跳转；与图谱显示截断分别处理。
 
 通用事件溯源、章节呈现、评分更正、统一多目标调度与真实 Voice 需要各自设计及兼容方案，不能仅靠本人验收补足。个体参数和自动巩固先等待有效观察及研究方案；自动练习仍按[原暂停与后续约束](../planning/automatic-practice-backlog-2026-10-02.md)处理，不在本轮恢复。
 

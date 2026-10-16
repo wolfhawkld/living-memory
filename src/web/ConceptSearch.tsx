@@ -22,6 +22,13 @@ export interface ConceptSearchProps {
   currentDomainId: string | null;
   disabled?: boolean;
   onSelect: (conceptId: string) => void;
+  onStartQueryReflection?: (entry: QueryReflectionEntry) => void;
+  queryReflectionDisabled?: boolean;
+}
+
+export interface QueryReflectionEntry {
+  query: string;
+  hintedConceptIds: readonly string[];
 }
 
 function domainText(concept: Concept): string {
@@ -42,10 +49,13 @@ export function ConceptSearch({
   currentDomainId,
   disabled = false,
   onSelect,
+  onStartQueryReflection,
+  queryReflectionDisabled = false,
 }: ConceptSearchProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
+  const shownConceptIdsRef = useRef(new Set<string>());
   const generatedId = useId().replace(/[^a-zA-Z0-9_-]/gu, '');
   const inputId = `living-memory-concept-search-${generatedId}`;
   const listboxId = `${inputId}-listbox`;
@@ -63,6 +73,11 @@ export function ConceptSearch({
     ? `${listboxId}-option-${activeIndex}`
     : undefined;
   const shortcut = typeof navigator !== 'undefined' && /Mac|iPad|iPhone/u.test(navigator.platform) ? '⌘ K' : 'Ctrl K';
+
+  useEffect(() => {
+    if (!menuVisible) return;
+    for (const hit of search.items) shownConceptIdsRef.current.add(hit.concept.id);
+  }, [menuVisible, search.items]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -173,6 +188,15 @@ export function ConceptSearch({
     inputRef.current?.focus();
   }
 
+  function startQueryReflection(): void {
+    if (disabled || queryReflectionDisabled || !onStartQueryReflection) return;
+    const hintedConceptIds = new Set(shownConceptIdsRef.current);
+    if (menuVisible) for (const hit of search.items) hintedConceptIds.add(hit.concept.id);
+    setOpen(false);
+    setActiveIndex(-1);
+    onStartQueryReflection({ query, hintedConceptIds: [...hintedConceptIds] });
+  }
+
   return (
     <div className={`concept-search${disabled ? ' concept-search-is-disabled' : ''}`} onBlur={handleBlur}>
       <label className="concept-search-label" htmlFor={inputId}>搜索概念</label>
@@ -214,6 +238,10 @@ export function ConceptSearch({
         ) : null}
         <kbd className="concept-search-shortcut" aria-hidden="true">{shortcut}</kbd>
       </div>
+
+      {onStartQueryReflection ? <button type="button" className="concept-search-reflect"
+        disabled={disabled || queryReflectionDisabled} onClick={startQueryReflection}
+        title="先保留原始想法，再检索资料；也可以直接使用上方搜索。">先想一下再查</button> : null}
 
       {menuVisible ? (
         <div className="concept-search-menu">

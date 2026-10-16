@@ -10,6 +10,7 @@ import type {
 import type { ScenarioPrompts } from '../shared/scenario-prompts';
 import { MarkdownView } from './MarkdownView';
 import { saveScenarioRequest } from './scenario-save';
+import { searchConcepts } from './concept-search';
 
 /** Values are stored as integer percentages so the persisted evidence is explicit and portable. */
 export const SCENARIO_CONFIDENCE_OPTIONS = [
@@ -30,7 +31,11 @@ export type ScenarioCue = LearningEvidence['cue'];
 export type ScenarioOutcome = LearningEvidence['outcome'];
 export type ScenarioBasis = LearningEvidence['basis'];
 
+export type ScenarioPracticeVariant = 'scenario' | 'query';
+
 export interface ScenarioPracticeState {
+  readonly variant: ScenarioPracticeVariant;
+  readonly nameHintedConceptIds: readonly string[];
   /** A private, cloned snapshot. It must not change when the parent receives a newer graph. */
   readonly snapshot: Snapshot;
   readonly sourceViewedBefore: Readonly<Record<string, boolean>>;
@@ -58,6 +63,8 @@ export interface ScenarioPracticeState {
 }
 
 export interface ScenarioPracticeProps {
+  variant?: ScenarioPracticeVariant;
+  nameHintedConceptIds?: readonly string[];
   snapshot: Snapshot;
   sourceId: string;
   busy: boolean;
@@ -113,13 +120,17 @@ export function createScenarioPracticeState(
   sourceViewedBefore: Readonly<Record<string, boolean>> = {},
   initialScenario = '',
   scenarioRevisit = Boolean(initialScenario.trim()),
+  options: { variant?: ScenarioPracticeVariant; nameHintedConceptIds?: readonly string[] } = {},
 ): ScenarioPracticeState {
+  const variant = options.variant ?? 'scenario';
   return {
+    variant,
+    nameHintedConceptIds: Object.freeze([...(options.nameHintedConceptIds ?? [])]),
     snapshot: freezeScenarioSnapshot(snapshot),
     sourceViewedBefore: Object.freeze({ ...sourceViewedBefore }),
     stage: 'setup',
     scenario: initialScenario,
-    scenarioRevisit,
+    scenarioRevisit: variant === 'query' ? false : scenarioRevisit,
     confidence: null,
     confidenceAt: null,
     answer: '',
@@ -179,6 +190,33 @@ function knownOutcome(outcome: ScenarioOutcome): boolean {
   return outcome !== 'unverified';
 }
 
+export function independentQueryBlockedReason(state: ScenarioPracticeState): string | null {
+  if (!state.answer.trim()) return '原回答留空，不能确认已独立想到这个概念。';
+  if (state.sourceViewedBefore[state.conceptId ?? ''] || state.exposure === 'exposed') return '进入前已看过这个概念的资料，不能确认提交前未得到提示。';
+  if (state.nameHintedConceptIds.includes(state.conceptId ?? '')) return '原页面已显示这个概念的名称，因此不能记为未得到提示。';
+  return null;
+}
+
+export function canConfirmIndependentQuery(state: ScenarioPracticeState): boolean {
+  return independentQueryBlockedReason(state) === null;
+}
+
+/** Selecting another query result starts a fresh, explicitly judged observation. */
+export function selectScenarioConcept(state: ScenarioPracticeState, conceptId: string): ScenarioPracticeState {
+  if (state.stage !== 'feedback' || state.submittedRequest) return state;
+  if (!state.snapshot.concepts.some((concept) => concept.id === conceptId)) return state;
+  if (state.conceptId === conceptId) return state;
+  return {
+    ...state, conceptId,
+    exposure: state.sourceViewedBefore[conceptId] ? 'exposed' : 'unknown',
+    ...(state.variant === 'query' ? {
+      cue: state.nameHintedConceptIds.includes(conceptId) ? 'hinted' as const : 'unknown' as const,
+      outcome: 'unverified' as const, basis: 'unknown' as const, applicability: '',
+    } : {}),
+    validationError: null, saveError: null,
+  };
+}
+
 export function validateScenarioPractice(state: ScenarioPracticeState): string | null {
   if (state.stage !== 'feedback') return '请先提交场景回答。';
   if (!state.scenario.trim()) return '请先填写场景。';
@@ -190,6 +228,7 @@ export function validateScenarioPractice(state: ScenarioPracticeState): string |
   if (!state.eventId?.trim()) return '没有冻结这次练习的事件编号。';
   const concept = findConcept(state);
   if (!concept) return '请选择一个与场景相关的概念。';
+  if (state.variant === 'query' && state.cue === 'independent' && !canConfirmIndependentQuery(state)) return '空白原回答、已得到名称提示或提交前已看资料，不能记录为独立想到。';
   if (state.applicability.length > APPLICABILITY_MAX_LENGTH) return `适用性说明不能超过 ${APPLICABILITY_MAX_LENGTH} 个字符。`;
   if ((state.outcome === 'success' || state.outcome === 'partial') && !state.applicability.trim()) return '请用自己的话说明这个概念为什么适用于场景。';
   if (knownOutcome(state.outcome) && state.basis === 'unknown') return '已判断结果时，请选择这次判断的依据。';
@@ -305,6 +344,8 @@ function selectedConcept(state: ScenarioPracticeState): Concept | null {
 }
 
 export function ScenarioPractice({
+  variant = 'scenario',
+  nameHintedConceptIds = [],
   snapshot,
   sourceId,
   busy,
@@ -321,7 +362,7 @@ export function ScenarioPractice({
   if (!initialState.current) {
     const frozenSnapshot = freezeScenarioSnapshot(snapshot);
     const sourceViewedBefore = captureScenarioSourceExposure(frozenSnapshot, wasSourceViewed);
-    initialState.current = createScenarioPracticeState(frozenSnapshot, sourceViewedBefore, initialScenario, Boolean(initialScenario.trim()));
+    initialState.current = createScenarioPracticeState(frozenSnapshot, sourceViewedBefore, initialScenario, Boolean(initialScenario.trim()), { variant, nameHintedConceptIds });
   }
   const [state, setState] = useState<ScenarioPracticeState>(initialState.current);
   const [conceptQuery, setConceptQuery] = useState('');
@@ -360,16 +401,23 @@ export function ScenarioPractice({
   onSourceExposedRef.current = onSourceExposed;
   promptsSourceIdRef.current = sourceId;
 
+  const isQuery = state.variant === 'query';
   const concept = selectedConcept(state);
   const concepts = state.snapshot.concepts;
   const filteredConcepts = useMemo(() => {
+    if (state.variant === 'query') {
+      if (state.stage !== 'feedback') return [];
+      return conceptQuery.trim()
+        ? searchConcepts(concepts, conceptQuery).items.map((hit) => hit.concept)
+        : concepts.slice(0, 12);
+    }
     const query = conceptQuery.trim().toLocaleLowerCase();
     const matches = query
       ? concepts.filter((candidate) => [candidate.title, candidate.domain, ...candidate.aliases]
         .some((value) => value.toLocaleLowerCase().includes(query)))
       : concepts;
     return matches.slice(0, 12);
-  }, [conceptQuery, concepts]);
+  }, [conceptQuery, concepts, state.variant, state.stage]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -432,7 +480,7 @@ export function ScenarioPractice({
   }, [state.stage]);
 
   const loadPrompts = async (mode: 'initial' | 'more' = 'initial') => {
-    if (!onLoadPrompts || promptsLoading || promptsLoadingMore) return;
+    if (isQuery || !onLoadPrompts || promptsLoading || promptsLoadingMore) return;
     const cursor = mode === 'more' ? prompts?.nextCursor ?? undefined : undefined;
     if (mode === 'more' && !cursor) return;
 
@@ -528,10 +576,7 @@ export function ScenarioPractice({
   };
 
   const chooseConcept = (next: Concept) => {
-    setState((current) => updateDraft(current, {
-      conceptId: next.id,
-      exposure: current.sourceViewedBefore[next.id] ? 'exposed' : 'unknown',
-    }));
+    setState((current) => selectScenarioConcept(current, next.id));
     setConceptQuery(next.title);
   };
 
@@ -595,15 +640,15 @@ export function ScenarioPractice({
         <header className="scenario-practice-header">
           <div>
             <span className="scenario-practice-kicker">场景调用 · {state.stage === 'setup' ? '设置' : state.stage === 'answer' ? '先回忆' : '核对'}</span>
-            <h2 id={titleId}>从场景中想起适用的概念</h2>
+            <h2 id={titleId}>{isQuery ? '查询前先想一下' : '从场景中想起适用的概念'}</h2>
           </div>
-          <button type="button" className="scenario-practice-close" onClick={close} disabled={isBusy} aria-label="关闭场景练习">×</button>
+          <button type="button" className="scenario-practice-close" onClick={close} disabled={isBusy} aria-label={isQuery ? '关闭查询前回忆' : '关闭场景练习'}>×</button>
         </header>
 
         {state.stage === 'setup' ? (
           <section className="scenario-practice-body" aria-labelledby={titleId}>
-            <p className="scenario-practice-intro">写下一个你正在处理的业务、研究或工作场景，也可以回访已保存的场景。之后先只看场景作答，系统会在提交后让你检索可能适用的概念。</p>
-            {onLoadPrompts || state.scenarioRevisit ? <div className="scenario-prompt-toolbar">
+            <p className="scenario-practice-intro">{isQuery ? '先写下要解决的问题，再记录自己想到的概念和理由。提交后才检索全库资料核对；可以只查询，不保存观察。' : '写下一个你正在处理的业务、研究或工作场景，也可以回访已保存的场景。之后先只看场景作答，系统会在提交后让你检索可能适用的概念。'}</p>
+            {!isQuery && (onLoadPrompts || state.scenarioRevisit) ? <div className="scenario-prompt-toolbar">
               {onLoadPrompts ? <button type="button" className="scenario-button secondary" onClick={() => {
                 const nextOpen = !promptsOpen;
                 setPromptsOpen(nextOpen);
@@ -611,7 +656,7 @@ export function ScenarioPractice({
               }} disabled={isBusy || promptsLoading}>{promptsOpen ? '收起已保存场景' : '回访已保存场景'}</button> : null}
               {state.scenarioRevisit ? <button type="button" className="scenario-button quiet" onClick={startNewScenario} disabled={isBusy}>新场景</button> : null}
             </div> : null}
-            {promptsOpen && onLoadPrompts ? <div className="scenario-prompts" aria-label="已保存场景">
+            {!isQuery && promptsOpen && onLoadPrompts ? <div className="scenario-prompts" aria-label="已保存场景">
               {promptsLoading ? <p className="scenario-prompts-status" role="status">正在加载已保存场景…</p> : null}
               {!promptsLoading && promptsError ? <div className="scenario-prompts-error" role="alert"><span>{promptsError}</span><button type="button" className="scenario-button quiet" onClick={() => void loadPrompts('initial')}>重试</button></div> : null}
               {!promptsLoading && !promptsError && prompts && prompts.items.length === 0 ? <p className="scenario-prompts-status">还没有可回访的已保存场景。</p> : null}
@@ -626,7 +671,7 @@ export function ScenarioPractice({
               </> : null}
             </div> : null}
             <label className="scenario-practice-field" htmlFor={scenarioId}>
-              <span>{state.scenarioRevisit ? '场景描述 · 同场景回访' : '场景描述'}</span>
+              <span>{isQuery ? '要解决的问题 / 场景' : state.scenarioRevisit ? '场景描述 · 同场景回访' : '场景描述'}</span>
               <textarea id={scenarioId} ref={scenarioRef} value={state.scenario} maxLength={SCENARIO_MAX_LENGTH} onChange={changeScenario} placeholder="例如：需要为一个多代理系统设计负责意图识别、规则校验和上下文记忆的 orchestrator……" />
               <small>{state.scenario.length} / {SCENARIO_MAX_LENGTH}{state.scenarioRevisit ? ' · 可编辑为同一场景的改写；不代表新场景迁移能力' : ''}</small>
             </label>
@@ -650,7 +695,7 @@ export function ScenarioPractice({
             <div className="scenario-card-label">只给你场景</div>
             <p className="scenario-prompt">{state.scenario}</p>
             <label className="scenario-practice-field" htmlFor={answerId}>
-              <span>先写下你会怎样分析或解决</span>
+              <span>{isQuery ? '先写下想到的概念和理由' : '先写下你会怎样分析或解决'}</span>
               <textarea id={answerId} ref={answerRef} value={state.answer} maxLength={ANSWER_MAX_LENGTH} onChange={(event) => setState((current) => ({ ...current, answer: event.target.value }))} placeholder="可以写概念名称、模型或算法，也可以写你会如何判断……（允许留白）" />
               <small>{state.answer.length} / {ANSWER_MAX_LENGTH} · 这一阶段不会显示候选概念。</small>
             </label>
@@ -677,7 +722,7 @@ export function ScenarioPractice({
                     const value = event.target.value;
                     setConceptQuery(value);
                     if (state.conceptId) setState((current) => updateDraft(current, { conceptId: null, exposure: 'unknown' }));
-                  }} placeholder="搜索概念、别名或领域" />
+                  }} placeholder={isQuery ? '搜索全库概念、别名或摘要' : '搜索概念、别名或领域'} />
                 </label>
                 {!state.submittedRequest && filteredConcepts.length > 0 ? (
                   <div className="scenario-concept-results" role="listbox" aria-label="匹配的概念">
@@ -696,7 +741,7 @@ export function ScenarioPractice({
               </div>
 
               <aside className="scenario-feedback-side" aria-label="回忆结果记录">
-                <label className="scenario-practice-field" htmlFor={cueId}><span>获得概念的线索</span><select id={cueId} value={state.cue} disabled={Boolean(state.submittedRequest) || isBusy} onChange={(event) => setState((current) => updateDraft(current, { cue: event.target.value as ScenarioCue }))}>{(Object.keys(CUE_LABELS) as ScenarioCue[]).map((key) => <option key={key} value={key}>{CUE_LABELS[key]}</option>)}</select></label>
+                <label className="scenario-practice-field" htmlFor={cueId}><span>获得概念的线索</span><select id={cueId} value={state.cue} disabled={Boolean(state.submittedRequest) || isBusy} onChange={(event) => setState((current) => updateDraft(current, { cue: event.target.value as ScenarioCue }))}>{(Object.keys(CUE_LABELS) as ScenarioCue[]).map((key) => <option key={key} value={key} disabled={isQuery && key === 'independent' && !canConfirmIndependentQuery(state)}>{isQuery && key === 'independent' ? '原回答已想到，且提交前未得到提示' : CUE_LABELS[key]}</option>)}</select>{isQuery && concept && independentQueryBlockedReason(state) ? <small>{independentQueryBlockedReason(state)}</small> : null}</label>
                 <label className="scenario-practice-field" htmlFor={outcomeId}><span>这次调用结果</span><select id={outcomeId} value={state.outcome} disabled={Boolean(state.submittedRequest) || isBusy} onChange={(event) => setState((current) => updateDraft(current, { outcome: event.target.value as ScenarioOutcome }))}>{(Object.keys(OUTCOME_LABELS) as ScenarioOutcome[]).map((key) => <option key={key} value={key}>{OUTCOME_LABELS[key]}</option>)}</select></label>
                 <label className="scenario-practice-field" htmlFor={basisId}><span>判断依据</span><select id={basisId} value={state.basis} disabled={Boolean(state.submittedRequest) || isBusy} onChange={(event) => setState((current) => updateDraft(current, { basis: event.target.value as ScenarioBasis }))}>{(Object.keys(BASIS_LABELS) as ScenarioBasis[]).map((key) => <option key={key} value={key}>{BASIS_LABELS[key]}</option>)}</select><small>成功、部分或失败需要注明依据；“暂不判断”可以保留为不确定。</small></label>
                 <label className="scenario-practice-field" htmlFor={exposureId}><span>提交前是否看过资料</span><select id={exposureId} value={state.exposure} disabled={Boolean(state.submittedRequest) || isBusy} onChange={(event) => setState((current) => updateDraft(current, { exposure: event.target.value as Exposure }))}>{(Object.keys(EXPOSURE_LABELS) as Exposure[]).map((key) => <option key={key} value={key}>{EXPOSURE_LABELS[key]}</option>)}</select>{concept && state.sourceViewedBefore[concept.id] ? <small>该概念在练习开始前已被查看，保存时会按“看过”记录。</small> : null}</label>

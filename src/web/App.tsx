@@ -67,7 +67,7 @@ import { GraphDisplayControls } from './GraphDisplayControls';
 import { graphDisplayPreferenceKey, readGraphLimitPreference, writeGraphLimitPreference, type GraphLimitPreference } from './graph-display-preference';
 import { GraphQualityControl } from './GraphQualityControl';
 import { graphRenderQualityKey, readGraphRenderQuality, writeGraphRenderQuality, type GraphRenderQuality } from './graph-render-quality';
-import { ConceptSearch } from './ConceptSearch';
+import { ConceptSearch, type QueryReflectionEntry } from './ConceptSearch';
 import { PendingWritesPanel } from './PendingWritesPanel';
 import { ConceptHistoryPanel } from './ConceptHistoryPanel';
 import { LearningSummaryPanel } from './LearningSummaryPanel';
@@ -298,6 +298,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const confirmCorrectionNavigation = useCallback(() => correctionEditingRef.current.size === 0
     || window.confirm('当前复核说明尚未提交，继续操作会关闭这份草稿。确定继续吗？'), []);
   const [scenarioOpen, setScenarioOpen] = useState(false);
+  const [queryReflection, setQueryReflection] = useState<{ query: string; nameHintedConceptIds: readonly string[] } | null>(null);
   const [practiceOpen, setPracticeOpen] = useState(false);
   const practiceWriteRef = useRef<(path: '/practice-cards' | '/practice-attempts', payload: PracticeCardRequest | PracticeAttemptRequest) => Promise<boolean>>(async () => false);
   const practiceHandlers = useMemo<PracticeHandlers>(() => ({
@@ -983,6 +984,19 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     else selectConcept(conceptId);
   }, [changeDomain, domainBusy, domainId, selectConcept, snapshot]);
 
+  const startQueryReflection = useCallback((entry: QueryReflectionEntry) => {
+    if (domainBusy || writeLocked || !hasSession || !snapshot || !confirmCorrectionNavigation()) return;
+    const nameHintedConceptIds = [...new Set([
+      ...listedConcepts.map((concept) => concept.id),
+      ...(viewSnapshot?.concepts.map((concept) => concept.id) ?? []),
+      ...crossDomainNeighbors.map((neighbor) => neighbor.concept.id),
+      ...entry.hintedConceptIds,
+    ])];
+    setReaderRequest(null);
+    setQueryReflection({ query: entry.query, nameHintedConceptIds });
+    setScenarioOpen(true);
+  }, [confirmCorrectionNavigation, crossDomainNeighbors, domainBusy, hasSession, listedConcepts, snapshot, viewSnapshot, writeLocked]);
+
   const closeOverview = useCallback(() => {
     overviewOpenRef.current = false;
     overviewNavigationRef.current += 1;
@@ -1536,6 +1550,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     activeDomainRef.current = targetDomain;
     setScenarioReader(null);
     setScenarioOpen(false);
+    setQueryReflection(null);
     setSelectedId(concept.id);
     setActiveDomainId(targetDomain);
     setExpandedIds([]);
@@ -1875,7 +1890,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         </div>
         <div className="topbar-actions">
           {account ? <><span className="account-name" title="当前私人知识空间">{account.username}</span><button type="button" className="quiet-button" disabled={domainBusy || !hasSession} onClick={() => setFeishuBindingOpen(true)}>飞书绑定</button>{account.role === 'admin' ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={onManageAccounts}>账号管理</button> : null}<button type="button" className="quiet-button" disabled={domainBusy} onClick={onLogout}>退出登录</button></> : null}
-          <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => { setReaderRequest(null); setScenarioOpen(true); }}>场景调用练习</button>
+          <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => { setReaderRequest(null); setQueryReflection(null); setScenarioOpen(true); }}>场景调用练习</button>
           <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={domainBusy || writeLocked} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
           <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={writeLocked || domainBusy || !hasSession} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；可通过「导入恢复」恢复到当前账号。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
           <button type="button" className="quiet-button" disabled={domainBusy || Boolean(dataMaintenanceLockedReason)} title={dataMaintenanceLockedReason ?? '预览并恢复 JSON 备份中的学习数据'} onClick={() => {
@@ -1932,7 +1947,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         aria-busy={busyAction === 'brief-review'} inert={learningOverlayOpen || busyAction === 'brief-review' ? true : undefined}>
         <aside className="left-panel">
           <div className="panel-heading"><div><span className="eyebrow">知识空间</span><h1>概念索引</h1></div><span className="count-chip">{listedConcepts.length}</span></div>
-          <ConceptSearch key={sourceId} concepts={snapshot.concepts} currentDomainId={domainId} disabled={domainBusy} onSelect={selectSearchResult} />
+          <ConceptSearch key={sourceId} concepts={snapshot.concepts} currentDomainId={domainId} disabled={domainBusy} onSelect={selectSearchResult}
+            onStartQueryReflection={startQueryReflection} queryReflectionDisabled={writeLocked || !hasSession} />
           <BriefReviewPanel domainLabel={domainId ? domainLabel(domainId) : '当前领域'} candidateCount={briefCandidates.length}
             budget={briefBudget} disabledReason={briefDisabledReason} onBudgetChange={setBriefBudget} onStart={() => void startBriefReview()}
             daily={dailyAllowance && reviewPlan.response ? { ...dailyAllowance, budget: reviewPlan.response.plan.dailyBudget, timeZone: reviewPlan.timeZone } : undefined}
@@ -2123,8 +2139,10 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         onClose={() => setApplicationDraft(null)} /> : null}
 
       {scenarioOpen ? <ScenarioPractice key={sourceId} snapshot={snapshot} sourceId={sourceId} busy={busyAction === 'scenario'}
-        onClose={() => { setScenarioOpen(false); setScenarioReader(null); }} onSave={saveScenarioObservation}
-        onLoadPrompts={(options) => api.getScenarioPrompts(sourceId, options)}
+        variant={queryReflection ? 'query' : 'scenario'} initialScenario={queryReflection?.query ?? ''}
+        nameHintedConceptIds={queryReflection?.nameHintedConceptIds}
+        onClose={() => { setScenarioOpen(false); setQueryReflection(null); setScenarioReader(null); }} onSave={saveScenarioObservation}
+        onLoadPrompts={queryReflection ? undefined : (options) => api.getScenarioPrompts(sourceId, options)}
         onContinueApplication={continueScenarioApplication}
         wasSourceViewed={(concept) => sourceViewedKeys.includes(sourceExposureKey(sourceId, concept))}
         onSourceExposed={(concept) => markSourceViewed(concept.id)}
