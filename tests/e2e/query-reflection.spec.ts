@@ -1,12 +1,24 @@
 import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { chooseDomain, domainIdOf } from '../../src/core/domain-view';
-import type { ExportData, ObservationRequest, Snapshot } from '../../src/shared/types';
+import type { Concept, ExportData, ObservationRequest, Snapshot } from '../../src/shared/types';
 
 /** Nested help, counters and option text belong to the native label too.
  * Match its exact title, then resolve the unique control in that label. */
 function field(page: Page, dialog: Locator, title: string, control: 'textarea' | 'select') {
   return dialog.locator('label').filter({ has: page.getByText(title, { exact: true }) }).locator(control);
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Candidate titles are text nodes next to a domain <small>, not child labels. */
+async function chooseCandidate(dialog: Locator, concept: Concept) {
+  const name = new RegExp(`^\\s*${escapeRegex(concept.title)}\\s*${escapeRegex(concept.domain)}\\s*$`);
+  const option = dialog.getByRole('listbox', { name: '匹配的概念', exact: true }).getByRole('option', { name });
+  await expect(option).toHaveCount(1);
+  await option.click();
 }
 
 async function exported(request: APIRequestContext) {
@@ -98,7 +110,7 @@ test('query reflection hides the workspace until the original answer freezes and
   const dialog = await begin(page, '怎样为系统选择一种可解释的抽象？', '先列出候选方法，再检验输入和约束。', 'query-reflection-alias');
   const lookup = dialog.getByRole('combobox', { name: '你认为哪个概念适用于这个场景？', exact: true });
   await lookup.fill('query-reflection-summary-marker');
-  await dialog.getByRole('option').filter({ has: page.getByText(external.title, { exact: true }) }).click();
+  await chooseCandidate(dialog, external);
   await expect(dialog.locator('.scenario-selected-concept')).toContainText(external.title);
   await expect(dialog.locator('.scenario-summary')).toContainText('query-reflection-summary-marker');
   const cue = field(page, dialog, '获得概念的线索', 'select');
@@ -109,7 +121,7 @@ test('query reflection hides the workspace until the original answer freezes and
   await field(page, dialog, '判断依据', 'select').selectOption('self-check');
   await field(page, dialog, '为什么适用或不适用（可在核对后补充）', 'textarea').fill('核对后补充的适用条件。');
   await lookup.fill(primary.title);
-  await dialog.getByRole('option').filter({ has: page.getByText(primary.title, { exact: true }) }).click();
+  await chooseCandidate(dialog, primary);
   await expect(cue).toHaveValue('hinted'); // Current domain names were visible before entering.
   await expect(field(page, dialog, '这次调用结果', 'select')).toHaveValue('unverified');
   await expect(field(page, dialog, '判断依据', 'select')).toHaveValue('unknown');
@@ -124,7 +136,7 @@ test('blank original answer cannot become independent after looking up a concept
   const before = await exported(request);
   const dialog = await begin(page, '有一个暂时想不出模型的问题。', '');
   await dialog.getByRole('combobox', { name: '你认为哪个概念适用于这个场景？', exact: true }).fill('query-reflection-alias');
-  await dialog.getByRole('option').filter({ has: page.getByText(external.title, { exact: true }) }).click();
+  await chooseCandidate(dialog, external);
   await expect(field(page, dialog, '获得概念的线索', 'select').locator('option[value="independent"]')).toBeDisabled();
   await discard(page);
   expect(await exported(request)).toEqual(before);
@@ -137,7 +149,7 @@ test('voluntary query observation retains the frozen answer without changing mem
   const problem = '需要从需求约束中找到适合的知识模型。';
   const dialog = await begin(page, problem, originalAnswer);
   await dialog.getByRole('combobox', { name: '你认为哪个概念适用于这个场景？', exact: true }).fill('query-reflection-alias');
-  await dialog.getByRole('option').filter({ has: page.getByText(external.title, { exact: true }) }).click();
+  await chooseCandidate(dialog, external);
   await field(page, dialog, '获得概念的线索', 'select').selectOption('lookup');
   await field(page, dialog, '这次调用结果', 'select').selectOption('partial');
   await field(page, dialog, '判断依据', 'select').selectOption('self-check');
@@ -173,7 +185,7 @@ test('an unexpanded cross-domain relation name is a hint without exposing its so
   await expect(neighbor.getByRole('button', { name: '在图中展开', exact: true })).toBeVisible();
   const dialog = await begin(page, '需要针对输入和规则选择可解释模型。', '先辨识业务约束，再确定建模工具。');
   await dialog.getByRole('combobox', { name: '你认为哪个概念适用于这个场景？', exact: true }).fill('query-reflection-alias');
-  await dialog.getByRole('option').filter({ has: page.getByText(external.title, { exact: true }) }).click();
+  await chooseCandidate(dialog, external);
   await expect(field(page, dialog, '获得概念的线索', 'select')).toHaveValue('hinted');
   await expect(field(page, dialog, '获得概念的线索', 'select').locator('option[value="independent"]')).toBeDisabled();
   await expect(field(page, dialog, '提交前是否看过资料', 'select')).toHaveValue('unknown');
