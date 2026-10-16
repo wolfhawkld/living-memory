@@ -1,3 +1,5 @@
+import { decodeString } from 'micromark-util-decode-string';
+
 /** Coordinates in normalizeDisplayMath(body), never the original source file. */
 export interface BodyRange {
   coordinateSpace: 'render-markdown-v1';
@@ -14,6 +16,13 @@ export interface KnowledgeSection {
   headingPath: string[];
   bodyRange: BodyRange;
   contentHash: string;
+}
+export interface KnowledgeContentBlock {
+  blockId: string;
+  contentPart: 'summary' | 'body';
+  kind: 'heading' | 'paragraph' | 'list-item' | 'code' | 'table';
+  bodyRange: BodyRange;
+  sectionId?: string;
 }
 export type KnowledgeReferenceStatus = 'resolved-document' | 'resolved-section' | 'missing-concept'
   | 'ambiguous' | 'missing-section' | 'unsupported-block' | 'unsafe';
@@ -60,11 +69,16 @@ export interface KnowledgeReferences {
   sourceRevision: string;
   sections: KnowledgeSection[];
   references: KnowledgeReference[];
+  /** Optional only for older clients/fixtures; new metadata includes both parts. */
+  blocks?: KnowledgeContentBlock[];
 }
 interface HeadingNode {
   type?: string;
   value?: string;
   alt?: string;
+  depth?: number;
+  lang?: string | null;
+  position?: { start: { offset?: number }; end: { offset?: number } };
   children?: HeadingNode[];
   data?: { hProperties?: Record<string, unknown> };
 }
@@ -104,4 +118,70 @@ export function assignHeadingSectionIds(tree: unknown): void {
 }
 export function remarkKnowledgeHeadingIds(): (tree: unknown) => void {
   return assignHeadingSectionIds;
+}
+
+/** The content must already be the renderer's normalizeDisplayMath input. */
+export function assignKnowledgeContentBlocks(tree: unknown, normalizedContent: string,
+  contentPart: 'summary' | 'body'): KnowledgeContentBlock[] {
+  assignHeadingSectionIds(tree);
+  const headings: HeadingNode[] = [];
+  const collect = (node: HeadingNode): void => {
+    if (node.type === 'heading' && node.position?.start.offset !== undefined) headings.push(node);
+    node.children?.forEach(collect);
+  };
+  collect(tree as HeadingNode);
+  const sections = headings.map((node, index) => ({
+    sectionId: String(node.data!.hProperties!.id), level: node.depth!, start: node.position!.start.offset!,
+    end: headings.slice(index + 1).find((next) => next.depth! <= node.depth!)?.position!.start.offset ?? normalizedContent.length,
+  }));
+  const ignored = new Set(['html', 'math', 'inlineMath', 'footnoteDefinition', 'image', 'imageReference']);
+  const hasText = (node: HeadingNode): boolean => {
+    if (ignored.has(node.type ?? '') || (node.type === 'code' && node.lang?.toLowerCase() === 'mermaid')) return false;
+    if (node.type === 'text') {
+      const start = node.position?.start.offset; const end = node.position?.end.offset;
+      const raw = start !== undefined && end !== undefined ? normalizedContent.slice(start, end) : node.value ?? '';
+      let rest = ''; let last = 0;
+      for (const reference of scanWikiReferences(raw)) {
+        if (!reference.embedded) continue;
+        rest += raw.slice(last, reference.index); last = reference.index + reference.length;
+      }
+      return Boolean(decodeString(rest + raw.slice(last)).trim());
+    }
+    if (node.type === 'inlineCode' || node.type === 'code') return Boolean(node.value?.trim());
+    return node.children?.some(hasText) ?? false;
+  };
+  const blocks: KnowledgeContentBlock[] = [];
+  const kinds: Record<string, KnowledgeContentBlock['kind']> = {
+    heading: 'heading', paragraph: 'paragraph', listItem: 'list-item', code: 'code', table: 'table',
+  };
+  const line = (offset: number) => normalizedContent.slice(0, offset).split(/\r\n|\n|\r/).length;
+  const visit = (node: HeadingNode): void => {
+    if (ignored.has(node.type ?? '') || (node.type === 'code' && node.lang?.toLowerCase() === 'mermaid')) return;
+    const kind = kinds[node.type ?? ''];
+    const start = node.position?.start.offset; const end = node.position?.end.offset;
+    const textual = hasText(node);
+    if (kind && textual && start !== undefined && end !== undefined && Number.isSafeInteger(start) && Number.isSafeInteger(end)
+      && start >= 0 && end > start && end <= normalizedContent.length) {
+      const blockId = `block-${contentPart}-${start}-${end}`;
+      const section = contentPart === 'body' ? sections.filter((entry) => entry.start <= start && entry.end >= end)
+        .sort((left, right) => right.level - left.level)[0] : undefined;
+      const block: KnowledgeContentBlock = { blockId, contentPart, kind,
+        bodyRange: { coordinateSpace: 'render-markdown-v1', startOffset: start, endOffset: end,
+          startLine: line(start), endLine: line(end - 1) }, ...(section ? { sectionId: section.sectionId } : {}) };
+      blocks.push(block);
+      node.data ??= {}; node.data.hProperties ??= {};
+      node.data.hProperties['data-knowledge-block'] = blockId;
+      return; // A list/table container owns its descendants; no overlapping reports.
+    }
+    node.children?.forEach(visit);
+  };
+  visit(tree as HeadingNode);
+  return blocks;
+}
+
+export function remarkKnowledgeContentBlocks(options: { contentPart: 'summary' | 'body' }):
+  (tree: unknown, file: { value?: unknown }) => void {
+  return (tree, file) => {
+    if (typeof file.value === 'string') assignKnowledgeContentBlocks(tree, file.value, options.contentPart);
+  };
 }

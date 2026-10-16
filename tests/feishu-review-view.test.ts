@@ -366,3 +366,20 @@ test('minimal learning layout centers the concept and puts equal reports before 
   const queueNote = elements.find(element => element.tag === 'markdown' && element.content.includes('队列固定'));
   assert.equal(queueNote!.text_size, 'notation');
 });
+
+test('review activity distinguishes a prompt from the actually revealed page and omits paused, saved and unavailable material', () => {
+  const value = input();
+  const front = render(value);
+  assert.equal(front.activity?.coverage, 'prompt'); assert.equal(front.activity?.refs[0]?.scope, 'result');
+  assert.equal(front.activity?.request, undefined); // Navigation actions are not a selection.
+  value.session!.state.phase = 'revealed';
+  const revealed = render(value);
+  assert.equal(revealed.activity?.coverage, 'body-page'); assert.equal(revealed.activity?.page, 1);
+  assert.equal(revealed.activity?.refs[0]?.scope, 'body'); assert.equal(revealed.activity?.refs[0]?.bodyRange, undefined);
+  value.session!.state.paused = true;
+  assert.equal(render(value).activity, undefined);
+  value.session!.state.paused = false; value.session!.state.phase = 'saved';
+  assert.equal(render(value).activity, undefined);
+  value.availability = 'source-changed';
+  assert.equal(render(value).activity, undefined);
+});

@@ -1,0 +1,22 @@
+.performance-benchmark { height: 100%; overflow: auto; box-sizing: border-box; padding: 24px; color: var(--ui-text, #dce8fa); background: var(--ui-bg, #08101d); }
+.performance-benchmark > header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
+.performance-benchmark h1 { margin: 7px 0; font-size: 28px; }
+.performance-benchmark h2 { font-size: 18px; }
+.performance-benchmark p { color: var(--ui-text-muted, #91a5c4); line-height: 1.65; }
+.performance-benchmark a { color: var(--ui-accent, #89b5ff); }
+.performance-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; padding: 18px; margin-top: 18px; border: 1px solid var(--ui-border, rgba(132, 158, 197, .22)); border-radius: 10px; background: var(--ui-panel, #111d30); }
+.performance-controls label { display: grid; gap: 7px; font-size: 13px; }
+.performance-controls select, .performance-controls button { border: 1px solid var(--ui-border-strong, rgba(132, 158, 197, .4)); border-radius: 6px; padding: 9px 12px; color: var(--ui-text, #dce8fa); background: var(--ui-raised, #17273e); }
+.performance-controls button { cursor: pointer; }
+.performance-controls :disabled { opacity: .5; cursor: default; }
+.performance-controls :focus-visible { outline: 2px solid var(--ui-accent, #89b5ff); outline-offset: 3px; }
+.performance-progress { min-height: 26px; }
+.performance-viewport { position: relative; height: min(65vh, 720px); min-height: 380px; overflow: hidden; border: 1px solid var(--ui-border-strong, rgba(132, 158, 197, .4)); border-radius: 12px; background: var(--graph-background, #071322); }
+.performance-viewport .graph-canvas { width: 100%; height: 100%; }
+.performance-method { font-size: 13px; }
+.performance-table-scroll { overflow: auto; }
+.performance-benchmark table { width: 100%; border-collapse: collapse; background: var(--ui-panel, #111d30); font-size: 12px; }
+.performance-benchmark th, .performance-benchmark td { padding: 12px; border: 1px solid var(--ui-border, rgba(132, 158, 197, .22)); text-align: left; white-space: nowrap; }
+.performance-benchmark th { background: var(--ui-raised, #17273e); }
+.performance-benchmark [role="alert"] { color: var(--ui-warning, #e9b96d); }
+@media (max-width: 700px) { .performance-benchmark { padding: 14px; } .performance-benchmark > header { flex-direction: column; gap: 4px; } .performance-viewport { min-height: 300px; } }

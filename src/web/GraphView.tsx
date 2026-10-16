@@ -17,6 +17,7 @@ import { applyNodeTheme, applySceneTheme, type GraphThemeResources, type NodeVis
 import { applyGraphPixelRatio, resolveGraphPixelRatio, type GraphRenderQuality } from './graph-render-quality';
 import { createGraphActivityController } from './graph-activity';
 import { GraphFallbackList } from './GraphFallbackList';
+import { createGraphPerformanceProbe, type GraphPerformanceProbe } from './graph-performance';
 
 export interface GraphViewProps {
   snapshot: Snapshot;
@@ -34,9 +35,12 @@ export interface GraphViewProps {
   focusRevision?: number;
   onSelect: (conceptId: string) => void;
   onLayoutChange: (layout: Layout) => void;
+  /** Opt-in synthetic performance harness; production does not install a probe. */
+  onPerformanceProbeReady?: (probe: GraphPerformanceProbe | null) => void;
 }
 
 interface PostProcessingComposer {
+  render: (...args: any[]) => any;
   addPass: (pass: UnrealBloomPass | OutputPass) => void;
   removePass: (pass: UnrealBloomPass | OutputPass) => void;
   renderTarget1: THREE.WebGLRenderTarget;
@@ -277,8 +281,12 @@ function GraphViewInstance({
   focusRevision = 0,
   onSelect,
   onLayoutChange,
+  onPerformanceProbeReady,
 }: GraphViewProps) {
-  const theme = themePalette(useTheme().resolvedTheme);
+  const resolvedTheme = useTheme().resolvedTheme;
+  const theme = themePalette(resolvedTheme);
+  const resolvedThemeRef = useRef(resolvedTheme); resolvedThemeRef.current = resolvedTheme;
+  const performanceReadyRef = useRef(onPerformanceProbeReady); performanceReadyRef.current = onPerformanceProbeReady;
   const themeRef = useRef(theme);
   themeRef.current = theme;
   const hostRef = useRef<HTMLDivElement>(null);
@@ -368,6 +376,7 @@ function GraphViewInstance({
     let disposed = false;
     let ownedGraph: GraphInstance | null = null;
     let activity: ReturnType<typeof createGraphActivityController> | null = null;
+    let performanceProbe: GraphPerformanceProbe | null = null;
     const disposers: Array<() => void> = [];
     // One failed resource release must not leave other listeners or loops alive.
     const release = (dispose: () => void) => {
@@ -386,6 +395,8 @@ function GraphViewInstance({
         }
       }
       for (const dispose of disposers.reverse()) release(dispose);
+      release(() => performanceProbe?.dispose());
+      if (performanceProbe) release(() => performanceReadyRef.current?.(null));
     };
 
     try {
@@ -585,6 +596,17 @@ function GraphViewInstance({
         if (refreshGraphPixelRatioRef.current === refreshGraphPixelRatio) refreshGraphPixelRatioRef.current = null;
       });
       refreshGraphPixelRatio();
+      if (performanceReadyRef.current) {
+        const renderer = graph.renderer();
+        performanceProbe = createGraphPerformanceProbe({ composer, renderer,
+          readContext: () => ({ hidden: document.hidden, paused: pausedRef.current,
+            contextLost: renderer.getContext().isContextLost(), quality: renderQualityRef.current,
+            theme: resolvedThemeRef.current, viewMode: twoDimensionalRef.current ? '2d' : '3d', glowEnabled: glowEnabledRef.current,
+            dpr: renderer.getPixelRatio(), viewport: { width: host.clientWidth, height: host.clientHeight },
+            canvas: { width: renderer.domElement.width, height: renderer.domElement.height }, canvasCount: host.querySelectorAll('canvas').length }),
+        });
+        performanceReadyRef.current(performanceProbe);
+      }
 
       let width = host.clientWidth;
       let height = host.clientHeight;

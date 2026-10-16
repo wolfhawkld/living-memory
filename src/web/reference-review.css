@@ -1,0 +1,29 @@
+.reference-review-dialog { width: min(1120px, 94vw); max-height: 92vh; max-height: 92dvh; margin: auto; padding: 0; border: 1px solid var(--ui-border-strong); border-radius: 14px; background: var(--ui-panel); color: var(--ui-text); box-shadow: var(--ui-shadow); overflow: hidden; }
+.reference-review-dialog[open] { display: flex; flex-direction: column; }
+.reference-review-dialog::backdrop { background: var(--ui-backdrop); backdrop-filter: blur(8px); }
+.reference-review-dialog header { display: flex; justify-content: space-between; gap: 20px; padding: 22px 26px 16px; border-bottom: 1px solid var(--ui-border); }
+.reference-review-dialog h2 { margin: 7px 0 0; font-size: 23px; }
+.reference-review-dialog h3 { margin: 0 0 14px; font-size: 16px; }
+.reference-review-close { width: 38px; height: 38px; flex: 0 0 auto; font-size: 25px; }
+.reference-review-scroll { overflow: auto; min-height: 0; padding: 20px 26px; }
+.reference-review-scroll > p { margin: 0 0 18px; line-height: 1.7; }
+.reference-review-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.reference-review-comparison section { min-width: 0; padding: 18px; border: 1px solid var(--ui-border); border-radius: 10px; background: var(--ui-raised); }
+.reference-review-dialog dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px 14px; margin: 16px 0 0; font-size: 13px; }
+.reference-review-dialog dt { color: var(--ui-text-muted); }
+.reference-review-dialog dd { margin: 0; overflow-wrap: anywhere; }
+.reference-review-dialog select { width: 100%; min-width: 0; margin-top: 8px; padding: 10px; border: 1px solid var(--ui-border-strong); border-radius: 7px; background: var(--ui-input); color: var(--ui-text); }
+.reference-review-dialog button { padding: 8px 12px; border: 1px solid var(--ui-border-strong); border-radius: 7px; background: var(--ui-raised); color: var(--ui-text); cursor: pointer; }
+.reference-review-dialog button:disabled, .reference-review-dialog select:disabled { opacity: .5; cursor: default; }
+.reference-review-dialog button:focus-visible, .reference-review-dialog input:focus-visible, .reference-review-dialog select:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 3px; }
+.reference-review-targets { margin-top: 22px; }
+.reference-review-whole { display: flex; align-items: center; gap: 10px; margin: 16px 0 12px; padding: 12px; border: 1px solid var(--ui-border-strong); border-radius: 7px; }
+.reference-review-whole:has(input:checked), .reference-review-chapters button[aria-pressed="true"] { border-color: var(--ui-accent); background: var(--ui-selected); }
+.reference-review-chapters { display: flex; flex-direction: column; gap: 5px; max-height: 260px; overflow: auto; }
+.reference-review-chapters button { text-align: left; overflow-wrap: anywhere; }
+.reference-review-dialog .reference-review-boundary { margin-top: 22px; color: var(--ui-text-muted); font-size: 13px; }
+.reference-review-dialog [role="alert"] { color: var(--ui-warning); }
+.reference-review-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 26px; border-top: 1px solid var(--ui-border); background: var(--ui-raised); }
+.reference-review-dialog footer span { font-size: 13px; color: var(--ui-text-muted); }
+.reference-review-dialog footer button { flex: 0 0 auto; border-color: var(--ui-accent); }
+@media (max-width: 700px) { .reference-review-comparison { grid-template-columns: minmax(0, 1fr); } .reference-review-dialog header, .reference-review-dialog footer, .reference-review-scroll { padding: 16px; } .reference-review-dialog footer { align-items: stretch; flex-direction: column; } }

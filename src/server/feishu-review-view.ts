@@ -1,3 +1,4 @@
+import { feishuActivityReference, type FeishuActivityCoverage } from './feishu-activity.js';
 import type { Concept } from '../shared/types.js';
 import type { FeishuCardActionDefinition, FeishuCardPayload, FeishuCardView } from '../shared/feishu-cards.js';
 import type { FeishuReviewOperation, FeishuReviewSession, FeishuReviewTarget } from '../shared/feishu-review.js';
@@ -17,7 +18,7 @@ const FOOTER = '脑中回忆为自报，不记录原答，不计入独立成功�
 
 /** Pure transient rendering. Only the local transition handler may change state. */
 export function planFeishuReviewView(input: FeishuReviewRenderInput): {
-  view: FeishuCardView; actions: FeishuCardActionDefinition[]; build: (cardId: string) => FeishuCardPayload;
+  activity?: FeishuActivityCoverage; view: FeishuCardView; actions: FeishuCardActionDefinition[]; build: (cardId: string) => FeishuCardPayload;
 } {
   const { session, concept } = input;
   const operations = session ? feishuReviewCurrentOperations(session, input.operations) : [];
@@ -36,6 +37,7 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
   let body: string | null = null;
   let layout: 'default' | 'front' | 'revealed' | 'saved' = 'default';
   let recoveryNote = '';
+  let activity: FeishuActivityCoverage | undefined;
   const pending = input.operations.some((operation) => operation.status === 'pending');
   const conflict = operations.some((operation) => operation.status === 'conflict');
   if (session?.state.phase === 'finished') {
@@ -81,6 +83,7 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
     add('重试同步', 'retry'); add('暂停复习', 'pause');
   } else if (session.state.phase === 'front') {
     step = '先回忆'; layout = 'front';
+    activity = { coverage: 'prompt', refs: [feishuActivityReference(concept, 'result')] };
     title = metadata(concept.title, 200);
     content = '想想它的原理，以及会用在哪个场景';
     add('查看资料', 'reveal'); add('暂停复习', 'pause'); add('结束复习', 'finish');
@@ -95,6 +98,7 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
       layout = 'revealed';
       content = `资料 ${session.state.page}/${chunks.length} 页`;
       body = chunks[session.state.page - 1] || '（正文为空）';
+      if (concept.body.trim()) activity = { coverage: 'body-page', refs: [feishuActivityReference(concept, 'body')], page: session.state.page, pageCount: chunks.length };
       if (session.state.page > 1) add('上一页', 'show', session.state.page - 1);
       if (session.state.page < chunks.length) add('下一页', 'show', session.state.page + 1);
       if (!operations.length) {
@@ -169,7 +173,7 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
     elements.push(cardDivider(), cardMarkdown(FOOTER, 'notation'));
     return styledFeishuCard({ title: step, subtitle, template, elements });
   };
-  return { view, actions, build };
+  return { view, actions, build, ...(activity ? { activity } : {}) };
 }
 
 function batchSummary(session: FeishuReviewSession, operations: readonly FeishuReviewOperation[]): string {

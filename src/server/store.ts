@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ActivityStore } from './activity-store.js';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -588,6 +589,7 @@ function decodeScenarioPromptCursor(value: string): ScenarioPromptStoreCursor {
 export class Store {
   readonly namespace: string;
   readonly dbPath: string;
+  readonly activity: ActivityStore;
   private readonly now: () => Date;
   private readonly db: DatabaseSync;
 
@@ -599,6 +601,7 @@ export class Store {
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
     this.initialize();
+    this.activity = new ActivityStore({ db: this.db, namespace: this.namespace, now: this.now });
   }
 
   close(): void {

@@ -20,6 +20,8 @@ import { fileURLToPath } from 'node:url';
 import { isValidInstant } from '../core/time-model.js';
 import { readDeviceSession } from './device-session.js';
 import type { Concept, MemoryState, ReviewRequest, Snapshot } from '../shared/types.js';
+import { recordCliActivity, retryCliActivity, clearLocalCliActivity, type CliActivityOptions, type CliActivityTransport } from './activity.js';
+import type { ActivityAppendResult, ActivitySettings } from '../shared/activity.js';
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const EVENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -68,6 +70,7 @@ interface ParsedOptions {
   at?: string;
   revision?: string;
   operationId?: string;
+  saveQuery: boolean;
   help: boolean;
 }
 
@@ -80,6 +83,9 @@ interface ParsedCommand {
 interface SessionResponse {
   writeToken: string;
   sourceId: string;
+  sourceRootFingerprint?: string;
+  instanceId?: string;
+  user?: { id: string };
 }
 
 interface RefreshResponse {
@@ -90,6 +96,7 @@ interface RefreshResponse {
 interface ReviewReceipt {
   version: 1;
   sourceId: string;
+  instanceId?: string;
   eventId: string;
   request: ReviewRequest & { occurredAt: string };
   status: 'pending' | 'succeeded';
@@ -117,12 +124,15 @@ const HELP_TEXT = `Living Memory 本地 CLI
   review <选择器> --confirm             创建一次已冻结时间的重温确认
     [--event-id <ID>] [--at <ISO>] [--revision <REV>]
   retry <event-id>                      重试本地收据中的重温请求
+  activity-retry <operation-id>         仅重放冻结的查阅活动，不重做查询或刷新
+  activity-clear-local --confirm        清除当前账号/知识空间/服务的本地活动收据
 
 通用选项：
   --url <URL>                          默认 http://127.0.0.1:4317
   --source-root <目录>                 校验知识源目录命名空间
   --state-dir <目录>                   收据目录（默认仓库 data/local/cli）
   --confirm                             review 必须明确提供此选项
+  --save-query                          仅 query：主动保存查询原文（最多1000字符）
   --help                               显示帮助
 
 所有成功结果写入 stdout 的 JSON；错误写入 stderr 的结构化 JSON，并以非零状态退出。
@@ -148,7 +158,7 @@ function parseOptionValue(argv: string[], index: number, option: string): { valu
 }
 
 function parseCommand(argv: string[]): ParsedCommand {
-  const options: ParsedOptions = { confirm: false, help: false };
+  const options: ParsedOptions = { confirm: false, help: false, saveQuery: false };
   const args: string[] = [];
   let command: string | null = null;
   let parsingOptions = true;
@@ -170,9 +180,10 @@ function parseCommand(argv: string[]): ParsedCommand {
       const inline = equals >= 0 ? token.slice(equals + 1) : undefined;
       if (seen.has(name)) throw new CliError('INVALID_ARGUMENT', `选项 ${name} 不能重复。`);
       seen.add(name);
-      if (name === '--confirm') {
-        if (inline !== undefined && inline !== '') throw new CliError('INVALID_ARGUMENT', '--confirm 不接受值。');
-        options.confirm = true;
+      if (name === '--confirm' || name === '--save-query') {
+        if (inline !== undefined && inline !== '') throw new CliError('INVALID_ARGUMENT', `${name} 不接受值。`);
+        if (name === '--confirm') options.confirm = true;
+        else options.saveQuery = true;
         continue;
       }
       const knownValueOption = name === '--url'
@@ -250,7 +261,7 @@ function configuredSourceRoot(cliValue: string | undefined, optionValue: string 
   return configured ? resolve(configured) : undefined;
 }
 
-function sourceIdForRoot(root: string): string {
+function sourceRootFingerprint(root: string): string {
   let canonical: string;
   try {
     canonical = realpathSync(resolve(root));
@@ -258,13 +269,14 @@ function sourceIdForRoot(root: string): string {
   } catch {
     throw new CliError('SOURCE_ROOT_INVALID', '知识源目录不存在或不是目录，无法校验 sourceId。');
   }
-  return `kg_${createHash('sha256').update(canonical).digest('hex').slice(0, 48)}`;
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
-function validateSourceRoot(root: string | undefined, sourceId: string): void {
+function validateSourceRoot(root: string | undefined, sourceId: string, fingerprint?: string): void {
   if (!root) return;
-  const expected = sourceIdForRoot(root);
-  if (expected !== sourceId) {
+  const physicalFingerprint = sourceRootFingerprint(root);
+  const expected = `kg_${physicalFingerprint.slice(0, 48)}`;
+  if (fingerprint !== undefined ? physicalFingerprint !== fingerprint : expected !== sourceId) {
     throw new CliError('SOURCE_MISMATCH', '知识源目录与当前会话 sourceId 不匹配，已拒绝刷新或写入。', {
       expectedSourceId: expected,
       sessionSourceId: sourceId,
@@ -312,6 +324,7 @@ class ApiClient {
   private token: string | undefined;
   private sourceId: string | undefined;
   private readonly deviceSession: string | undefined;
+  private instanceId: string | undefined;
 
   constructor(options: { baseUrl: string; timeoutMs: number; fetchImpl: FetchImplementation; deviceSession?: string }) {
     this.baseUrl = options.baseUrl;
@@ -324,13 +337,14 @@ class ApiClient {
     return `${this.baseUrl}/api${path}`;
   }
 
-  async json<T>(path: string, init: { method?: string; body?: unknown; write?: boolean } = {}): Promise<T> {
+  async json<T>(path: string, init: { method?: string; body?: unknown; write?: boolean; timeoutMs?: number } = {}): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (this.deviceSession) headers.Authorization = `Bearer ${this.deviceSession}`;
     if (init.body !== undefined) headers['Content-Type'] = 'application/json';
     if (init.write) {
       if (!this.token) throw new CliError('SESSION_REQUIRED', '写入请求缺少本地会话令牌。');
       headers['X-LM-Token'] = this.token;
+      if (this.instanceId) headers['X-LM-Instance-ID'] = this.instanceId;
     }
     if (this.sourceId) headers['X-LM-Source-ID'] = this.sourceId;
     const controller = new AbortController();
@@ -352,7 +366,7 @@ class ApiClient {
         timeout = setTimeout(() => {
           controller.abort();
           reject(new CliError('TIMEOUT', '本地服务请求超时，请检查服务是否正在运行。'));
-        }, this.timeoutMs);
+        }, init.timeoutMs ?? this.timeoutMs);
       });
       const result = await Promise.race([operation, deadline]);
       response = result.response;
@@ -392,7 +406,14 @@ class ApiClient {
     }
     this.token = result.writeToken;
     this.sourceId = result.sourceId;
-    return { writeToken: result.writeToken, sourceId: result.sourceId };
+    if (result.sourceRootFingerprint !== undefined && (typeof result.sourceRootFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(result.sourceRootFingerprint))) throw new CliError('SESSION_INVALID', '知识源物理指纹格式无效。');
+    if (result.user !== undefined && (!result.user || typeof result.user.id !== 'string' || !result.user.id.trim())) throw new CliError('SESSION_INVALID', '本地服务账号主体无效。');
+    if (result.instanceId !== undefined && (typeof result.instanceId !== 'string' || !result.instanceId.trim() || result.instanceId.length > 200 || /[\u0000-\u001f\u007f]/.test(result.instanceId))) throw new CliError('SESSION_INVALID', '本地服务实例标识无效。');
+    this.instanceId = result.instanceId;
+    return { writeToken: result.writeToken, sourceId: result.sourceId,
+      ...(result.user ? { user: { id: result.user.id } } : {}),
+      ...(result.instanceId !== undefined ? { instanceId: result.instanceId } : {}),
+      ...(result.sourceRootFingerprint !== undefined ? { sourceRootFingerprint: result.sourceRootFingerprint } : {}) };
   }
 }
 
@@ -467,10 +488,16 @@ function parseReceipt(value: unknown, path: string): ReviewReceipt {
     throw new CliError('RECEIPT_INVALID', `收据无效：${path}。`);
   }
   const review = request as Partial<ReviewRequest>;
+  if (candidate.instanceId !== undefined && (typeof candidate.instanceId !== 'string' || !candidate.instanceId.trim()
+    || candidate.instanceId.length > 200 || /[\u0000-\u001f\u007f]/.test(candidate.instanceId))) throw new CliError('RECEIPT_INVALID', '收据实例标识无效。');
   if (review.eventId !== candidate.eventId || review.kind !== 'review' || typeof review.conceptId !== 'string' || typeof review.sourceRevision !== 'string' || typeof review.occurredAt !== 'string' || !isValidInstant(review.occurredAt)) {
     throw new CliError('RECEIPT_INVALID', `收据中的冻结请求无效：${path}。`);
   }
   return candidate as ReviewReceipt;
+}
+
+function assertReceiptInstance(receipt: ReviewReceipt, session: SessionResponse): void {
+  if ((receipt.instanceId ?? 'legacy') !== (session.instanceId ?? 'legacy')) throw new CliError('INSTANCE_MISMATCH', '收据属于恢复前或其他服务实例，已保留原请求并停止重放。');
 }
 
 function readReceipt(stateDir: string, sourceId: string, eventId: string): { receipt: ReviewReceipt | null; path: string } {
@@ -618,16 +645,30 @@ function requestOptions(options: ParsedOptions, runner: CliRunnerOptions, env: N
   };
 }
 
-async function runQuery(client: ApiClient, root: string | undefined, args: string[]): Promise<Record<string, unknown>> {
+interface CliTracking { stateDir: string; now: () => Date; saveQuery: boolean }
+function activityOptions(client: ApiClient, session: SessionResponse, tracking: Pick<CliTracking, 'stateDir' | 'now'>, timeoutMs = 1000): CliActivityOptions {
+  const transport: CliActivityTransport = {
+    scope: { baseUrl: client.baseUrl, principalId: session.user?.id ?? 'local-owner', sourceId: session.sourceId, instanceId: session.instanceId ?? 'legacy' },
+    getSettings: async (remaining) => {
+      const result = await client.json<{ sourceId: string; settings: ActivitySettings }>('/activity/settings', { timeoutMs: remaining });
+      if (!result || result.sourceId !== session.sourceId) throw new CliError('SOURCE_MISMATCH', '活动记录知识空间已变化。');
+      return result.settings;
+    },
+    append: (request, remaining) => client.json<ActivityAppendResult>('/activity/cli', { method: 'POST', body: request, write: true, timeoutMs: remaining }),
+  };
+  return { ...tracking, transport, timeoutMs };
+}
+
+async function runQuery(client: ApiClient, root: string | undefined, args: string[], tracking: CliTracking): Promise<Record<string, unknown>> {
   const query = asNonEmptyString(args.join(' '), '查询文本');
+  if (tracking.saveQuery && query.length > 1000) throw new CliError('INVALID_ARGUMENT', '--save-query 只能主动保存最多 1000 字符的查询原文。');
   const session = await client.session();
-  validateSourceRoot(root, session.sourceId);
+  validateSourceRoot(root, session.sourceId, session.sourceRootFingerprint);
   const refreshed = await client.json<RefreshResponse>('/refresh', { method: 'POST', body: {}, write: true });
   const snapshot = await client.json<Snapshot>('/snapshot?scope=all');
   const needle = query.toLocaleLowerCase();
-  const hits = snapshot.concepts
-    .filter((concept) => [concept.title, concept.summary, ...concept.aliases].some((field) => field.toLocaleLowerCase().includes(needle)))
-    .map((concept) => ({
+  const matched = snapshot.concepts.filter((concept) => [concept.title, concept.summary, ...concept.aliases].some((field) => field.toLocaleLowerCase().includes(needle)));
+  const hits = matched.map((concept) => ({
       id: concept.id,
       title: concept.title,
       aliases: concept.aliases,
@@ -652,13 +693,15 @@ async function runQuery(client: ApiClient, root: string | undefined, args: strin
     refreshed,
     asOf: snapshot.asOf,
     hits,
+    activity: await recordCliActivity(activityOptions(client, session, tracking), { kind: 'query', concepts: matched, resultCount: matched.length,
+      ...(tracking.saveQuery ? { queryText: query } : {}) }),
   };
 }
 
-async function runShow(client: ApiClient, root: string | undefined, args: string[]): Promise<Record<string, unknown>> {
+async function runShow(client: ApiClient, root: string | undefined, args: string[], tracking: CliTracking): Promise<Record<string, unknown>> {
   const selector = asNonEmptyString(args.join(' '), '选择器');
   const session = await client.session();
-  validateSourceRoot(root, session.sourceId);
+  validateSourceRoot(root, session.sourceId, session.sourceRootFingerprint);
   const snapshot = await client.json<Snapshot>('/snapshot?scope=all');
   const selected = resolveSelector(snapshot, selector);
   const incidentLinks = snapshot.links.filter((link) => link.source === selected.concept.id || link.target === selected.concept.id);
@@ -670,13 +713,14 @@ async function runShow(client: ApiClient, root: string | undefined, args: string
     sourceRevision: selected.concept.source.revision,
     state: selected.state,
     incidentLinks,
+    activity: await recordCliActivity(activityOptions(client, session, tracking), { kind: 'show', concept: selected.concept }),
   };
 }
 
 async function runStatus(client: ApiClient, root: string | undefined, args: string[]): Promise<Record<string, unknown>> {
   const selector = args.length > 0 ? args.join(' ') : undefined;
   const session = await client.session();
-  validateSourceRoot(root, session.sourceId);
+  validateSourceRoot(root, session.sourceId, session.sourceRootFingerprint);
   const snapshot = await client.json<Snapshot>('/snapshot?scope=all');
   const result: Record<string, unknown> = {
     command: 'status',
@@ -703,17 +747,17 @@ async function runStatus(client: ApiClient, root: string | undefined, args: stri
 
 async function runRefresh(client: ApiClient, root: string | undefined): Promise<Record<string, unknown>> {
   const session = await client.session();
-  validateSourceRoot(root, session.sourceId);
+  validateSourceRoot(root, session.sourceId, session.sourceRootFingerprint);
   const refreshed = await client.json<RefreshResponse>('/refresh', { method: 'POST', body: {}, write: true });
   return { command: 'refresh', sourceId: session.sourceId, refreshed };
 }
 
-async function runAfter(client: ApiClient, root: string | undefined, args: string[], operationId: string | undefined): Promise<Record<string, unknown>> {
+async function runAfter(client: ApiClient, root: string | undefined, args: string[], operationId: string | undefined, tracking: CliTracking): Promise<Record<string, unknown>> {
   const workflow = asNonEmptyString(args[0] ?? '', '工作流类型');
   if (!['query', 'ingest', 'consolidate'].includes(workflow)) throw new CliError('INVALID_ARGUMENT', 'after 的工作流类型必须是 query、ingest 或 consolidate。');
   const id = asNonEmptyString(operationId ?? '', '--operation-id');
   const session = await client.session();
-  validateSourceRoot(root, session.sourceId);
+  validateSourceRoot(root, session.sourceId, session.sourceRootFingerprint);
   const refreshed = await client.json<RefreshResponse>('/refresh', { method: 'POST', body: {}, write: true });
   return {
     command: 'after',
@@ -723,6 +767,7 @@ async function runAfter(client: ApiClient, root: string | undefined, args: strin
     status: 'refreshed',
     reportedWorkflowStatus: 'succeeded',
     refreshed,
+    activity: await recordCliActivity(activityOptions(client, session, tracking), { kind: 'after', operationId: id, workflow: workflow as 'query' | 'ingest' | 'consolidate' }),
   };
 }
 
@@ -737,7 +782,7 @@ async function runReview(
   if (!options.confirm) throw new CliError('CONFIRM_REQUIRED', 'review 必须明确提供 --confirm。');
   const selector = asNonEmptyString(args.join(' '), '选择器');
   const session = await client.session();
-  validateSourceRoot(root, session.sourceId);
+  validateSourceRoot(root, session.sourceId, session.sourceRootFingerprint);
   const snapshot = await client.json<Snapshot>('/snapshot?scope=all');
   const selected = resolveSelector(snapshot, selector);
   const requestedRevision = options.revision ?? selected.concept.source.revision;
@@ -752,6 +797,7 @@ async function runReview(
   const state = readReceipt(stateDir, session.sourceId, eventId);
   let receipt = state.receipt;
   if (receipt) {
+    assertReceiptInstance(receipt, session);
     assertReceiptMatches(receipt, session.sourceId, selected, requestedRevision, requestedAt);
   } else {
     const occurredAt = requestedAt ?? nowIso(now);
@@ -765,6 +811,7 @@ async function runReview(
     receipt = createReceipt(stateDir, {
       version: 1,
       sourceId: session.sourceId,
+      ...(session.instanceId && session.instanceId !== 'legacy' ? { instanceId: session.instanceId } : {}),
       eventId,
       request,
       status: 'pending',
@@ -773,6 +820,7 @@ async function runReview(
     });
     assertReceiptMatches(receipt, session.sourceId, selected, requestedRevision, requestedAt);
   }
+  assertReceiptInstance(receipt, session);
   const posted = await postReview(client, stateDir, receipt);
   return {
     command: 'review',
@@ -788,7 +836,7 @@ async function runReview(
 async function runRetry(client: ApiClient, root: string | undefined, stateDir: string, args: string[]): Promise<Record<string, unknown>> {
   const eventId = ensureEventId(asNonEmptyString(args[0] ?? '', 'event-id'));
   const session = await client.session();
-  validateSourceRoot(root, session.sourceId);
+  validateSourceRoot(root, session.sourceId, session.sourceRootFingerprint);
   const stored = readReceipt(stateDir, session.sourceId, eventId).receipt;
   if (!stored) {
     if (findReceiptInOtherSource(stateDir, session.sourceId, eventId)) {
@@ -802,6 +850,7 @@ async function runRetry(client: ApiClient, root: string | undefined, stateDir: s
   if (stored.sourceId !== session.sourceId || stored.eventId !== eventId) {
     throw new CliError('SOURCE_MISMATCH', '收据属于其他 sourceId，已拒绝重用。');
   }
+  assertReceiptInstance(stored, session);
   const posted = await postReview(client, stateDir, stored);
   return {
     command: 'retry',
@@ -820,6 +869,7 @@ async function runRetry(client: ApiClient, root: string | undefined, stateDir: s
 export async function runCli(argv: string[], runner: CliRunnerOptions = {}): Promise<Record<string, unknown> | string> {
   const parsed = parseCommand(argv);
   if (parsed.options.help || parsed.name === null || parsed.name === 'help') return HELP_TEXT;
+  if (parsed.options.saveQuery && parsed.name !== 'query') throw new CliError('INVALID_ARGUMENT', '--save-query 只适用于 query。');
   const options = requestOptions(parsed.options, runner, runner.env ?? process.env);
   const timeoutMs = runner.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1) throw new CliError('INVALID_ARGUMENT', 'timeoutMs 必须是正数。');
@@ -832,13 +882,14 @@ export async function runCli(argv: string[], runner: CliRunnerOptions = {}): Pro
   const root = options.sourceRoot;
   const stateDir = options.stateDir;
   const now = runner.now ?? (() => new Date());
+  const tracking: CliTracking = { stateDir, now, saveQuery: parsed.options.saveQuery };
 
   switch (parsed.name) {
     case 'query':
-      return runQuery(client, root, parsed.args);
+      return runQuery(client, root, parsed.args, tracking);
     case 'show':
       if (parsed.args.length === 0) throw new CliError('INVALID_ARGUMENT', 'show 需要一个选择器。');
-      return runShow(client, root, parsed.args);
+      return runShow(client, root, parsed.args, tracking);
     case 'status':
       if (parsed.args.length > 1) throw new CliError('INVALID_ARGUMENT', 'status 最多接受一个选择器。');
       return runStatus(client, root, parsed.args);
@@ -847,7 +898,18 @@ export async function runCli(argv: string[], runner: CliRunnerOptions = {}): Pro
       return runRefresh(client, root);
     case 'after':
       if (parsed.args.length !== 1) throw new CliError('INVALID_ARGUMENT', 'after 需要 query、ingest 或 consolidate 之一。');
-      return runAfter(client, root, parsed.args, parsed.options.operationId);
+      return runAfter(client, root, parsed.args, parsed.options.operationId, tracking);
+    case 'activity-retry': {
+      if (parsed.args.length !== 1) throw new CliError('INVALID_ARGUMENT', 'activity-retry 需要原 operation-id。');
+      const session = await client.session(); validateSourceRoot(root, session.sourceId, session.sourceRootFingerprint);
+      return { command: 'activity-retry', sourceId: session.sourceId, activity: await retryCliActivity(activityOptions(client, session, tracking, timeoutMs), parsed.args[0]) };
+    }
+    case 'activity-clear-local': {
+      if (!parsed.options.confirm) throw new CliError('CONFIRM_REQUIRED', '清除本地活动收据必须明确提供 --confirm。');
+      if (parsed.args.length) throw new CliError('INVALID_ARGUMENT', 'activity-clear-local 不接受位置参数。');
+      const session = await client.session(); validateSourceRoot(root, session.sourceId, session.sourceRootFingerprint);
+      return { command: 'activity-clear-local', sourceId: session.sourceId, activity: await clearLocalCliActivity(activityOptions(client, session, tracking, timeoutMs)) };
+    }
     case 'review':
       if (parsed.args.length === 0) throw new CliError('INVALID_ARGUMENT', 'review 需要一个选择器。');
       return runReview(client, root, stateDir, parsed.args, parsed.options, now);

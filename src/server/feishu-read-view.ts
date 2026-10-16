@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { feishuActivityReference, type FeishuActivityCoverage } from './feishu-activity.js';
 import { domainIdOf, listDomains } from '../core/domain-view.js';
 import type { FeishuReadCommand } from '../shared/feishu-reading.js';
 import type { AnchorEvent, Concept, MemoryState } from '../shared/types.js';
@@ -110,8 +111,9 @@ function elapsedText(state: MemoryState | undefined): string {
 }
 
 /** Render only the authorized account's full concept index. Does not mutate any inputs. */
-export function renderFeishuReadReply(command: FeishuReadCommand, context: FeishuReadContext): string {
-  if (command.kind === 'help') return HELP;
+export interface FeishuReadReplyPlan { text: string; activity?: FeishuActivityCoverage }
+export function planFeishuReadReply(command: FeishuReadCommand, context: FeishuReadContext): FeishuReadReplyPlan {
+  if (command.kind === 'help') return { text: HELP };
   const entries = context.concepts.map((concept) => ({ id: concept.id, digest: sha(concept.id) }));
   const references = buildFeishuReadReferences(entries);
   if (command.kind === 'domains') {
@@ -133,28 +135,32 @@ export function renderFeishuReadReply(command: FeishuReadCommand, context: Feish
       current.push(row);
     }
     const pages = groups.length;
-    if (command.page > pages) return '领域页码超出范围。发送「知识 领域」重新查看。';
+    if (command.page > pages) return { text: '领域页码超出范围。发送「知识 领域」重新查看。' };
     const lines = [`知识领域 · 第 ${command.page}/${pages} 页（${domains.length} 个）`, ...groups[command.page - 1]];
     if (command.page < pages) lines.push(`下一页：知识 领域 ${command.page + 1}`);
-    return fitReply(lines);
+    return { text: fitReply(lines) };
   }
   if (command.kind === 'read') {
     const matches = entries.filter(({ digest }) => digest.startsWith(command.reference));
-    if (matches.length !== 1) return '节点引用不存在或不唯一。请重新列表或搜索，使用完整节点引用。';
+    if (matches.length !== 1) return { text: '节点引用不存在或不唯一。请重新列表或搜索，使用完整节点引用。' };
     const concept = context.concepts.find(({ id }) => id === matches[0].id)!;
     const revision = sha(concept.source.revision).slice(0, 12);
     const reference = references.get(concept.id)!;
     if ((command.page > 1 && !command.revision) || (command.revision !== null && command.revision !== revision)) {
-      return `资料已变化或分页标识失效，请重新打开第一页：知识 阅读 ${reference}`;
+      return { text: `资料已变化或分页标识失效，请重新打开第一页：知识 阅读 ${reference}` };
     }
     const pages = bodyPages(concept.body);
-    if (command.page > pages.length) return `正文页码超出范围。重新阅读：知识 阅读 ${reference}`;
+    if (command.page > pages.length) return { text: `正文页码超出范围。重新阅读：知识 阅读 ${reference}` };
     const lines = [bounded(concept.title, 200), `目录域：${bounded(domainIdOf(concept), 400)}`,
       `时间状态：${stateText(context.states[concept.id])} · ${elapsedText(context.states[concept.id])}`, `最近确认重温：${confirmedReview(concept, context)}`,
       `正文第 ${command.page}/${pages.length} 页 · 纯文本 Markdown（不渲染图片、公式、Mermaid）`,
       '浏览不会更新记忆。尖括号以全角显示。', pages[command.page - 1] || '（正文为空）'];
     if (command.page < pages.length) lines.push(`下一页：知识 阅读 ${reference} ${command.page + 1} ${revision}`);
-    return fitReply(lines);
+    const text = fitReply(lines);
+    return fits(lines.join('\n\n')) && concept.body.trim() ? { text, activity: {
+      coverage: 'body-page', refs: [feishuActivityReference(concept, 'body')], page: command.page, pageCount: pages.length,
+      request: { kind: 'selected' },
+    } } : { text };
   }
   const query = normalized(command.query);
   const concepts = context.concepts.filter((concept) => (command.domainId === null || domainIdOf(concept) === command.domainId)
@@ -163,7 +169,7 @@ export function renderFeishuReadReply(command: FeishuReadCommand, context: Feish
     ? a.title.localeCompare(b.title, 'zh-Hans-CN') : elapsed(context.states[b.id]) - elapsed(context.states[a.id]))
     || a.id.localeCompare(b.id));
   const pages = Math.max(1, Math.ceil(concepts.length / 5));
-  if (command.page > pages) return '列表页码超出范围。请从第一页重新列表或搜索。';
+  if (command.page > pages) return { text: '列表页码超出范围。请从第一页重新列表或搜索。' };
   const header = [`知识列表 · 第 ${command.page}/${pages} 页（${concepts.length} 节点）`,
     '时间状态仅作管理提示；浏览不会更新记忆。'];
   const selected = concepts.slice((command.page - 1) * 5, command.page * 5);
@@ -176,9 +182,14 @@ export function renderFeishuReadReply(command: FeishuReadCommand, context: Feish
     if (!concepts.length) lines.push('没有匹配节点。');
     lines.push(...footer);
     const reply = lines.join('\n\n');
-    if (fits(reply)) return reply;
+    if (fits(reply)) return { text: reply, activity: { coverage: 'results', refs: selected.map((concept) => feishuActivityReference(concept, 'result')), request: { kind: 'query', resultCount: concepts.length } } };
   }
-  return '展示参数过长，请使用较短的目录域或查询词重新查看。';
+  return { text: '展示参数过长，请使用较短的目录域或查询词重新查看。' };
+}
+
+/** Compatibility wrapper for callers that only need the prepared text. */
+export function renderFeishuReadReply(command: FeishuReadCommand, context: FeishuReadContext): string {
+  return planFeishuReadReply(command, context).text;
 }
 
 function serializedBytes(text: string): number {

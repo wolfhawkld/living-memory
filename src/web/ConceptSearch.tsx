@@ -16,12 +16,15 @@ import {
   type ConceptSearchHit,
 } from './concept-search.js';
 import './concept-search.css';
+import type { QueryActivityInput } from './activity-capture';
 
 export interface ConceptSearchProps {
   concepts: readonly Concept[];
   currentDomainId: string | null;
   disabled?: boolean;
-  onSelect: (conceptId: string) => void;
+  onSelect: (conceptId: string, activity?: QueryActivityInput & { operationId?: string }) => void | boolean;
+  onSubmitQuery?: (input: QueryActivityInput) => string | undefined;
+  trackingEnabled?: boolean;
   onStartQueryReflection?: (entry: QueryReflectionEntry) => void;
   queryReflectionDisabled?: boolean;
 }
@@ -49,6 +52,8 @@ export function ConceptSearch({
   currentDomainId,
   disabled = false,
   onSelect,
+  onSubmitQuery,
+  trackingEnabled = false,
   onStartQueryReflection,
   queryReflectionDisabled = false,
 }: ConceptSearchProps) {
@@ -62,6 +67,9 @@ export function ConceptSearch({
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [saveQueryText, setSaveQueryText] = useState(false);
+  const submittedOperation = useRef<string | undefined>(undefined);
+  const activityInput = (): QueryActivityInput => ({ query, results: search.items.map((item) => item.concept), resultCount: search.totalMatches, saveQueryText });
 
   const search = useMemo(
     () => searchConcepts(concepts, query, { currentDomainId }),
@@ -86,6 +94,8 @@ export function ConceptSearch({
 
   useEffect(() => {
     setQuery('');
+    submittedOperation.current = undefined;
+    setSaveQueryText(false);
     setOpen(false);
     setActiveIndex(-1);
   }, [currentDomainId]);
@@ -119,14 +129,19 @@ export function ConceptSearch({
     if (disabled) return;
     const hit = search.items[index];
     if (!hit) return;
+    const accepted = onSelect(hit.concept.id, { ...activityInput(), operationId: submittedOperation.current });
+    if (accepted === false) return;
+    submittedOperation.current = undefined;
+    setSaveQueryText(false);
     setQuery('');
     setOpen(false);
     setActiveIndex(-1);
     inputRef.current?.focus();
-    onSelect(hit.concept.id);
   }
 
   function handleInputChange(value: string): void {
+    submittedOperation.current = undefined;
+    setSaveQueryText(false);
     setQuery(value);
     setActiveIndex(-1);
     setOpen(normalizeSearchText(value).length > 0);
@@ -142,6 +157,9 @@ export function ConceptSearch({
       return;
     }
 
+    if (!disabled && normalizedQuery && event.key === 'Enter' && search.items.length === 0) {
+      event.preventDefault(); submitQuery(); return;
+    }
     if (disabled || !normalizedQuery || search.items.length === 0) return;
     if (!menuVisible) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -182,6 +200,8 @@ export function ConceptSearch({
   }
 
   function clearQuery(): void {
+    submittedOperation.current = undefined;
+    setSaveQueryText(false);
     setQuery('');
     setOpen(false);
     setActiveIndex(-1);
@@ -195,6 +215,12 @@ export function ConceptSearch({
     setOpen(false);
     setActiveIndex(-1);
     onStartQueryReflection({ query, hintedConceptIds: [...hintedConceptIds] });
+  }
+
+  function submitQuery(): void {
+    if (disabled || !normalizedQuery) return;
+    submittedOperation.current = onSubmitQuery?.(activityInput());
+    setOpen(true);
   }
 
   return (
@@ -238,6 +264,13 @@ export function ConceptSearch({
         ) : null}
         <kbd className="concept-search-shortcut" aria-hidden="true">{shortcut}</kbd>
       </div>
+
+      {onSubmitQuery ? <div className="concept-search-tracking">
+        <button type="button" onClick={submitQuery} disabled={disabled || !normalizedQuery}>查询</button>
+        <label><input type="checkbox" checked={saveQueryText} disabled={!trackingEnabled || disabled || query.length > 1000}
+          onChange={(event) => { submittedOperation.current = undefined; setSaveQueryText(event.currentTarget.checked); }} />仅本次保存查询原文</label>
+        {query.length > 1000 && <span>原文保存上限 1000 字，仍可查询。</span>}
+      </div> : null}
 
       {onStartQueryReflection ? <button type="button" className="concept-search-reflect"
         disabled={disabled || queryReflectionDisabled} onClick={startQueryReflection}

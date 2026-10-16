@@ -40,7 +40,9 @@ npm start
 | 保存与衔接 | 本机管理员/成员各有私人知识与学习记录；JSON 导出及预览恢复、概念改名/移动后的人工历史衔接、待同步重试 |
 | 融入日常通道 | CLI 查询与明确确认重温，可选 progressive-kg 的成功收尾刷新钩子，Web 接收变化通知 |
 
-`develop` 另有默认关闭的[飞书绑定与知识阅读通道](docs/development/feishu-knowledge-reading.md)：本人私聊指令查看领域、搜索、排序和分页正文，读取不会更新记忆。文本浏览及[点击式知识卡片 / 待复习查看](docs/development/feishu-card-browsing.md)的软件链已实现；真实飞书往返尚待验收，复习写回仍待开发，尚未包含在上述固定预览 tag 中。
+`develop` 新增[查阅记录](docs/development/activity-tracking.md)与[章节引用](docs/development/knowledge-references.md)：默认记录查询、资料打开和可见文本块等元数据，查询原文仅在本人明确选择时单次保存；旧版本引用可以对照当前资料重新选择，原记录保留。这些新增能力尚未包含在上述固定预览 tag 中。
+
+`develop` 的默认关闭[飞书通道](docs/development/feishu-knowledge-reading.md)已实现领域列表、搜索、分页正文、[点击卡片](docs/development/feishu-card-browsing.md)和少量复习写回；本人正在按每周 3 个概念试用。CLI 的结果准备、KG 调用方成功报告、飞书平台投递与 Web 可见范围分别记事实，都不会自动确认重温；渠道语义见查阅记录说明。
 
 ## 典型用法与记忆规则
 
@@ -66,13 +68,15 @@ npm start
 
 知识源为只读 Markdown，默认使用 `fixtures/demo-kg`；可通过 `LM_KG_ROOT` 接入自己的合规笔记。账号与学习记录默认保存在被 Git 忽略的 `data/local/`，使用 SQLite；页面导出的 JSON 是学习数据交换/恢复格式。原知识库不会被改写，不要求贡献者拥有同一份私人 vault。
 
-每个成员拥有独立知识根目录与学习空间。当前是本机账号隔离，尚未提供在线协作、共享知识空间或知识融合。管理员的知识根路径决定学习空间，移动整个根目录不会自动衔接历史；详细规则见[账号与知识域](docs/development/private-accounts.md)、[导入恢复](docs/development/learning-data-import.md)与[概念身份](docs/development/concept-identity.md)。
+每个成员拥有独立知识根目录与学习空间。当前是本机账号隔离，尚未提供在线协作、共享知识空间或知识融合。`develop` 的[完整实例迁移工具](docs/development/instance-migration.md)可在离线恢复到新目录时保留知识源与概念身份；直接改根路径不能视为已经完成历史衔接。单账号规则见[账号与知识域](docs/development/private-accounts.md)、[导入恢复](docs/development/learning-data-import.md)与[概念身份](docs/development/concept-identity.md)。
 
-完整备份需停止服务后保留整个数据目录与外部知识库；JSON 包括练习卡题干、参考答案及自己的回答，不含原知识正文文件、附件、账号密码或浏览器草稿。浏览器待同步记录与复习草稿另存在本机，不能只靠服务端备份恢复。
+完整备份需停止服务，使用上述工具核验并保存私有实例 bundle；恢复后先隔离核对，飞书需另行明确激活。学习 JSON 包括练习卡题干、参考答案及自己的回答，不含原知识正文文件、附件、账号密码或浏览器草稿；活动 JSON 另行导出。浏览器待同步记录与复习草稿另存在本机，不能只靠服务端备份恢复。
 
-Windows 原生首次运行的命令、HTTP 与 CLI 已有[实测记录](docs/development/platform-validation/windows-2026-10-01.md)；macOS 暂缓，当前未验证；真实桌面 GPU 与大知识库性能仍待验证。图片/Mermaid 等专项人工验收情况见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。ChatGPT 语音资源接入、Obsidian 插件、社交、在线/跨设备同步与移动端属于后续范围。
+Windows 原生首次运行的命令、HTTP 与 CLI 已有[实测记录](docs/development/platform-validation/windows-2026-10-01.md)；完整实例迁移当前针对 Linux/WSL，Windows 待测，macOS 暂缓。`develop` 的 `/performance` 提供[固定合成图谱手动采样](docs/development/graph-performance.md)，真实桌面 GPU 与大知识库性能仍待验证。图片/Mermaid 等专项人工验收情况见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。ChatGPT 语音资源接入、Obsidian 插件、社交、在线/跨设备同步与移动端属于后续范围。
 
 ## 验证与路线
+
+2026-10-16 本轮查阅追踪、引用变更核对、完整迁移和性能采样的软件范围已实现，整体回归、最终 CI 与目标设备验收进行中；尚未据此确认私人迁移、真实 GPU 结果或个人记忆收益。
 
 2026-10-01 已在 WSL2/Linux x86_64、Node 22.23.1 下验证隔离目录安装、构建、首次建号、知识源接入和重启保留。[发行提交 `1c7a639` 的 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36852873767) 通过 496 项 Node/HTTP 测试、构建、主题检查和 10 项浏览器回归。该结果验证软件路径，不构成目标设备性能或学习收益结论。
 

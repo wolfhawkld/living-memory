@@ -162,6 +162,8 @@ function validReviewState(value: unknown): value is FeishuReviewState {
   }
   return true;
 }
+/** Shared with the offline restore tool; never accepts a new live capability. */
+export const isValidFeishuReviewState = validReviewState;
 function stableReviewJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableReviewJson).join(',')}]`;

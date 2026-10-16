@@ -98,7 +98,9 @@ test('query reflection hides the workspace until the original answer freezes and
   const before = await exported(request);
   const writes: string[] = [];
   page.on('request', req => {
-    if (new URL(req.url()).pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(req.method())) writes.push(req.url());
+    const path = new URL(req.url()).pathname;
+    if (path.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(req.method())
+      && !(req.method() === 'POST' && path === '/api/activity')) writes.push(req.url());
   });
   // A result displayed before entry counts as a name hint even without clicking
   // it or reading its source. The lookup remains across all knowledge domains.

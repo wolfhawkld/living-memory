@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { prepareFeishuActivity } from './feishu-activity.js';
+import { inspectActivityReference } from './activity-references.js';
 import type { FeishuActor, FeishuScope } from '../shared/feishu-binding.js';
 import type { FeishuBrowseView, FeishuCardDelivery, FeishuCardNavAction, FeishuCardPayload, FeishuCardStored, FeishuCardView } from '../shared/feishu-cards.js';
 import type { FeishuReadAuthorization, FeishuReadMessage } from '../shared/feishu-reading.js';
@@ -95,6 +97,14 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
           && reviewGuard() && accounts!.isFeishuCardDraftAuthorized(cardId, actor, authorization); }
         catch { return false; }
       };
+      let activity: ReturnType<typeof prepareFeishuActivity> | null = null;
+      try {
+        activity = prepareFeishuActivity({ operationId, occurredAt: now().toISOString(), settings: context.store.activity.getSettings(),
+          medium: 'feishu-card', coverage: plan.activity, stillAuthorized, now,
+          append: (request) => context.store.activity.append({ principalId: authorization.userId, sessionKind: 'feishu-binding',
+            deliveryChannel: 'feishu', allowedOriginChannels: ['feishu'], inspectReference: (reference) => inspectActivityReference(source, reference) }, request),
+        });
+      } catch { /* Activity failure must never change an already prepared card. */ }
       return { operationId, actor, card, expectedChatId: originChatId, stillAuthorized,
         settle: (delivery) => {
           const accepted = delivery?.status === 'platform-accepted' && validId(delivery.messageId)
@@ -106,6 +116,7 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
             try { accounts!.discardFeishuCard(cardId, actor, authorization); } catch { /* TTL still bounds metadata. */ }
             throw new Error('Feishu card settlement unavailable');
           }
+          try { activity?.settle(accepted ? 'platform-accepted' : 'failed-or-unknown'); } catch { /* Fixed activity diagnostics only. */ }
           if (accepted && stillAuthorized() && accounts!.activateFeishuCard(cardId, actor, authorization, delivery)) return;
           accounts!.discardFeishuCard(cardId, actor, authorization);
         } };

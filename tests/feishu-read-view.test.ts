@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { parseFeishuReadCommand } from '../src/integrations/feishu-read-commands.js';
-import { buildFeishuReadReferences, renderFeishuReadReply as render, type FeishuReadContext } from '../src/server/feishu-read-view.js';
+import { buildFeishuReadReferences, planFeishuReadReply, renderFeishuReadReply as render, type FeishuReadContext } from '../src/server/feishu-read-view.js';
 import type { AnchorEvent, Concept, MemoryState } from '../src/shared/types.js';
 
 const asOf = '2026-10-02T10:00:00.000Z';
@@ -228,4 +228,31 @@ test('unsupported source domains explicitly explain the logical limit without br
   assert.match(reply, /超过 512 字元/);
   assert.doesNotMatch(reply, /查看：/);
   assert.match(render({ ...all, query: node.title }, context([node])), /阅读：知识 阅读/);
+});
+
+test('activity coverage follows the actual prepared text page without recording query text or candidate actions', () => {
+  const concepts = Array.from({ length: 13 }, (_, index) => concept(`id-${String(index).padStart(2, '0')}`));
+  const command = { ...all, page: 2 };
+  const plan = planFeishuReadReply(command, context(concepts));
+  assert.equal(plan.text, render(command, context(concepts)));
+  assert.equal(plan.activity?.coverage, 'results');
+  assert.deepEqual(plan.activity?.request, { kind: 'query', resultCount: 13 });
+  assert.deepEqual(plan.activity?.refs.map((ref) => ref.conceptId), concepts.slice(5, 10).map((item) => item.id));
+  assert.ok(plan.activity?.refs.every((ref) => ref.scope === 'result'));
+  assert.equal(JSON.stringify(plan.activity).includes('queryText'), false);
+  assert.equal(planFeishuReadReply({ kind: 'help' }, context(concepts)).activity, undefined);
+  assert.equal(planFeishuReadReply({ kind: 'domains', page: 1 }, context(concepts)).activity, undefined);
+  assert.equal(planFeishuReadReply({ ...all, page: 99 }, context(concepts)).activity, undefined);
+});
+
+test('text body delivery describes only its actual page and never invents a visible block range', () => {
+  const item = concept('body'); item.body = '段落 '.repeat(4000);
+  const ctx = context([item]);
+  const command = { kind: 'read', reference: digest(item.id).slice(0, 12), page: 2, revision: digest(item.source.revision).slice(0, 12) } as const;
+  const plan = planFeishuReadReply(command, ctx);
+  assert.equal(plan.activity?.coverage, 'body-page'); assert.equal(plan.activity?.page, 2);
+  assert.ok(plan.activity!.pageCount! > 1);
+  assert.deepEqual(plan.activity?.request, { kind: 'selected' });
+  assert.equal(plan.activity?.refs[0]?.scope, 'body'); assert.equal(plan.activity?.refs[0]?.bodyRange, undefined);
+  assert.equal(planFeishuReadReply({ ...command, revision: 'f'.repeat(12) }, ctx).activity, undefined);
 });

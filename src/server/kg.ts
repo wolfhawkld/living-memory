@@ -11,6 +11,10 @@ export interface KnowledgeGraphOptions {
   limit?: number;
   /** Optional path prefix relative to root, for example `Cognition/Math`. */
   includePrefix?: string;
+  /** Trusted server/offline registry seed, never read from knowledge content. */
+  identityHash?: string;
+  /** Restored root display name; does not affect paths, IDs or revisions. */
+  displayName?: string;
 }
 
 export interface KnowledgeSource {
@@ -101,12 +105,12 @@ function fallbackSummary(body: string): string {
   return text ?? '';
 }
 
-function domainOf(frontmatter: Record<string, unknown>, relativePath: string, root: string): string {
+function domainOf(frontmatter: Record<string, unknown>, relativePath: string, root: string, displayName?: string): string {
   const explicit = asString(frontmatter.domain);
   if (explicit) return explicit;
   const parent = normalizePath(relativePath).split('/').slice(0, -1).pop();
   if (parent) return parent;
-  return root.split(/[\\/]/).filter(Boolean).pop() ?? 'default';
+  return displayName ?? root.split(/[\\/]/).filter(Boolean).pop() ?? 'default';
 }
 
 /** A stable display-domain identifier derived from the note's normalized folder. */
@@ -348,6 +352,9 @@ export function loadKnowledgeGraph(options: KnowledgeGraphOptions): KnowledgeSou
     if (error instanceof KnowledgeSourceError) throw error;
     throw new KnowledgeSourceError('KG_ROOT_MISSING', '知识源目录不存在或不是目录。');
   }
+  if (options.identityHash !== undefined && !/^[a-f0-9]{64}$/.test(options.identityHash)) throw new KnowledgeSourceError('KG_IDENTITY_INVALID', '知识源身份种子无效。');
+  const identityHash = options.identityHash ?? sha256(root);
+  if (options.displayName !== undefined && (!options.displayName.trim() || options.displayName.length > 256 || /[\u0000-\u001f\u007f]/.test(options.displayName))) throw new KnowledgeSourceError('KG_IDENTITY_INVALID', '知识源显示名称无效。');
   const limit = Math.max(1, Math.min(300, Math.floor(options.limit ?? 20)));
   const includePrefix = normalizePrefix(options.includePrefix);
   const diagnostics: string[] = [];
@@ -375,8 +382,8 @@ export function loadKnowledgeGraph(options: KnowledgeGraphOptions): KnowledgeSou
     const aliases = aliasesOf(data.aliases);
     const title = asString(data.title) ?? firstHeading(body) ?? relativePath.replace(/\.md$/i, '').split('/').pop() ?? relativePath;
     const summary = asString(data.summary) ?? fallbackSummary(body);
-    const domain = domainOf(data, relativePath, root);
-    const sourceNamespace = sha256(root).slice(0, 24);
+    const domain = domainOf(data, relativePath, root, options.displayName);
+    const sourceNamespace = identityHash.slice(0, 24);
     const id = `concept_${sha256(`${sourceNamespace}:${relativePath}`).slice(0, 32)}`;
     parsed.push({
       concept: {
@@ -424,7 +431,7 @@ export function loadKnowledgeGraph(options: KnowledgeGraphOptions): KnowledgeSou
   const allPaths = new Set(parsed.map((item) => item.relativePath));
   const selectedDiagnostics = diagnosticsFor(diagnostics, selectedPaths, resolved.diagnosticsBySource);
   const fullDiagnostics = diagnosticsFor(diagnostics, allPaths, resolved.diagnosticsBySource);
-  const sourceName = root.split(/[\\/]/).filter(Boolean).pop() ?? 'knowledge-source';
+  const sourceName = options.displayName ?? root.split(/[\\/]/).filter(Boolean).pop() ?? 'knowledge-source';
   const sourceMode = root.endsWith(normalizePath('fixtures/demo-kg')) ? 'demo' : 'local';
   const index: KnowledgeGraph = {
     concepts: parsed.map((item) => item.concept),
@@ -438,7 +445,7 @@ export function loadKnowledgeGraph(options: KnowledgeGraphOptions): KnowledgeSou
       ...(initialDomainId ? { initialDomainId } : {}),
     },
   };
-  const namespace = `kg_${sha256(root).slice(0, 48)}`;
+  const namespace = `kg_${identityHash.slice(0, 48)}`;
   const graph: KnowledgeGraph = {
     concepts: selected.map((item) => item.concept),
     links,

@@ -3,7 +3,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import { assignHeadingSectionIds, markdownHeadingText, scanWikiReferences, type BodyRange, type KnowledgeSection } from '../shared/knowledge-references';
+import { assignHeadingSectionIds, assignKnowledgeContentBlocks, markdownHeadingText, scanWikiReferences, type BodyRange, type KnowledgeSection, type KnowledgeContentBlock } from '../shared/knowledge-references';
 import { normalizeDisplayMath } from './markdown-normalization';
 
 interface Node {
@@ -61,6 +61,11 @@ export function parseMarkdownSections(body: string): KnowledgeSection[] {
     ancestors.push(section);
     return section;
   });
+}
+
+export function parseMarkdownContentBlocks(markdown: string, contentPart: 'summary' | 'body'): KnowledgeContentBlock[] {
+  const { content, tree } = parse(markdown);
+  return assignKnowledgeContentBlocks(tree, content, contentPart);
 }
 /** Local-note references only; URL links and image attachments are separate channels. */
 export function parseMarkdownReferenceTokens(body: string): MarkdownReferenceToken[] {

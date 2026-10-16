@@ -39,7 +39,7 @@ test('renders headings, GFM lists/tasks/tables, quotes, code, and readable wiki 
   assert.match(html, /checked/);
   assert.match(html, /<table>/);
   assert.match(html, /markdown-content-table-wrap/);
-  assert.match(html, /<pre class="markdown-content-pre"><code/);
+  assert.match(html, /<pre class="markdown-content-pre"[^>]*><code/);
   assert.match(html, /language-ts/);
   assert.match(html, /Target label/);
   assert.match(html, /Second note/);
@@ -254,4 +254,30 @@ test('native encoded Chinese chapter fragments use the source heading namespace'
   const href = html.match(/href="#([^"]+)"/)?.[1];
   assert.equal(href, id);
   assert.match(id ?? '', /-section-中文章节$/);
+});
+
+test('real rendered content blocks match the metadata catalog including code and table containers', async () => {
+  const { parseMarkdownContentBlocks } = await import('../src/core/markdown-sections.ts');
+  const content = '# 标题\r\n\r\nA paragraph.\r\n\r\n- one\r\n- two\r\n\r\n```ts\r\nconst x = 1;\r\n```\r\n\r\n|a|b|\r\n|-|-|\r\n|1|2|';
+  const html = renderToStaticMarkup(createElement(MarkdownContent, { content, contentPart: 'body' }));
+  const markers = [...html.matchAll(/data-knowledge-block="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(markers, parseMarkdownContentBlocks(content, 'body').map((block) => block.blockId));
+  assert.equal(markers.length, new Set(markers).size);
+  assert.match(html, /<pre[^>]*data-knowledge-block="/);
+  assert.match(html, /<div class="markdown-content-table-wrap"[^>]*data-knowledge-block="/);
+  assert.doesNotMatch(html, /<code[^>]*data-knowledge-block=/);
+});
+
+test('media, Mermaid loading and missing-material placeholders never impersonate catalog content blocks', () => {
+  const html = renderToStaticMarkup(createElement(MarkdownContent, { content: '![only](image.png)\n\n```mermaid\ngraph TD; A-->B\n```\n\n$$x+y$$', contentPart: 'body' }));
+  assert.doesNotMatch(html, /data-knowledge-block=/);
+  assert.match(html, /mermaid|图表/i);
+});
+
+test('summary and body block markers stay in distinct coordinate spaces', () => {
+  const content = 'The same paragraph.';
+  const body = renderToStaticMarkup(createElement(MarkdownContent, { content, contentPart: 'body' }));
+  const summary = renderToStaticMarkup(createElement(MarkdownContent, { content, contentPart: 'summary' }));
+  assert.match(body, /data-knowledge-block="block-body-/);
+  assert.match(summary, /data-knowledge-block="block-summary-/);
 });

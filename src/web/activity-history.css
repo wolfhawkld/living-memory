@@ -1,0 +1,27 @@
+.activity-history-dialog { width: min(1080px, 94vw); height: 90dvh; padding: 0; border: 1px solid var(--ui-border); border-radius: 14px; color: var(--ui-text); background: var(--ui-panel); }
+.activity-history-dialog[open] { display: flex; flex-direction: column; }
+.activity-history-dialog::backdrop { background: var(--ui-backdrop, #02060ed1); backdrop-filter: blur(6px); }
+.activity-history-dialog header, .activity-history-dialog footer, .activity-history-actions, .activity-history-filters, .activity-history-queue { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--ui-border); }
+.activity-history-dialog header { justify-content: space-between; }
+.activity-history-dialog h2 { margin: 0 0 8px; }
+.activity-history-dialog header p, .activity-history-dialog p { overflow-wrap: anywhere; }
+.activity-history-dialog header p { margin: 0; color: var(--ui-text-muted); }
+.activity-history-dialog button, .activity-history-dialog select { padding: 7px 10px; border: 1px solid var(--ui-border-strong); border-radius: 6px; color: var(--ui-text); background: var(--ui-raised); cursor: pointer; }
+.activity-history-dialog button:disabled { opacity: .45; cursor: default; }
+.activity-history-dialog button:focus-visible, .activity-history-dialog select:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+.activity-history-filters label { display: flex; gap: 8px; align-items: center; }
+.activity-history-filters select { max-width: 300px; }
+.activity-history-scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px 20px; }
+.activity-history-page-note, .activity-history-queue { color: var(--ui-text-muted); font-size: 12px; }
+.activity-history-operation { padding: 14px; margin-bottom: 14px; border: 1px solid var(--ui-border); border-radius: 9px; }
+.activity-history-operation-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.activity-history-operation h3 { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.activity-history-operation ol { margin: 0; padding-left: 22px; }
+.activity-history-operation li { margin: 14px 0; }
+.activity-history-reference { padding: 8px 12px; margin: 8px 0; border-left: 2px solid var(--ui-accent); background: var(--ui-raised); font-size: 12px; }
+.activity-history-reference p { margin: 5px 0; }
+.activity-history-reference span { color: var(--ui-text-muted); }
+.activity-history-notice, .activity-history-confirm { margin: 8px 20px; padding: 10px; color: var(--ui-warning); border: 1px solid var(--ui-border); border-radius: 6px; }
+.activity-history-confirm button { margin-right: 8px; }
+.activity-history-dialog footer { border-top: 1px solid var(--ui-border); border-bottom: 0; }
+@media(max-width:640px) { .activity-history-dialog { width:98vw; height:96dvh; } .activity-history-filters select { max-width:200px; } .activity-history-operation-heading { flex-wrap:wrap; } }

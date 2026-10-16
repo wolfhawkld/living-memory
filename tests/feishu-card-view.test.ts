@@ -415,3 +415,21 @@ test('browse collections render one grey surface per item with its own title and
     checkBudgets(view, rendered);
   }
 });
+
+test('card activity covers only actual page rows and the valid body page, without treating action candidates as selected', () => {
+  const concepts = Array.from({ length: 9 }, (_, index) => node(`item-${index}`));
+  const context = readContext(snapshot(concepts));
+  const view = { kind: 'list', domainId: null, query: '', sort: 'title', page: 2 } as const;
+  const result = render(view, context, plan());
+  assert.equal(result.activity?.coverage, 'results');
+  assert.deepEqual(result.activity?.refs.map((ref) => ref.conceptId), concepts.slice(5).map((concept) => concept.id));
+  assert.deepEqual(result.activity?.request, { kind: 'query', resultCount: 9 });
+  assert.ok(result.activity?.refs.every((ref) => ref.scope === 'result'));
+  const item = concepts[5]; item.body = '真实分页内容 '.repeat(2000);
+  const read = render({ kind: 'read', reference: sha(item.id).slice(0, 12), revision: sha(item.source.revision).slice(0, 12), page: 2, back: view }, context, plan());
+  assert.equal(read.activity?.coverage, 'body-page'); assert.equal(read.activity?.page, 2); assert.ok(read.activity!.pageCount! > 1);
+  assert.deepEqual(read.activity?.request, { kind: 'selected' });
+  assert.equal(read.activity?.refs[0]?.bodyRange, undefined);
+  assert.equal(render({ kind: 'help' }, context, plan()).activity, undefined);
+  assert.equal(render({ ...view, page: 10000 }, context, plan()).activity, undefined);
+});

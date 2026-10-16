@@ -344,7 +344,7 @@ test('local preflight is allowed while an external origin is rejected without CO
       headers: {
         origin: localOrigin,
         'access-control-request-method': 'PUT',
-        'access-control-request-headers': 'Content-Type, X-LM-Token, X-LM-Source-ID',
+        'access-control-request-headers': 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID',
       },
     });
     assert.equal(local.status, 204, local.body);
@@ -352,14 +352,14 @@ test('local preflight is allowed while an external origin is rejected without CO
     assert.equal(local.headers['access-control-allow-origin'], localOrigin);
     assert.equal(local.headers.vary, 'Origin');
     assert.equal(local.headers['access-control-allow-methods'], 'GET,POST,PUT,OPTIONS');
-    assert.equal(local.headers['access-control-allow-headers'], 'Content-Type, X-LM-Token, X-LM-Source-ID');
+    assert.equal(local.headers['access-control-allow-headers'], 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID');
 
     const external = await client.request('/api/config', {
       method: 'OPTIONS',
       headers: {
         origin: 'http://external.example:5173',
         'access-control-request-method': 'PUT',
-        'access-control-request-headers': 'Content-Type, X-LM-Token, X-LM-Source-ID',
+        'access-control-request-headers': 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID',
       },
     });
     assert.equal(external.status, 403);

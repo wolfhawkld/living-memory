@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { parseMarkdownReferenceTokens, parseMarkdownSections } from '../src/core/markdown-sections';
+import { parseMarkdownReferenceTokens, parseMarkdownSections, parseMarkdownContentBlocks } from '../src/core/markdown-sections';
 import { normalizeDisplayMath } from '../src/core/markdown-normalization';
-import { scanWikiReferences } from '../src/shared/knowledge-references';
+import { scanWikiReferences, assignKnowledgeContentBlocks, remarkKnowledgeContentBlocks } from '../src/shared/knowledge-references';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 
 test('sections share formatted ATX and Setext titles, hierarchy and current-body coordinates', () => {
   const body = 'Preamble\n\n# **数学** `AI`\nintro\n\n子标题\n------\nbody\n\n# End\ntail';
@@ -117,4 +121,84 @@ test('wiki paths and fragments preserve literal percent spelling while Markdown 
   assert.deepEqual(tokens.map((token) => [token.targetPath, token.fragment, token.unsafe]), [
     ['A%20B.md', 'C%20D', false], ['A B.md', 'C D', false], ['bad%ZZ', undefined, false], ['%2Fprivate.md', undefined, false],
   ]);
+});
+
+test('content block IDs and section affiliation match normalized Chinese and duplicate section coordinates', () => {
+  const markdown = '$$x=1\r\ny=2$$\r\n\r\n# 中文\r\n\r\n正文😀\r\n\r\n## 重复\r\n\r\n一\r\n\r\n## 重复\r\n\r\n二\r\n\r\n## 重复-2\r\n\r\n三';
+  const normalized = normalizeDisplayMath(markdown);
+  const blocks = parseMarkdownContentBlocks(markdown, 'body');
+  assert.deepEqual(blocks.map((block) => [block.kind, block.sectionId]), [
+    ['heading', '中文'], ['paragraph', '中文'], ['heading', '重复'], ['paragraph', '重复'],
+    ['heading', '重复-3'], ['paragraph', '重复-3'], ['heading', '重复-2'], ['paragraph', '重复-2'],
+  ]);
+  for (const block of blocks) {
+    assert.equal(block.blockId, `block-body-${block.bodyRange.startOffset}-${block.bodyRange.endOffset}`);
+    assert.equal(block.bodyRange.coordinateSpace, 'render-markdown-v1');
+    assert.ok(normalized.slice(block.bodyRange.startOffset, block.bodyRange.endOffset).trim());
+  }
+  assert.equal(blocks[0].bodyRange.startLine, 6);
+  const summary = parseMarkdownContentBlocks(markdown, 'summary');
+  assert.ok(summary.every((block) => block.sectionId === undefined));
+  assert.notEqual(summary[0].blockId, blocks[0].blockId);
+  assert.deepEqual(summary[0].bodyRange, blocks[0].bodyRange);
+});
+
+test('selected list items and tables form nonoverlapping blocks without descendant paragraph reports', () => {
+  const markdown = '# 目录\n\n- outer\n  - nested\n\n- second\n\n| A | B |\n|---|---|\n| one | two |\n\n```ts\n# fake heading\nconst x = 1;\n```';
+  const blocks = parseMarkdownContentBlocks(markdown, 'body');
+  assert.deepEqual(blocks.map((block) => block.kind), ['heading', 'list-item', 'list-item', 'table', 'code']);
+  for (let index = 1; index < blocks.length; index += 1) assert.ok(blocks[index - 1].bodyRange.endOffset <= blocks[index].bodyRange.startOffset);
+  assert.equal(blocks[1].sectionId, '目录');
+  assert.match(markdown.slice(blocks[1].bodyRange.startOffset, blocks[1].bodyRange.endOffset), /nested/);
+  assert.deepEqual(parseMarkdownSections(markdown).map((section) => section.title), ['目录']);
+});
+
+test('Mermaid, HTML, display math, footnotes and pure media paragraphs do not become visible text blocks', () => {
+  const markdown = [
+    '```MeRmAiD\ngraph TD; A --> B\n```', '<div>HTML only</div>', '$$\nx = 1\n$$',
+    '![image](asset.png)', '![[asset.png|20]]', '![[note embed]]', '&nbsp; ![[asset.png]]', '[![image](asset.png)](https://example.org)',
+    '[^hidden]: footnote definition', 'Text with ![image](asset.png) and an ordinary sentence.',
+  ].join('\n\n');
+  const blocks = parseMarkdownContentBlocks(markdown, 'body');
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].kind, 'paragraph');
+  assert.match(markdown.slice(blocks[0].bodyRange.startOffset, blocks[0].bodyRange.endOffset), /^Text with/);
+  assert.equal(blocks[0].sectionId, undefined);
+  assert.equal(parseMarkdownContentBlocks('\\![[literal media spelling]]', 'body').length, 1);
+});
+
+test('pure image headings and all-media tables remain navigable structure without reporting text blocks', () => {
+  const markdown = '# ![image heading](asset.png)\n\n| ![image cell](asset.png) |\n| --- |\n| ![[image.png]] |';
+  assert.deepEqual(parseMarkdownContentBlocks(markdown, 'body'), []);
+  assert.deepEqual(parseMarkdownSections(markdown).map((section) => section.title), ['image heading']);
+});
+
+test('browser plugin and server parser mark exactly the same nodes using the supplied normalized source', () => {
+  const markdown = '# A\n\nText\n\n- first\n  - nested\n\n```js\n42\n```';
+  const normalized = normalizeDisplayMath(markdown);
+  const tree = unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(normalized);
+  const expected = parseMarkdownContentBlocks(markdown, 'body');
+  remarkKnowledgeContentBlocks({ contentPart: 'body' })(tree, { value: normalized });
+  const actual: string[] = [];
+  const walk = (node: any) => {
+    if (node.data?.hProperties?.['data-knowledge-block']) actual.push(node.data.hProperties['data-knowledge-block']);
+    node.children?.forEach(walk);
+  };
+  walk(tree);
+  assert.deepEqual(actual, expected.map((block) => block.blockId));
+  assert.deepEqual(assignKnowledgeContentBlocks(tree, normalized, 'body'), expected);
+});
+
+test('invalid or absent positions produce no block and a spanning block is not assigned a partial child section', () => {
+  const content = '# A\ntext\n## B\nmore';
+  const tree = { type: 'root', children: [
+    { type: 'heading', depth: 1, children: [{ type: 'text', value: 'A' }], position: { start: { offset: 0 }, end: { offset: 3 } } },
+    { type: 'paragraph', children: [{ type: 'text', value: 'spanning' }], position: { start: { offset: 4 }, end: { offset: content.length } } },
+    { type: 'heading', depth: 2, children: [{ type: 'text', value: 'B' }], position: { start: { offset: 9 }, end: { offset: 13 } } },
+    { type: 'paragraph', children: [{ type: 'text', value: 'no position' }] },
+    { type: 'paragraph', children: [{ type: 'text', value: 'empty range' }], position: { start: { offset: 8 }, end: { offset: 8 } } },
+  ] };
+  const blocks = assignKnowledgeContentBlocks(tree, content, 'body');
+  assert.equal(blocks.length, 3);
+  assert.equal(blocks[1].sectionId, 'a'); // The entire block fits A, not its child B.
 });

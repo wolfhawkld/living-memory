@@ -10,7 +10,7 @@ import type {
   Snapshot,
   WriteReceipt,
 } from '../shared/types';
-import { createSessionRecovery, type LocalSession } from './session-recovery';
+import { createSessionRecovery, normalizeInstanceId, type LocalSession } from './session-recovery';
 import { inspectLayout } from '../shared/layout';
 import type { AccountUser } from '../shared/accounts';
 import type { FeishuBindingStatus, FeishuBindingIssued } from '../shared/feishu-binding';
@@ -23,6 +23,8 @@ import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan
 import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
 import type { ImportPreviewRequest, ImportPreview, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
 import type { KnowledgeReferences } from '../shared/knowledge-references';
+import type { ActivitySettings, ActivitySettingsUpdate, ActivityAppendRequest, ActivityAppendResult, ActivityListOptions, ActivityExport } from '../shared/activity';
+import type { ActivityViewPage } from '../shared/activity-reference-status';
 import { PendingCoordinationError, withPendingStorageLock, withPendingSyncLock } from './pending-coordination';
 import { BULK_REQUEST_TIMEOUT_MS, RequestDeadlineError, withRequestDeadline } from './request-deadline';
 
@@ -84,7 +86,8 @@ const LAYOUT_RECOVERY_KEY_PREFIX = 'living-memory.layout-recovery.v1';
 const CORRECTION_RECOVERY_KEY_PREFIX = 'living-memory.correction-recovery.v1';
 
 type SessionRecoveryEvent = { kind: 'recovered'; session: LocalSession }
-  | { kind: 'source-mismatch'; sourceId?: string };
+  | { kind: 'source-mismatch'; sourceId?: string }
+  | { kind: 'instance-mismatch'; sourceId?: string; instanceId?: string; expectedInstanceId?: string };
 const sessionListeners = new Set<(event: SessionRecoveryEvent) => void>();
 const notifySession = (event: SessionRecoveryEvent) => {
   for (const listener of sessionListeners) listener(event);
@@ -95,31 +98,89 @@ export function subscribeToSessionRecovery(listener: (event: SessionRecoveryEven
   return () => { sessionListeners.delete(listener); };
 }
 
+/** Token bindings are immutable: a late GET must never upgrade old credentials. */
+const tokenInstances = new Map<string, string>();
+let activeScope: { sourceId: string; instanceId: string } | null = null;
+let scopeConfigured = false;
+let scopeGeneration = 0;
+function instanceError(): ApiRequestError {
+  return new ApiRequestError('知识空间实例已变化，请重新加载页面后确认操作。', { code: 'INSTANCE_MISMATCH', status: 409 });
+}
+function bindToken(session: LocalSession): string {
+  const instance = normalizeInstanceId(session.instanceId);
+  const previous = tokenInstances.get(session.writeToken);
+  if (previous !== undefined && previous !== instance) throw instanceError();
+  tokenInstances.set(session.writeToken, instance);
+  return instance;
+}
+/** Only the authenticated loader commits an active scope; GET alone never does. */
+export function configureSessionScope(session: LocalSession | null): void {
+  const next = session ? { sourceId: session.sourceId.trim(), instanceId: bindToken(session) } : null;
+  if (!scopeConfigured || next?.sourceId !== activeScope?.sourceId || next?.instanceId !== activeScope?.instanceId) scopeGeneration++;
+  scopeConfigured = true;
+  activeScope = next;
+}
+interface QueueScope { sourceId: string; instanceId: string; generation: number; lock: string }
+function captureScope(sourceId: string): QueueScope {
+  const source = sourceId.trim();
+  const instanceId = activeScope?.sourceId === source ? activeScope.instanceId : 'legacy';
+  return { sourceId: source, instanceId, generation: scopeGeneration,
+    lock: instanceId === 'legacy' ? source : `${source}.instance.${encodeURIComponent(instanceId)}` };
+}
+function scopeCurrent(scope: QueueScope): boolean {
+  return scope.generation === scopeGeneration && (!scopeConfigured ||
+    (activeScope?.sourceId === scope.sourceId && activeScope.instanceId === scope.instanceId));
+}
+function assertScope(scope: QueueScope): void { if (!scopeCurrent(scope)) throw instanceError(); }
+function scopedKey(prefix: string, source: string, instance: string): string {
+  return `${prefix}.${encodeURIComponent(source.trim())}${instance === 'legacy' ? '' : `:instance:${encodeURIComponent(instance)}`}`;
+}
+
 async function getSession(): Promise<SessionResponse> {
   const session = await requestJson<SessionResponse>('/session', { cache: 'no-store' });
   if (!session || typeof session.writeToken !== 'string' || !session.writeToken.trim()
       || typeof session.sourceId !== 'string' || !session.sourceId.trim()) {
     throw new ApiRequestError('无法取得有效的本地会话，请重新连接。', { code: 'SESSION_INVALID' });
   }
+  bindToken(session);
   return session;
 }
 
 const sessionRecovery = createSessionRecovery({
   getSession,
   isExpired: (error) => error instanceof ApiRequestError && error.status === 401 && error.code === 'TOKEN_REQUIRED',
-  onRecovered: (session) => notifySession({ kind: 'recovered', session }),
+  onInstanceMismatch: (session, original) => notifySession({ kind: 'instance-mismatch', sourceId: session.sourceId, instanceId: normalizeInstanceId(session.instanceId), expectedInstanceId: normalizeInstanceId(original.instanceId) }),
+  instanceMismatchError: instanceError,
   onSourceMismatch: (sourceId) => notifySession({ kind: 'source-mismatch', sourceId }),
   sourceMismatchError: () => new ApiRequestError('知识源已变化，请完成当前输入后重新加载页面。', { code: 'SOURCE_MISMATCH', status: 409 }),
 });
 
 async function withSession<T>(writeToken: string, sourceId: string, send: (headers: Record<string, string>) => Promise<T>): Promise<T> {
   if (!sourceId?.trim()) throw new ApiRequestError('缺少当前知识源，未执行写入，请重新连接。', { code: 'SOURCE_REQUIRED' });
+  const scope = captureScope(sourceId);
+  const instanceId = tokenInstances.get(writeToken) ?? 'legacy';
   try {
-    return await sessionRecovery.run({ writeToken, sourceId }, (session) => send({
-      'x-lm-token': session.writeToken,
-      'x-lm-source-id': session.sourceId,
-    }));
+    if (scopeConfigured && activeScope && activeScope.sourceId !== sourceId.trim()) {
+      throw new ApiRequestError('知识源已变化，请重新加载页面。', { code: 'SOURCE_MISMATCH', status: 409 });
+    }
+    assertScope(scope);
+    if (instanceId !== scope.instanceId) throw instanceError();
+    bindToken({ writeToken, sourceId, instanceId });
+    let attempts = 0;
+    return await sessionRecovery.run({ writeToken, sourceId, instanceId }, (session) => {
+      assertScope(scope);
+      if (attempts++ > 0) {
+        if (scopeConfigured) configureSessionScope(session);
+        notifySession({ kind: 'recovered', session });
+      }
+      return send({
+        'x-lm-token': session.writeToken,
+        'x-lm-source-id': session.sourceId,
+        'x-lm-instance-id': instanceId,
+      });
+    });
   } catch (error) {
+    if (error instanceof ApiRequestError && error.code === 'INSTANCE_MISMATCH') notifySession({ kind: 'instance-mismatch', sourceId, expectedInstanceId: instanceId });
     if (error instanceof ApiRequestError && error.code === 'SOURCE_MISMATCH') notifySession({ kind: 'source-mismatch' });
     throw error;
   }
@@ -129,23 +190,25 @@ function authenticatedJson<T>(path: string, init: RequestInit, writeToken: strin
   return withSession(writeToken, sourceId, (headers) => requestJson<T>(path, { ...init, headers }));
 }
 
-function pendingKey(sourceId: string | null | undefined): string | null {
+function pendingKey(sourceId: string | null | undefined, instanceId = sourceId ? captureScope(sourceId).instanceId : 'legacy'): string | null {
   if (!sourceId?.trim()) return null;
-  return `${PENDING_KEY_PREFIX}.${encodeURIComponent(sourceId.trim())}`;
+  return scopedKey(PENDING_KEY_PREFIX, sourceId, instanceId);
 }
 
-function correctionRecoveryKey(sourceId: string): string {
-  return `${CORRECTION_RECOVERY_KEY_PREFIX}.${encodeURIComponent(sourceId.trim())}`;
+function correctionRecoveryKey(sourceId: string, instanceId: string): string {
+  return scopedKey(CORRECTION_RECOVERY_KEY_PREFIX, sourceId, instanceId);
 }
 
 /** Observe this space only. Browser storage events reach other tabs; the custom
  * event reaches the page that performed the mutation. Neither carries answers. */
 export function subscribePendingWrites(sourceId: string, changed: () => void): () => void {
   if (typeof window === 'undefined') return () => {};
-  const key = pendingKey(sourceId);
+  const scope = captureScope(sourceId);
+  const key = pendingKey(sourceId, scope.instanceId);
   if (!key) return () => {};
   const local = (event: Event) => {
-    if ((event as CustomEvent<{ sourceId?: string }>).detail?.sourceId === sourceId.trim()) changed();
+    const detail = (event as CustomEvent<{ sourceId?: string; instanceId?: string }>).detail;
+    if (detail?.sourceId === sourceId.trim() && normalizeInstanceId(detail.instanceId) === scope.instanceId) changed();
   };
   const remote = (event: StorageEvent) => {
     if (event.key !== null && event.key !== key) return;
@@ -161,7 +224,7 @@ export function subscribePendingWrites(sourceId: string, changed: () => void): (
 }
 
 function notifyPendingChanged(sourceId: string): void {
-  window.dispatchEvent(new CustomEvent('lm-pending-changed', { detail: { sourceId: sourceId.trim() } }));
+  window.dispatchEvent(new CustomEvent('lm-pending-changed', { detail: { sourceId: sourceId.trim(), instanceId: captureScope(sourceId).instanceId } }));
 }
 
 function validPendingEntries(entries: unknown[]): PendingWrite[] {
@@ -189,7 +252,9 @@ function parsePending(value: string | null): PendingWrite[] {
 
 export function getPendingWrites(sourceId: string | null | undefined): PendingWrite[] {
   if (typeof window === 'undefined') return [];
-  const key = pendingKey(sourceId);
+  const scope = sourceId ? captureScope(sourceId) : null;
+  if (!scope || !scopeCurrent(scope)) return [];
+  const key = pendingKey(sourceId, scope.instanceId);
   if (!key) return [];
   try {
     return parsePending(window.localStorage.getItem(key));
@@ -257,12 +322,15 @@ function isCorrectionRecoveryEntry(entry: unknown, expected: PendingWrite): bool
 export async function archivePendingCorrection(sourceId: string | null | undefined, expected: PendingWrite): Promise<boolean> {
   const source = sourceId?.trim();
   if (typeof window === 'undefined' || !source || !canArchiveCorrectionWrite(expected)) return false;
-  const queueStorageKey = pendingKey(source);
+  const scope = captureScope(source);
+  if (!scopeCurrent(scope)) return false;
+  const queueStorageKey = pendingKey(source, scope.instanceId);
   if (!queueStorageKey) return false;
-  const recoveryStorageKey = correctionRecoveryKey(source);
+  const recoveryStorageKey = correctionRecoveryKey(source, scope.instanceId);
   try {
-    return await withPendingSyncLock<boolean>(source,
-      () => withPendingStorageLock(source, () => {
+    return await withPendingSyncLock<boolean>(scope.lock,
+      () => withPendingStorageLock(scope.lock, () => {
+        assertScope(scope);
         const queue = pendingEntriesForUpdate(queueStorageKey);
         const index = queue.findIndex(entry => sameCorrectionArchiveSnapshot(entry, expected));
         if (index < 0) return false;
@@ -299,12 +367,15 @@ export async function queuePendingWrite(sourceId: string | null | undefined, wri
     createdAt: new Date().toISOString(),
   };
   if (typeof window === 'undefined') return null;
-  const key = pendingKey(sourceId);
+  const scope = sourceId ? captureScope(sourceId) : null;
+  if (!scope || !scopeCurrent(scope)) return null;
+  const key = pendingKey(sourceId, scope.instanceId);
   if (!key) return null;
   try {
     // Freeze caller-owned content before waiting for another page's short lock.
     const frozen = JSON.parse(JSON.stringify(pending)) as PendingWrite;
-    return await withPendingStorageLock(sourceId!, () => {
+    return await withPendingStorageLock(scope.lock, () => {
+      assertScope(scope);
       const next = pendingEntriesForUpdate(key);
       const previous = next.filter(item => hasPendingId(item, frozen.id));
       if (previous.length) {
@@ -323,12 +394,15 @@ export async function queuePendingWrite(sourceId: string | null | undefined, wri
   }
 }
 
-export async function removePendingWrite(sourceId: string | null | undefined, id: string, expected?: PendingWrite): Promise<boolean> {
+export async function removePendingWrite(sourceId: string | null | undefined, id: string, expected?: PendingWrite, frozenScope?: QueueScope): Promise<boolean> {
   if (typeof window === 'undefined') return false;
-  const key = pendingKey(sourceId);
+  const scope = frozenScope ?? (sourceId ? captureScope(sourceId) : null);
+  if (!scope || !scopeCurrent(scope)) return false;
+  const key = pendingKey(sourceId, scope.instanceId);
   if (!key) return false;
   try {
-    return await withPendingStorageLock(sourceId!, () => {
+    return await withPendingStorageLock(scope.lock, () => {
+      assertScope(scope);
       const entries = pendingEntriesForUpdate(key);
       if (expected && entries.some(item => hasPendingId(item, id) && !samePendingSnapshot(item, expected))) return false;
       const next = entries.filter(item => !hasPendingId(item, id));
@@ -342,11 +416,12 @@ export async function removePendingWrite(sourceId: string | null | undefined, id
   }
 }
 
-async function savePendingError(sourceId: string, expected: PendingWrite, error: PendingWriteError): Promise<void> {
-  const key = pendingKey(sourceId);
+async function savePendingError(sourceId: string, expected: PendingWrite, error: PendingWriteError, scope: QueueScope): Promise<void> {
+  const key = pendingKey(sourceId, scope.instanceId);
   if (!key || typeof window === 'undefined') return;
   try {
-    await withPendingStorageLock(sourceId, () => {
+    await withPendingStorageLock(scope.lock, () => {
+      assertScope(scope);
       const entries = pendingEntriesForUpdate(key);
       if (!entries.some(write => samePendingSnapshot(write, expected))) return;
       const next = entries.map(write => samePendingSnapshot(write, expected) ? { ...write, lastError: error } : write);
@@ -358,14 +433,14 @@ async function savePendingError(sourceId: string, expected: PendingWrite, error:
   }
 }
 
-function preparePendingLayout(write: PendingWrite, sourceId: string): { write: PendingWrite; skippedPositions: number } {
+function preparePendingLayout(write: PendingWrite, scope: QueueScope): { write: PendingWrite; skippedPositions: number } {
   if (write.method !== 'PUT' || write.path !== '/layout') return { write, skippedPositions: 0 };
   const inspected = inspectLayout(write.payload);
   // Only a recognizable layout with invalid positions can be repaired. Other
   // validation failures must remain visible, with the original request intact.
   if (!inspected || inspected.invalidIds.length === 0) return { write, skippedPositions: 0 };
   try {
-    const key = `${LAYOUT_RECOVERY_KEY_PREFIX}.${encodeURIComponent(sourceId)}`;
+    const key = scopedKey(LAYOUT_RECOVERY_KEY_PREFIX, scope.sourceId, scope.instanceId);
     const backups = pendingEntriesForUpdate(key);
     let existing = false;
     for (const entry of backups) {
@@ -393,10 +468,13 @@ function preparePendingLayout(write: PendingWrite, sourceId: string): { write: P
 
 export async function clearPendingWrites(sourceId: string | null | undefined): Promise<void> {
   if (typeof window === 'undefined') return;
-  const key = pendingKey(sourceId);
+  const scope = sourceId ? captureScope(sourceId) : null;
+  if (!scope || !scopeCurrent(scope)) return;
+  const key = pendingKey(sourceId, scope.instanceId);
   if (!key) return;
   try {
-    await withPendingStorageLock(sourceId!, () => {
+    await withPendingStorageLock(scope.lock, () => {
+      assertScope(scope);
       window.localStorage.removeItem(key);
       notifyPendingChanged(sourceId!);
     });
@@ -419,6 +497,7 @@ async function parseError(response: Response, signal: AbortSignal): Promise<ApiR
     // Some infrastructure errors return an empty body. The HTTP status remains useful.
   }
   signal.throwIfAborted();
+  if (code === 'INSTANCE_MISMATCH') notifySession({ kind: 'instance-mismatch' });
   if ((code === 'AUTH_REQUIRED' || code === 'SOURCE_MISMATCH') && typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('lm-auth-required'));
   }
@@ -488,6 +567,29 @@ export async function writeJson<T>(path: string, payload: unknown, writeToken: s
 }
 
 export const api = {
+  configureSessionScope,
+  appendActivity: (payload: ActivityAppendRequest, writeToken: string, sourceId: string) =>
+    writeJson<ActivityAppendResult>('/activity', payload, writeToken, sourceId),
+  getActivity: (options: ActivityListOptions, sourceId: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) if (value !== undefined) params.set(key, String(value));
+    return requestJson<ActivityViewPage & { sourceId: string }>(`/activity?${params}`, {
+      cache: 'no-store', headers: { 'x-lm-source-id': sourceId }, signal,
+    });
+  },
+  exportActivity: (sourceId: string, signal?: AbortSignal) => requestJson<ActivityExport>('/activity/export', {
+    cache: 'no-store', headers: { 'x-lm-source-id': sourceId }, signal,
+  }),
+  getActivitySettings: (sourceId: string, signal?: AbortSignal) => {
+    if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识空间。', { code: 'SOURCE_REQUIRED' }));
+    return requestJson<{ sourceId: string; settings: ActivitySettings }>('/activity/settings', {
+      cache: 'no-store', headers: { 'x-lm-source-id': sourceId }, signal,
+    });
+  },
+  updateActivitySettings: (payload: ActivitySettingsUpdate, writeToken: string, sourceId: string) =>
+    writeJson<{ sourceId: string; settings: ActivitySettings }>('/activity/settings', payload, writeToken, sourceId),
+  clearActivity: (payload: { scope: 'all'; expectedEpoch: number } | { scope: 'operation'; expectedEpoch: number; operationId: string }, writeToken: string, sourceId: string) =>
+    writeJson<{ sourceId: string; settings: ActivitySettings; deletedEvents: number; deletedDeliveries: number }>('/activity/clear', payload, writeToken, sourceId),
   getKnowledgeReferences: (conceptId: string, sourceRevision: string, sourceId: string, signal?: AbortSignal) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识空间。', { code: 'SOURCE_REQUIRED' }));
     const params = new URLSearchParams({ conceptId, sourceRevision });
@@ -616,25 +718,28 @@ export const api = {
 
 const pendingFlushes = new Map<string, Promise<PendingSyncResult>>();
 
-async function sendPendingBatch(writeToken: string, sourceId: string): Promise<PendingSyncResult> {
+async function sendPendingBatch(writeToken: string, sourceId: string, scope: QueueScope): Promise<PendingSyncResult> {
   let sent = 0;
   let duplicateConfigs = 0;
   const failures: PendingSyncFailure[] = [];
   const repairs: NonNullable<PendingSyncResult['repairs']> = [];
   let writes: PendingWrite[];
   try {
-    writes = await withPendingStorageLock(sourceId, () => validPendingEntries(pendingEntriesForUpdate(pendingKey(sourceId)!)));
+    writes = await withPendingStorageLock(scope.lock, () => { assertScope(scope); return validPendingEntries(pendingEntriesForUpdate(pendingKey(sourceId, scope.instanceId)!)); });
   } catch (error) {
-    if (error instanceof PendingCoordinationError) throw error;
+    if (error instanceof PendingCoordinationError || (error instanceof ApiRequestError && error.code === 'INSTANCE_MISMATCH')) throw error;
     throw new ApiRequestError('无法读取浏览器中的待同步记录，原数据未改动。请允许此页面访问本地数据后重试。', {
       code: 'PENDING_STORAGE_UNAVAILABLE', retryable: true,
     });
   }
+  assertScope(scope);
   for (const write of writes) {
+    if (!scopeCurrent(scope)) break;
     try {
-      const prepared = await withPendingStorageLock(sourceId, () => {
+      const prepared = await withPendingStorageLock(scope.lock, () => {
+        assertScope(scope);
         let entries: unknown[];
-        try { entries = pendingEntriesForUpdate(pendingKey(sourceId)!); } catch {
+        try { entries = pendingEntriesForUpdate(pendingKey(sourceId, scope.instanceId)!); } catch {
           throw new ApiRequestError('无法重新读取待同步记录，未发送这条请求，请保留页面后重试。', {
             code: 'PENDING_STORAGE_UNAVAILABLE', retryable: true,
           });
@@ -644,11 +749,15 @@ async function sendPendingBatch(writeToken: string, sourceId: string): Promise<P
         if (!samePendingSnapshot(current, write)) throw new ApiRequestError('待同步内容已被另一个页面修改，原请求没有发送。请刷新后核对。', {
           code: 'PENDING_CHANGED', retryable: false,
         });
-        return preparePendingLayout(write, sourceId);
+        return preparePendingLayout(write, scope);
       });
+      assertScope(scope);
       if (!prepared) continue;
       const receipt = await api.sendPending(prepared.write, writeToken, sourceId);
-      if (!await removePendingWrite(sourceId, write.id, write)) {
+      if (!scopeCurrent(scope)) break;
+      const removed = await removePendingWrite(sourceId, write.id, write, scope);
+      if (!scopeCurrent(scope)) break;
+      if (!removed) {
         throw new ApiRequestError('记录已写入服务，但浏览器未能清理待同步标记。请允许此页面保存本地数据后重试。', {
           code: 'PENDING_STORAGE_FAILED', retryable: true,
         });
@@ -657,6 +766,7 @@ async function sendPendingBatch(writeToken: string, sourceId: string): Promise<P
       if (write.path === '/config' && receipt?.status === 'duplicate') duplicateConfigs += 1;
       if (prepared.skippedPositions > 0) repairs.push({ id: write.id, skippedPositions: prepared.skippedPositions });
     } catch (error) {
+      if (!scopeCurrent(scope)) break;
       const detail: PendingWriteError = {
         code: error instanceof ApiRequestError ? error.code : 'PENDING_SYNC_ERROR',
         status: error instanceof ApiRequestError ? error.status : 0,
@@ -664,12 +774,13 @@ async function sendPendingBatch(writeToken: string, sourceId: string): Promise<P
         retryable: error instanceof ApiRequestError && error.retryable,
         attemptedAt: new Date().toISOString(),
       };
-      await savePendingError(sourceId, write, detail);
+      await savePendingError(sourceId, write, detail, scope);
+      if (!scopeCurrent(scope)) break;
       const { attemptedAt: _attemptedAt, ...failure } = detail;
       failures.push({ ...failure, id: write.id, label: typeof write.label === 'string' && write.label.trim() ? write.label : '待同步记录' });
       // One stalled connection should not spend another full deadline on every
       // remaining record while holding the cross-tab sender lock.
-      if (detail.code === 'REQUEST_TIMEOUT') break;
+      if (detail.code === 'REQUEST_TIMEOUT' || detail.code === 'INSTANCE_MISMATCH' || detail.code === 'SOURCE_MISMATCH') break;
       // Keep the original id, payload and timestamps, including on non-retryable
       // conflicts. Showing the rejection is safer than silently rewriting history.
     }
@@ -681,19 +792,22 @@ async function sendPendingBatch(writeToken: string, sourceId: string): Promise<P
 export function flushPendingWrites(writeToken: string, sourceId: string | null | undefined): Promise<PendingSyncResult> {
   const source = sourceId?.trim();
   if (!source) return Promise.resolve({ sent: 0, failed: 0, failures: [] });
-  const existing = pendingFlushes.get(source);
+  const scope = captureScope(source);
+  if (!scopeCurrent(scope)) return Promise.reject(instanceError());
+  const key = `${scope.lock}:${scope.generation}`;
+  const existing = pendingFlushes.get(key);
   if (existing) return existing;
   // Join this page's retries and elect one sender across all updated pages.
   // Read the queue only after acquiring the sync lock, not before waiting.
-  const operation = Promise.resolve().then(() => withPendingSyncLock<PendingSyncResult>(source,
-    () => sendPendingBatch(writeToken, source),
+  const operation = Promise.resolve().then(() => withPendingSyncLock<PendingSyncResult>(scope.lock,
+    () => { assertScope(scope); return sendPendingBatch(writeToken, source, scope); },
     () => ({ sent: 0, failed: 0, failures: [], busy: true }),
   )).catch(error => {
     if (error instanceof PendingCoordinationError) throw new ApiRequestError(error.message, { code: error.code });
     throw error;
   }).finally(() => {
-    if (pendingFlushes.get(source) === operation) pendingFlushes.delete(source);
+    if (pendingFlushes.get(key) === operation) pendingFlushes.delete(key);
   });
-  pendingFlushes.set(source, operation);
+  pendingFlushes.set(key, operation);
   return operation;
 }

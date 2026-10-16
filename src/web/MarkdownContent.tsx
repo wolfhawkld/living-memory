@@ -8,11 +8,12 @@ import { MarkdownImage } from './MarkdownImage';
 import { isImageReference, markdownImageUrl, type MarkdownMediaSource } from './markdown-media';
 import { MermaidDiagram } from './MermaidDiagram';
 import { normalizeDisplayMath } from './markdown-math';
-import { remarkKnowledgeHeadingIds, scanWikiReferences, type KnowledgeReference } from '../shared/knowledge-references';
+import { remarkKnowledgeHeadingIds, remarkKnowledgeContentBlocks, scanWikiReferences, type KnowledgeReference } from '../shared/knowledge-references';
 
 export interface MarkdownContentProps {
   content: string;
   compact?: boolean;
+  contentPart?: 'summary' | 'body';
   source?: MarkdownMediaSource;
   references?: readonly KnowledgeReference[];
   onNavigateReference?: (reference: KnowledgeReference) => void;
@@ -42,7 +43,7 @@ type MarkdownAnchorProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
   node?: unknown;
 };
 
-type MarkdownTableProps = {
+type MarkdownTableProps = ExtraProps & {
   children?: ReactNode;
 };
 
@@ -235,9 +236,9 @@ function MarkdownLink({
   );
 }
 
-function MarkdownTable({ children }: MarkdownTableProps): ReactElement {
+function MarkdownTable({ children, node }: MarkdownTableProps): ReactElement {
   return (
-    <div className="markdown-content-table-wrap">
+    <div className="markdown-content-table-wrap" data-knowledge-block={typeof node?.properties['data-knowledge-block'] === 'string' ? node.properties['data-knowledge-block'] : undefined}>
       <table>{children}</table>
     </div>
   );
@@ -261,7 +262,8 @@ function MarkdownPre({ children, node }: MarkdownPreProps): ReactElement {
       return <MermaidDiagram key={code} code={code} />;
     }
   }
-  return <pre className="markdown-content-pre">{children}</pre>;
+  const marker = node?.properties['data-knowledge-block'] ?? (block?.type === 'element' ? block.properties['data-knowledge-block'] : undefined);
+  return <pre className="markdown-content-pre" data-knowledge-block={typeof marker === 'string' ? marker : undefined}>{children}</pre>;
 }
 
 function createMarkdownComponents(source: MarkdownMediaSource | undefined, references: readonly KnowledgeReference[] | undefined,
@@ -303,7 +305,7 @@ function safelyDecodeTarget(value: string): string {
   try { return decodeURIComponent(value); } catch { return value; }
 }
 
-export function MarkdownContent({ content, compact = false, source, references, onNavigateReference, onNavigateSection, onRendered }: MarkdownContentProps): ReactElement {
+export function MarkdownContent({ content, compact = false, contentPart = 'body', source, references, onNavigateReference, onNavigateSection, onRendered }: MarkdownContentProps): ReactElement {
   const instanceId = useId();
   const scopePrefix = `markdown-${instanceId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
   const components = useMemo(() => createMarkdownComponents(source, references, onNavigateReference, onNavigateSection ? (id) => onNavigateSection(id.startsWith(`${scopePrefix}-section-`) ? id.slice(scopePrefix.length + 9) : id.startsWith(`${scopePrefix}-`) ? id.slice(scopePrefix.length + 1) : id) : undefined), [source?.sourceId, source?.conceptId, source?.sourceRevision, references, onNavigateReference, onNavigateSection, scopePrefix]);
@@ -316,7 +318,7 @@ export function MarkdownContent({ content, compact = false, source, references, 
         allowElement={(element) => element.tagName !== 'script' && element.tagName !== 'style'}
         components={components}
         remarkRehypeOptions={{ allowDangerousHtml: false }}
-        remarkPlugins={[remarkGfm, remarkMath, remarkKnowledgeHeadingIds, remarkWikiLinks]}
+        remarkPlugins={[remarkGfm, remarkMath, remarkKnowledgeHeadingIds, [remarkKnowledgeContentBlocks, { contentPart }], remarkWikiLinks]}
         rehypePlugins={[[rehypeKatex, {
           errorColor: 'var(--ui-warning, #f4bd70)',
           strict: 'ignore',

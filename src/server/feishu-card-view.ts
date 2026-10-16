@@ -1,3 +1,4 @@
+import { feishuActivityReference, type FeishuActivityCoverage } from './feishu-activity.js';
 import { selectBriefReviewCandidates, type BriefReviewCandidate } from '../core/brief-review.js';
 import { listDomains } from '../core/domain-view.js';
 import type { ReviewPlanResponse } from '../shared/review-plan.js';
@@ -52,6 +53,7 @@ export function selectFeishuReviewCandidates(
 interface CardRow { title?: string; content: string; caption?: string; target?: FeishuCardView; extra?: CardControl }
 interface CardControl { caption: string; target: FeishuCardView }
 export interface FeishuCardViewPlan {
+  activity?: FeishuActivityCoverage;
   actions: FeishuCardActionDefinition[];
   build: (cardId: string) => FeishuCardPayload;
 }
@@ -229,7 +231,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
     const plan = createReadPlan({ title: concept.title, domain: domainIdOf(concept),
       time: timeText(context, concept.id), confirmed: confirmed(context, concept.id, concept.source.revision),
       page: view.page, pages: chunks.length, body: chunks[view.page - 1] }, controls);
-    return fitsPlan(view, plan) ? plan : errorPlan('当前正文或导航参数超过展示限制，请重新列表或搜索。');
+    return fitsPlan(view, plan) ? { ...plan, ...(concept.body.trim() ? { activity: { coverage: 'body-page' as const, refs: [feishuActivityReference(concept, 'body')], page: view.page, pageCount: chunks.length, request: { kind: 'selected' as const } } } : {}) } : errorPlan('当前正文或导航参数超过展示限制，请重新列表或搜索。');
   }
   if (view.kind === 'due') {
     const snapshot: Snapshot = { concepts: [...context.concepts], states: { ...context.states }, asOf: context.asOf, links: [], observationsCount: 0,
@@ -260,7 +262,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
       delete rows[index].caption; delete rows[index].target;
       plan = createPlan('少量复习候选', intro, rows, controls, '先回忆，再核对 · 由你确认');
     }
-    return fitsPlan(view, plan) ? plan : errorPlan('当前候选导航参数超过展示限制，请查看 3 项或全部领域候选。');
+    return fitsPlan(view, plan) ? { ...plan, activity: { coverage: 'results', refs: result.candidates.map((candidate) => feishuActivityReference(context.concepts.find((concept) => concept.id === candidate.conceptId)!, 'result')) } } : errorPlan('当前候选导航参数超过展示限制，请查看 3 项或全部领域候选。');
   }
   const isDomains = view.kind === 'domains';
   const normalizedQuery = isDomains ? '' : view.query.normalize('NFKC').toLocaleLowerCase();
@@ -293,5 +295,5 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
   const plan = createPlan(`${isDomains ? '知识领域' : '知识列表'} · ${view.page}/${groups.length} 页`,
     `${count} ${isDomains ? '个领域' : '个节点'}。时间状态仅作管理提示，不代表实测记忆能力。${rows.length ? '' : '\n没有匹配节点。'}`,
     rows, collectionControls(view, view.page, groups.length), isDomains ? '选择领域，浏览你的知识' : '知识浏览 · 时间状态仅作管理提示');
-  return fitsPlan(view, plan) ? plan : errorPlan('当前导航参数超过展示限制，请重新列表或搜索。');
+  return fitsPlan(view, plan) ? { ...plan, ...(!isDomains ? { activity: { coverage: 'results' as const, refs: groups[view.page - 1].map((index) => feishuActivityReference(concepts[index], 'result')), request: { kind: 'query' as const, resultCount: concepts.length } } } : {}) } : errorPlan('当前导航参数超过展示限制，请重新列表或搜索。');
 }

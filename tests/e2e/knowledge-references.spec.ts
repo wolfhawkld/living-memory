@@ -69,6 +69,13 @@ async function prepare(page: Page, request: APIRequestContext,
     if (intercept) await intercept(route, data);
     else await route.fulfill({ json: data });
   });
+  // These browser-only bodies deliberately retain the server revision. They
+  // test navigation, not factual exposure; never submit their synthetic blocks.
+  await page.route('**/api/activity/settings', async route => {
+    const fetched = await route.fetch();
+    const value = await fetched.json() as { sourceId: string; settings: { enabled: boolean; epoch: number; revision: number } };
+    await route.fulfill({ response: fetched, json: { ...value, settings: { ...value.settings, enabled: false } } });
+  });
   await page.goto('/');
   await page.getByRole('button', { name: '文字列表', exact: true }).click();
   await page.getByRole('button', { name: '查看真实记录', exact: true }).click();
@@ -78,7 +85,9 @@ async function prepare(page: Page, request: APIRequestContext,
   await expect(page.locator('.detail-head h2')).toHaveText(MAIN_TITLE);
   const writes: string[] = [];
   page.on('request', req => {
-    if (new URL(req.url()).pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(req.method())) writes.push(req.url());
+    const path = new URL(req.url()).pathname;
+    if (path.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(req.method())
+      && !(req.method() === 'POST' && path === '/api/activity')) writes.push(req.url());
   });
   return { primary, target, metadata, writes };
 }

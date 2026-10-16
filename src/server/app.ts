@@ -20,12 +20,19 @@ import { Accounts, type AccountSession } from './accounts.js';
 import type { FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuBindingStatus, FeishuChannelState, FeishuScope } from '../shared/feishu-binding.js';
 import type { FeishuReadMessage } from '../shared/feishu-reading.js';
 import { parseFeishuReadCommand } from '../integrations/feishu-read-commands.js';
-import { renderFeishuReadReply } from './feishu-read-view.js';
+import { planFeishuReadReply } from './feishu-read-view.js';
+import { prepareFeishuActivity } from './feishu-activity.js';
 import { feishuReadOperationId, type PreparedFeishuReadReply } from './feishu-reading.js';
 import { createFeishuCardCapabilities } from './feishu-cards.js';
 import { requestSessionToken, renewOwnerDevice, setSessionCookie, SESSION_COOKIE } from './account-session.js';
 import { validateStoragePaths } from './storage-paths.js';
 import { getKnowledgeReferences } from './knowledge-references.js';
+import { ActivityError } from './activity-store.js';
+import { inspectActivityReference } from './activity-references.js';
+import { inspectRecordedActivityReferences } from './activity-reference-status.js';
+import { resolveSourceIdentity, sourceIdentityHash } from './source-identities.js';
+import { readInstanceId } from './instance-state.js';
+import { parseActivityAppendRequest, ActivityValidationError, type ActivityListOptions, type ActivityChannel } from '../shared/activity.js';
 import {
   parseApplicationRequest,
   parseCorrectionRequest,
@@ -156,7 +163,7 @@ function apiError(res: Response, error: unknown): void {
     res.status(413).json({ error: { code: 'BODY_TOO_LARGE', message } });
     return;
   }
-  if (error instanceof StoreError) {
+  if (error instanceof StoreError || error instanceof ActivityError) {
     res.status(error.status).json({ error: { code: error.code, message: error.message } });
     return;
   }
@@ -332,8 +339,13 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   const root = sourceRoot(options);
   const dataDir = options.dataDir ?? process.env.LM_DATA_DIR ?? 'data/local';
   const staticDir = options.staticDir ?? resolve(process.cwd(), 'dist');
+  const instanceId = readInstanceId(dataDir);
   validateStoragePaths({ root, dataDir, staticDir, accountsEnabled: Boolean(options.accountsEnabled), dbPath: options.dbPath });
-  const initialRawSource = loadKnowledgeGraph({ root, limit: sourceLimit(options), includePrefix: sourceInclude(options) });
+  const loadSource = (physicalRoot: string, includePrefix?: string) => {
+    const identity = resolveSourceIdentity(dataDir, physicalRoot);
+    return loadKnowledgeGraph({ root: physicalRoot, limit: sourceLimit(options), includePrefix, identityHash: identity.identityHash, displayName: identity.displayName });
+  };
+  const initialRawSource = loadSource(root, sourceInclude(options));
   const store = new Store({ dataDir, dbPath: options.dbPath, namespace: initialRawSource.namespace, now: options.now });
   const initialSource = applyIdentityBindings(initialRawSource, store.getIdentityBindings());
   store.rememberConcepts(initialSource.index.concepts);
@@ -351,7 +363,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     if (existing) return existing;
     const privateRoot = join(dataDir, 'users', userId, 'knowledge');
     mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
-    const rawSource = loadKnowledgeGraph({ root: privateRoot, limit: sourceLimit(options) });
+    const rawSource = loadSource(privateRoot);
     const privateStore = new Store({ dataDir, dbPath: options.dbPath, namespace: rawSource.namespace, now: options.now });
     const privateSource = applyIdentityBindings(rawSource, privateStore.getIdentityBindings());
     privateStore.rememberConcepts(privateSource.index.concepts);
@@ -360,7 +372,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     return context;
   };
   const refreshContext = (context: KnowledgeContext) => {
-    const rawSource = loadKnowledgeGraph({ root: context.root, limit: sourceLimit(options), includePrefix: context.includePrefix });
+    const rawSource = loadSource(context.root, context.includePrefix);
     const next = applyIdentityBindings(rawSource, context.store.getIdentityBindings());
     if (next.namespace !== context.store.namespace) throw new StoreError('SOURCE_MISMATCH', '知识根目录已变化，请重启服务后重新连接。', 409);
     context.store.rememberConcepts(next.index.concepts);
@@ -396,7 +408,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     }
     if (req.method === 'OPTIONS') {
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-LM-Token, X-LM-Source-ID');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID');
       res.status(204).end();
       return;
     }
@@ -444,6 +456,9 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   });
 
   const requireWrite = (req: Request, res: Response, next: NextFunction): void => {
+    if ((req.header('x-lm-instance-id') ?? 'legacy') !== instanceId) {
+      res.status(409).json({ error: { code: 'INSTANCE_MISMATCH', message: '实例已经迁移，请重新连接并核对旧浏览器待同步记录。旧请求不会自动写入新实例。' } }); return;
+    }
     if (writeToken(req) !== (sessionOf(req)?.csrfToken ?? token)) {
       res.status(401).json({ error: { code: 'TOKEN_REQUIRED', message: '写入请求需要有效的本地会话令牌。' } });
       return;
@@ -555,6 +570,8 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   }));
   app.get('/api/session', (req, res) => res.set('Cache-Control', 'no-store').json({
     writeToken: sessionOf(req)?.csrfToken ?? token, sourceId: contextOf(req).source.namespace,
+    sourceRootFingerprint: sourceIdentityHash(contextOf(req).root),
+    instanceId,
     ...(sessionOf(req) ? { user: sessionOf(req)!.user } : {}),
   }));
   app.get('/api/changes', (req, res) => {
@@ -592,6 +609,75 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       throw new StoreError('INVALID_REFERENCE_REQUEST', '请选择明确的概念及资料版本。');
     }
     res.set('Cache-Control', 'no-store').json(getKnowledgeReferences(contextOf(req).source, conceptId, revision));
+  }));
+  app.get('/api/activity/settings', (req, res) => {
+    const { source, store } = contextOf(req);
+    res.set('Cache-Control', 'no-store').json({ sourceId: source.namespace, settings: store.activity.getSettings() });
+  });
+  const appendActivity = (req: Request, res: Response, channel: 'web' | 'cli', origins: readonly ActivityChannel[]) => {
+    const { source, store } = contextOf(req);
+    const session = sessionOf(req);
+    let parsed;
+    try { parsed = parseActivityAppendRequest(req.body); }
+    catch (error) {
+      if (error instanceof ActivityValidationError) throw new ActivityError('INVALID_ACTIVITY', error.message);
+      throw error;
+    }
+    const requestedSectionId = parsed.event.kind === 'reader.opened' ? parsed.event.payload.requestedSectionId : undefined;
+    const receipt = store.activity.append({
+      principalId: session?.user.id ?? 'local-owner', sessionKind: session?.kind ?? 'single-user',
+      deliveryChannel: channel, allowedOriginChannels: origins,
+      inspectReference: (reference) => {
+        const result = inspectActivityReference(source, reference);
+        if (result.status === 'current' && requestedSectionId
+          && !getKnowledgeReferences(source, reference.conceptId, reference.sourceRevision).sections
+            .some((section) => section.sectionId === requestedSectionId)) {
+          throw new ActivityError('INVALID_ACTIVITY_REFERENCE', '指定章节与当前资料不一致。');
+        }
+        return result;
+      },
+    }, parsed);
+    res.set('Cache-Control', 'no-store').json(receipt);
+  };
+  app.post('/api/activity', requireWrite, requireSourceHeader, asyncRoute((req, res) => appendActivity(req, res, 'web', ['web'])));
+  app.post('/api/activity/cli', requireWrite, requireSourceHeader, asyncRoute((req, res) => {
+    if (accounts && sessionOf(req)?.kind !== 'device') throw new ActivityError('ACTIVITY_CHANNEL_FORBIDDEN', 'CLI 活动需要本机设备会话。', 403);
+    appendActivity(req, res, 'cli', ['cli', 'progressive-kg']);
+  }));
+  app.get('/api/activity', asyncRoute((req, res) => {
+    const allowed = ['conceptId', 'operationId', 'kind', 'channel', 'from', 'to', 'limit', 'cursor'];
+    if (Object.keys(req.query).some((key) => !allowed.includes(key))
+      || Object.values(req.query).some((value) => typeof value !== 'string')) {
+      throw new ActivityError('INVALID_ACTIVITY', '查阅记录筛选条件无效。');
+    }
+    const options = { ...req.query, ...(req.query.limit === undefined ? {} : { limit: Number(req.query.limit) }) } as ActivityListOptions;
+    const { source, store } = contextOf(req);
+    const page = store.activity.list(options);
+    res.set('Cache-Control', 'no-store').json({ sourceId: source.namespace, ...page,
+      items: page.items.map((record) => ({ ...record, currentReferenceStatuses: inspectRecordedActivityReferences(record, source) })) });
+  }));
+  app.get('/api/activity/export', asyncRoute((req, res) => {
+    res.set('Cache-Control', 'no-store').json(contextOf(req).store.activity.export());
+  }));
+  app.post('/api/activity/settings', requireWrite, requireSourceHeader, asyncRoute((req, res) => {
+    const { source, store } = contextOf(req);
+    const settings = store.activity.updateSettings(req.body);
+    res.set('Cache-Control', 'no-store').json({ sourceId: source.namespace, settings });
+  }));
+  app.post('/api/activity/clear', requireWrite, requireSourceHeader, asyncRoute((req, res) => {
+    const body = req.body as Record<string, unknown> | null;
+    if (!body || Array.isArray(body) || typeof body !== 'object'
+      || Object.keys(body).some((key) => !['scope', 'expectedEpoch', 'operationId'].includes(key))) {
+      throw new ActivityError('INVALID_ACTIVITY', '请明确选择要清除的查阅记录范围。');
+    }
+    const { source, store } = contextOf(req);
+    if (body.scope === 'all' && !Object.hasOwn(body, 'operationId')) {
+      res.set('Cache-Control', 'no-store').json({ sourceId: source.namespace,
+        ...store.activity.clearAll({ expectedEpoch: body.expectedEpoch as number }) });
+    } else if (body.scope === 'operation' && typeof body.operationId === 'string') {
+      res.set('Cache-Control', 'no-store').json({ sourceId: source.namespace,
+        ...store.activity.clearOperation({ expectedEpoch: body.expectedEpoch as number, operationId: body.operationId }) });
+    } else throw new ActivityError('INVALID_ACTIVITY', '请明确选择要清除的查阅记录范围。');
   }));
   app.get('/api/concepts/:conceptId/history', asyncRoute((req, res) => {
     const { source, store, changes } = contextOf(req);
@@ -834,7 +920,10 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     res.json({ status: 'ok', source: next.index.source });
   }));
 
-  if (existsSync(staticDir)) app.use(express.static(staticDir));
+  if (existsSync(staticDir)) {
+    app.use(express.static(staticDir));
+    app.get('/performance', (_req, res) => res.sendFile(join(resolve(staticDir), 'index.html')));
+  }
   app.use('/api', (_req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: '找不到该 API。' } }));
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => apiError(res, error));
   app.livingMemory = {
@@ -878,23 +967,30 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
           const context = contextForUser(user.id);
           const source = context.source;
           const asOf = now().toISOString();
-          const text = renderFeishuReadReply(command, {
+          const plan = planFeishuReadReply(command, {
             concepts: source.index.concepts,
             states: context.store.getStates(source.index.concepts, asOf),
             anchors: context.store.getAnchors(), asOf,
           });
           const receiptId = operationId;
+          const stillAuthorized = () => {
+            try {
+              const current = accounts.resolveFeishuAccount(actor);
+              return current?.id === authorization.userId && current.accessRevision === authorization.accessRevision
+                && accounts.getFeishuBindingState(current.id).binding?.id === authorization.bindingId
+                && context.source === source && context.source.namespace === source.namespace;
+            } catch { return false; }
+          };
+          let activity: ReturnType<typeof prepareFeishuActivity> | null = null;
+          try {
+            activity = prepareFeishuActivity({ operationId: receiptId, occurredAt: asOf, now, settings: context.store.activity.getSettings(),
+              medium: 'feishu-text', coverage: plan.activity, stillAuthorized,
+              append: (request) => context.store.activity.append({ principalId: authorization.userId, sessionKind: 'feishu-binding',
+                deliveryChannel: 'feishu', allowedOriginChannels: ['feishu'], inspectReference: (reference) => inspectActivityReference(source, reference) }, request) });
+          } catch { /* Tracking cannot block knowledge delivery. */ }
           return {
-            operationId: receiptId, actor, text,
-            stillAuthorized: () => {
-              try {
-                const current = accounts.resolveFeishuAccount(actor);
-                return current?.id === authorization.userId && current.accessRevision === authorization.accessRevision
-                  && accounts.getFeishuBindingState(current.id).binding?.id === authorization.bindingId
-                  && context.source === source && context.source.namespace === source.namespace;
-              } catch { return false; }
-            },
-            settle: (result) => { accounts.finishFeishuRead(receiptId, authorization.userId, result); },
+            operationId: receiptId, actor, text: plan.text, stillAuthorized,
+            settle: (result) => { accounts.finishFeishuRead(receiptId, authorization.userId, result); activity?.settle(result); },
           };
         } catch {
           if (claimed && operationId && userId) {

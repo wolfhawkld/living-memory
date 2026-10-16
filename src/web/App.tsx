@@ -49,7 +49,8 @@ import './import-data.css';
 import type { ImportPreviewRequest, ImportCommitRequest, ImportReceipt } from '../shared/import-data';
 import { createPendingWriteBarrier } from './pending-write-barrier';
 import { reviewAllowance } from './review-allowance';
-import { briefReviewCheckpointKey, clearBriefReviewCheckpoint, readBriefReviewCheckpoint, writeBriefReviewCheckpoint,
+import { briefReviewCheckpointKey as unscopedCheckpointKey, clearBriefReviewCheckpoint as clearUnscopedCheckpoint,
+  readBriefReviewCheckpoint as readUnscopedCheckpoint, writeBriefReviewCheckpoint as writeUnscopedCheckpoint,
   type BriefRecallAttempt as RecallAttempt, type BriefReviewCheckpoint } from './brief-review-checkpoint';
 import { briefReviewConfirmationSuperseded, prepareBriefReviewResume } from './brief-review-resume';
 import { selectBriefReviewCandidates } from '../core/brief-review';
@@ -94,6 +95,15 @@ import { RetentionConfirmation } from './RetentionConfirmation';
 import { useConceptHistory } from './useConceptHistory';
 import { parseSourceExposure, sourceExposureKey, SOURCE_EXPOSURE_STORAGE_KEY } from './source-exposure';
 import { ConceptReader } from './ConceptReader';
+import { ActivityHistoryDialog } from './ActivityHistoryDialog';
+import './activity-history.css';
+import { ReferenceReviewDialog } from './ReferenceReviewDialog';
+import './reference-review.css';
+import type { ActivityReference } from '../shared/activity';
+import type { ActivityReferenceCurrentStatus } from '../shared/activity-reference-status';
+import { useActivity } from './use-activity';
+import { instanceStorage, instanceStorageKey } from './instance-storage';
+import type { QueryActivityInput, ReaderOpenedFact, ContentVisibleFact } from './activity-capture';
 import type { KnowledgeReference } from '../shared/knowledge-references';
 import { MarkdownView } from './MarkdownView';
 import { canShowConceptReader, relativeSource, type ReaderRequest, type ReaderSection } from './concept-reader-state';
@@ -239,6 +249,14 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const [layout, setLayout] = useState<Layout>({});
   const [writeToken, setWriteToken] = useState('');
   const [sourceId, setSourceId] = useState('');
+  const [instanceId, setInstanceId] = useState('legacy');
+  const instanceIdRef = useRef('legacy');
+  const checkpointStorage = useMemo(() => instanceStorage({ getItem: (key) => window.localStorage.getItem(key),
+    setItem: (key, value) => window.localStorage.setItem(key, value), removeItem: (key) => window.localStorage.removeItem(key) }, instanceId), [instanceId]);
+  const readBriefReviewCheckpoint = useCallback((source: string) => readUnscopedCheckpoint(source, checkpointStorage), [checkpointStorage]);
+  const writeBriefReviewCheckpoint = useCallback((source: string, value: BriefReviewCheckpoint) => writeUnscopedCheckpoint(source, value, checkpointStorage), [checkpointStorage]);
+  const clearBriefReviewCheckpoint = useCallback((source: string) => clearUnscopedCheckpoint(source, checkpointStorage), [checkpointStorage]);
+  const briefReviewCheckpointKey = useCallback((source: string) => instanceStorageKey(unscopedCheckpointKey(source), instanceId), [instanceId]);
   const graphPreferenceKey = useMemo(() => graphDisplayPreferenceKey(account?.id, sourceId), [account?.id, sourceId]);
   const [graphPreference, setGraphPreference] = useState<{ key: string | null; value: GraphLimitPreference }>({ key: null, value: 'server' });
   const graphLimitPreference = graphPreference.key === graphPreferenceKey ? graphPreference.value : 'server';
@@ -273,6 +291,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const [sourceViewedKeys, setSourceViewedKeys] = useState<string[]>([]);
   const [readerRequest, setReaderRequest] = useState<ReaderRequest | null>(null);
   const [referenceReaders, setReferenceReaders] = useState<Array<{ sourceId: string; concept: Concept; sectionId?: string }>>([]);
+  const [referenceReview, setReferenceReview] = useState<{ sourceId: string; reference: ActivityReference; status: ActivityReferenceCurrentStatus; ticket: number; concepts: Concept[] } | null>(null);
+  const [activityReader, setActivityReader] = useState<{ sourceId: string; concept: Concept; sectionId?: string } | null>(null);
+  const referenceReviewTicket = useRef(0);
   const referenceNavigationRef = useRef(0);
   const [attempt, setAttempt] = useState<RecallAttempt | null>(null);
   const [briefBudget, setBriefBudget] = useState<3 | 5>(3);
@@ -383,6 +404,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const hasSession = Boolean(writeToken);
   activeDomainRef.current = activeDomainId;
   const writeLocked = demoEnabled || simulated || simulationLoading || sourceReloadPending;
+  const activity = useActivity({ accountId: account?.id ?? 'local-owner', sourceId, instanceId, writeToken,
+    mode: demoEnabled ? 'example' : simulated ? 'forecast' : 'real', locked: writeLocked || loading });
   const reviewPlan = useReviewPlan(sourceId, Boolean(sourceId && hasSession && !writeLocked), snapshot);
   writeLockedRef.current = writeLocked;
   const asOf = simulated && !demoEnabled ? new Date(simulationBaseRef.current + simDays * DAY_MS).toISOString() : undefined;
@@ -395,12 +418,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     simulated,
     attempt: Boolean(attempt) || scenarioOpen || practiceOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen,
     reviewDialogOpen: reviewDialogOpen || Boolean(retentionConfirmation),
-    configOpen: configOpen || reviewPlanOpen || importOpen || identityOpen,
+    configOpen: configOpen || reviewPlanOpen || importOpen || identityOpen || activity.open,
     busyAction,
     refreshing,
     simulationLoading,
     sourceReloadPending,
-    readerOpen: Boolean(readerRequest),
+    readerOpen: Boolean(readerRequest) || Boolean(activityReader) || Boolean(referenceReview),
   };
 
   const refreshPendingState = useCallback(() => setPendingWrites(getPendingWrites(sourceId)), [sourceId]);
@@ -419,7 +442,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     setBriefSuspended(checkpoint);
     setBriefStorageError(null);
     return checkpoint;
-  }, []);
+  }, [writeBriefReviewCheckpoint]);
 
   useEffect(() => {
     if (!sourceId) return;
@@ -439,7 +462,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     };
     window.addEventListener('storage', changed);
     return () => window.removeEventListener('storage', changed);
-  }, [sourceId]);
+  }, [sourceId, readBriefReviewCheckpoint, briefReviewCheckpointKey]);
 
   useEffect(() => {
     if (!briefSession || briefSession.sourceId !== sourceId) return;
@@ -483,11 +506,18 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         throw new ApiRequestError('账号已切换，正在重新加载知识空间。', { code: 'AUTH_REQUIRED', status: 401 });
       }
       const currentSource = session.sourceId ?? 'legacy-unscoped';
+      const nextInstance = session.instanceId ?? 'legacy';
+      if (sourceIdRef.current && nextInstance !== instanceIdRef.current) {
+        api.configureSessionScope(null); writeTokenRef.current = ''; setWriteToken(''); setSourceReloadPending(true);
+        throw new ApiRequestError('实例已迁移，请保留当前草稿后重新加载页面；旧记录不会自动提交到新实例。', { code: 'INSTANCE_MISMATCH', status: 409 });
+      }
       const [nextSnapshot, nextLayout] = await Promise.all([
         api.getSnapshot(undefined, currentSource, 'all'),
         api.getLayout(currentSource).catch(() => ({} as Layout)),
       ]);
       if (requestId !== snapshotRequestRef.current) return null;
+      api.configureSessionScope(session);
+      instanceIdRef.current = nextInstance; setInstanceId(nextInstance);
       sourceIdRef.current = currentSource;
       writeTokenRef.current = session.writeToken;
       setWriteToken(session.writeToken);
@@ -518,7 +548,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       }
       setDemoRecord(initialDemo);
       try {
-        setSourceViewedKeys(parseSourceExposure(window.sessionStorage.getItem(SOURCE_EXPOSURE_STORAGE_KEY)));
+        setSourceViewedKeys(parseSourceExposure(window.sessionStorage.getItem(instanceStorageKey(SOURCE_EXPOSURE_STORAGE_KEY, nextInstance))));
       } catch {
         // Private browsing may deny sessionStorage; the in-memory marker still works.
       }
@@ -554,6 +584,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, []);
 
   const markSourceMismatch = useCallback((nextSourceId: string) => {
+    api.configureSessionScope(null);
     if (pendingSourceIdRef.current === nextSourceId) return;
     pendingSourceIdRef.current = nextSourceId;
     deferredChangeRef.current.clear();
@@ -564,6 +595,10 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, []);
 
   useEffect(() => subscribeToSessionRecovery((event) => {
+    if (event.kind === 'instance-mismatch') {
+      markSourceMismatch(event.sourceId ?? sourceIdRef.current);
+      return;
+    }
     if (event.kind === 'source-mismatch') {
       markSourceMismatch(event.sourceId ?? 'changed-source');
       return;
@@ -573,6 +608,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       markSourceMismatch(event.session.sourceId);
       return;
     }
+    if ((event.session.instanceId ?? 'legacy') !== instanceIdRef.current) { markSourceMismatch(event.session.sourceId); return; }
+    api.configureSessionScope(event.session);
     // Credential renewal must not reload the form or alter the frozen event.
     writeTokenRef.current = event.session.writeToken;
     setWriteToken(event.session.writeToken);
@@ -640,6 +677,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       try {
         const session = await api.getSession();
         const nextSource = session.sourceId ?? 'legacy-unscoped';
+        if ((session.instanceId ?? 'legacy') !== instanceIdRef.current) { markSourceMismatch(nextSource); return; }
         const currentSource = sourceIdRef.current;
         const sourceChanged = Boolean(currentSource && nextSource !== currentSource);
         if (sourceChanged || pendingSourceIdRef.current) {
@@ -649,6 +687,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         pendingSourceIdRef.current = null;
         sourceIdRef.current = nextSource;
         setSourceId(nextSource);
+        api.configureSessionScope(session);
         writeTokenRef.current = session.writeToken;
         setWriteToken(session.writeToken);
         deferredChangeRef.current.defer({ ...notification, sourceId: nextSource, reason: 'connected' as const });
@@ -693,7 +732,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   useEffect(() => {
     changeHandlersRef.current.flush();
-  }, [attempt, briefSession, scenarioOpen, practiceOpen, applicationDraft, overviewOpen, reviewPlanOpen, importOpen, identityOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest]);
+  }, [attempt, briefSession, scenarioOpen, practiceOpen, applicationDraft, overviewOpen, reviewPlanOpen, importOpen, identityOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest, activity.open, activityReader, referenceReview]);
 
   useEffect(() => {
     if (overviewOpen && sourceId && !demoEnabled && !simulated && !sourceReloadPending) void overviewLoader.refresh();
@@ -810,7 +849,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     ? summarizeDomainVisibility(displaySnapshot, viewSnapshot, domainId) : null, [displaySnapshot, viewSnapshot, domainId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
-  const domainBusy = Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const domainBusy = activity.open || Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
   const changeGraphLimit = useCallback((value: GraphLimitPreference) => {
     if (domainBusy || listMode || !graphPreferenceKey) return;
     setGraphPreference({ key: graphPreferenceKey, value });
@@ -845,7 +884,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const briefProgressLock = sourceReloadPending || (briefSession && briefSession.sourceId !== sourceId)
     ? '知识源已变化，请结束本轮后重新加载。' : writeLocked || !hasSession ? '当前无法写入真实记录，请结束本轮后重试。'
     : briefStorageConflictRef.current ? briefStorageError : null;
-  const learningOverlayOpen = Boolean(attempt) || scenarioOpen || practiceOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen;
+  const learningOverlayOpen = activity.open || Boolean(attempt) || scenarioOpen || practiceOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen;
 
   // Source refreshes may remove a domain or a relation. Reconcile only when no
   // answer/dialog is active, and never turn a view change into a learning event.
@@ -869,20 +908,21 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       ? '已有更新的重温记录，本轮的旧确认无需再次提交。' : null;
   const readerVisible = canShowConceptReader(readerRequest, sourceId, selectedConcept, attempt?.stage ?? null, sourceReloadPending);
   const referenceReaderOriginRef = useRef(false);
-  referenceReaderOriginRef.current = readerVisible || Boolean(scenarioOpen && scenarioReader);
+  referenceReaderOriginRef.current = readerVisible || Boolean(scenarioOpen && scenarioReader) || Boolean(activityReader && activity.open && activityReader.sourceId === sourceId);
   const referenceReader = referenceReaders.at(-1);
   const visibleReferenceReader = referenceReader?.sourceId === sourceId && !sourceReloadPending
     && referenceReaderOriginRef.current ? referenceReader : null;
   useEffect(() => {
     referenceNavigationRef.current += 1;
     setReferenceReaders([]);
+    referenceReviewTicket.current += 1; setReferenceReview(null); setActivityReader(null);
   }, [sourceId]);
   useEffect(() => {
     if (!referenceReaderOriginRef.current || sourceReloadPending) {
       referenceNavigationRef.current += 1;
       setReferenceReaders((current) => current.length ? [] : current);
     }
-  }, [readerVisible, scenarioOpen, scenarioReader, sourceReloadPending]);
+  }, [readerVisible, scenarioOpen, scenarioReader, sourceReloadPending, activityReader]);
   useEffect(() => {
     if (readerRequest && !readerVisible) setReaderRequest(null);
   }, [readerRequest, readerVisible]);
@@ -923,8 +963,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     ? listDomainConcepts(displaySnapshot, domainId, visibleExpandedIds) : [], [displaySnapshot, domainId, visibleExpandedIds]);
 
   const changeDomain = useCallback((nextDomainId: string, targetId?: string) => {
-    if (domainBusy || !snapshot || !domains.some((domain) => domain.id === nextDomainId)) return;
-    if (!confirmCorrectionNavigation()) return;
+    if (domainBusy || !snapshot || !domains.some((domain) => domain.id === nextDomainId)) return false;
+    if (!confirmCorrectionNavigation()) return false;
     if (layoutWriteTimer.current !== null) {
       window.clearTimeout(layoutWriteTimer.current);
       layoutWriteTimer.current = null;
@@ -941,6 +981,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     try { window.localStorage.setItem(`living-memory.domain.v1.${sourceId}`, nextDomainId); } catch {
       showNotice({ tone: 'info', text: '已切换知识域；浏览器未允许记住这次选择。' });
     }
+    return true;
   }, [confirmCorrectionNavigation, domainBusy, domains, showNotice, snapshot, sourceId]);
 
   const canExpand = !domainBusy && selectedConcept !== null && domainIdOf(selectedConcept) === domainId
@@ -962,13 +1003,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       if (current.includes(key)) return current;
       const next = [...current, key];
       try {
-        window.sessionStorage.setItem(SOURCE_EXPOSURE_STORAGE_KEY, JSON.stringify(next));
+        window.sessionStorage.setItem(instanceStorageKey(SOURCE_EXPOSURE_STORAGE_KEY, instanceId), JSON.stringify(next));
       } catch {
         showNotice({ tone: 'info', text: '本次查看已在当前页面标记；浏览器未允许保存会话标记。' });
       }
       return next;
     });
-  }, [showNotice, sourceId]);
+  }, [showNotice, sourceId, instanceId]);
 
   const markSourceViewed = useCallback((conceptId: string) => {
     const concept = snapshot?.concepts.find((item) => item.id === conceptId);
@@ -978,13 +1019,15 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const openReader = useCallback((section: ReaderSection = 'body') => {
     if (!selectedConcept || !sourceId || sourceReloadPending || briefActionRef.current || (attempt && attempt.stage !== 'feedback')) return;
     markSourceViewed(selectedConcept.id);
+    activity.capture.beginReading();
     setReaderRequest({ sourceId, conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision, section });
-  }, [selectedConcept, sourceId, sourceReloadPending, attempt?.stage, markSourceViewed]);
+  }, [selectedConcept, sourceId, sourceReloadPending, attempt?.stage, markSourceViewed, activity.capture]);
   const closeReader = useCallback(() => {
+    activity.capture.endReading();
     referenceNavigationRef.current += 1;
     setReferenceReaders([]);
     setReaderRequest(null);
-  }, []);
+  }, [activity.capture]);
   const loadReaderReferences = useCallback((concept: Concept, signal?: AbortSignal) =>
     api.getKnowledgeReferences(concept.id, concept.source.revision, sourceId, signal), [sourceId]);
   const navigateReaderReference = useCallback(async (reference: KnowledgeReference) => {
@@ -1011,24 +1054,62 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, []);
 
   const selectConcept = useCallback((conceptId: string) => {
-    if (briefSession || applicationDraft || overviewOpen || briefActionRef.current) return;
-    if (conceptId !== selectedId && !confirmCorrectionNavigation()) return;
+    if (briefSession || applicationDraft || overviewOpen || briefActionRef.current) return false;
+    if (conceptId !== selectedId && !confirmCorrectionNavigation()) return false;
     if (attempt && attempt.conceptId !== conceptId) {
-      if (!window.confirm('当前回忆尚未保存，确定取消并切换概念吗？')) return;
+      if (!window.confirm('当前回忆尚未保存，确定取消并切换概念吗？')) return false;
       setAttempt(null);
     }
     setSelectedId(conceptId);
     setFocusRevision((revision) => revision + 1);
+    return true;
   }, [attempt, briefSession, applicationDraft, overviewOpen, selectedId, confirmCorrectionNavigation]);
 
-  const selectSearchResult = useCallback((conceptId: string) => {
-    if (domainBusy) return;
+  const selectSearchResult = useCallback((conceptId: string, query?: QueryActivityInput & { operationId?: string }) => {
+    if (domainBusy) return false;
     const concept = snapshot?.concepts.find((item) => item.id === conceptId);
-    if (!concept) return;
+    if (!concept) return false;
     const targetDomain = domainIdOf(concept);
-    if (targetDomain !== domainId) changeDomain(targetDomain, conceptId);
-    else selectConcept(conceptId);
-  }, [changeDomain, domainBusy, domainId, selectConcept, snapshot]);
+    const accepted = targetDomain !== domainId ? changeDomain(targetDomain, conceptId) : selectConcept(conceptId);
+    if (accepted && query) activity.capture.query(query, concept, query.operationId);
+    return accepted;
+  }, [activity.capture, changeDomain, domainBusy, domainId, selectConcept, snapshot]);
+
+  const trackedConcept = (fact: ReaderOpenedFact) => visibleReferenceReader?.concept.id === fact.conceptId
+    ? visibleReferenceReader.concept : activityReader?.concept.id === fact.conceptId ? activityReader.concept : scenarioReader?.id === fact.conceptId ? scenarioReader
+      : selectedConcept?.id === fact.conceptId ? selectedConcept : null;
+  const onReaderOpened = (fact: ReaderOpenedFact) => { const concept = trackedConcept(fact); if (concept) activity.capture.opened(fact, concept); };
+  const onContentVisible = (fact: ContentVisibleFact) => { const concept = trackedConcept(fact); if (concept) activity.capture.visible(fact, concept); };
+  const readerTracking = { trackingEnabled: activity.trackingEnabled, onReaderOpened, onContentVisible };
+  const openReferenceReview = useCallback(async (reference: ActivityReference, status: ActivityReferenceCurrentStatus) => {
+    const ticket = ++referenceReviewTicket.current, sourceAtStart = sourceId;
+    try {
+      const latest = await api.getSnapshot(undefined, sourceAtStart, 'all');
+      if (referenceReviewTicket.current !== ticket || sourceIdRef.current !== sourceAtStart || writeLockedRef.current) return;
+      setReferenceReview({ sourceId: sourceAtStart, reference, status, ticket, concepts: latest.concepts });
+    } catch (error) {
+      if (referenceReviewTicket.current === ticket && sourceIdRef.current === sourceAtStart) showNotice({ tone: 'error', text: errorMessage(error) });
+    }
+  }, [showNotice, sourceId]);
+  const confirmReferenceReview = useCallback(async (target: { concept: Concept; sectionId?: string }) => {
+    const frozen = referenceReview;
+    if (!frozen || frozen.sourceId !== sourceId || sourceReloadPending || writeLocked || !activity.open) throw new Error('查阅来源已变化，请重新打开核对。');
+    const latest = await api.getSnapshot(undefined, frozen.sourceId, 'all');
+    const assertActive = () => {
+      if (referenceReviewTicket.current !== frozen.ticket || sourceIdRef.current !== frozen.sourceId || writeLockedRef.current) throw new Error('本次核对已关闭或来源已变化。');
+    };
+    assertActive();
+    const concept = latest.concepts.find((item) => item.id === target.concept.id);
+    if (!concept || concept.source.revision !== target.concept.source.revision || concept.source.path !== target.concept.source.path) throw new Error('当前资料再次变化，请重新选择版本和章节。');
+    if (target.sectionId) {
+      const metadata = await api.getKnowledgeReferences(concept.id, concept.source.revision, frozen.sourceId);
+      assertActive();
+      if (!metadata.sections.some((section) => section.sectionId === target.sectionId)) throw new Error('所选章节已变化，请重新选择。');
+    }
+    activity.capture.beginReading();
+    markConceptSourceViewed(concept);
+    setActivityReader({ sourceId: frozen.sourceId, concept, sectionId: target.sectionId });
+  }, [activity.capture, activity.open, markConceptSourceViewed, referenceReview, sourceId, sourceReloadPending, writeLocked]);
 
   const startQueryReflection = useCallback((entry: QueryReflectionEntry) => {
     if (domainBusy || writeLocked || !hasSession || !snapshot || !confirmCorrectionNavigation()) return;
@@ -1937,6 +2018,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         <div className="topbar-actions">
           {account ? <><span className="account-name" title="当前私人知识空间">{account.username}</span><button type="button" className="quiet-button" disabled={domainBusy || !hasSession} onClick={() => setFeishuBindingOpen(true)}>飞书绑定</button>{account.role === 'admin' ? <button type="button" className="quiet-button" disabled={domainBusy} onClick={onManageAccounts}>账号管理</button> : null}<button type="button" className="quiet-button" disabled={domainBusy} onClick={onLogout}>退出登录</button></> : null}
           <button type="button" className="quiet-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => { setReaderRequest(null); setQueryReflection(null); setScenarioOpen(true); }}>场景调用练习</button>
+          <button type="button" className="quiet-button" aria-label="查阅记录" title={activity.queueStatus.message} disabled={writeLocked || domainBusy || !hasSession} onClick={() => {
+            void activity.reloadSettings().then(() => activity.setOpen(true)).catch((error) => showNotice({ tone: 'error', text: error instanceof Error ? error.message : '查阅记录暂不可用。' }));
+          }}>查阅记录{activity.queueStatus.message ? ' · 待检查' : activity.queueStatus.pending ? ` · 待同步 ${activity.queueStatus.pending}` : ''}</button>
           <button type="button" className="quiet-button" onClick={() => void refreshSource()} disabled={domainBusy || writeLocked} aria-label="刷新知识源与时间状态"><span className={refreshing ? 'spin' : ''}>↻</span><span>刷新</span></button>
           <button type="button" className="quiet-button" onClick={() => void exportData()} disabled={writeLocked || domainBusy || !hasSession} aria-label="导出学习数据" title="下载已同步的学习记录、参数和布局，用于留档与分析。不含知识正文及待同步记录；可通过「导入恢复」恢复到当前账号。"><span aria-hidden="true">⇩</span><span>导出学习数据</span></button>
           <button type="button" className="quiet-button" disabled={domainBusy || Boolean(dataMaintenanceLockedReason)} title={dataMaintenanceLockedReason ?? '预览并恢复 JSON 备份中的学习数据'} onClick={() => {
@@ -1961,7 +2045,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         </div>
       </header>
 
-      {sourceReloadPending ? <div className="mode-bar source-reload-banner" role="alert"><div><strong>知识源已变化</strong><span>请完成当前输入后重新加载页面。</span></div><button type="button" disabled={learningOverlayOpen || Boolean(retentionConfirmation) || Boolean(busyAction)} onClick={() => window.location.reload()}>重新加载页面</button></div> : null}
+      {sourceReloadPending ? <div className="mode-bar source-reload-banner" role="alert"><div><strong>知识空间或实例已变化</strong><span>请保留当前输入后重新加载页面；旧待同步记录不会自动迁入新实例。</span></div><button type="button" disabled={learningOverlayOpen || Boolean(retentionConfirmation) || Boolean(busyAction)} onClick={() => window.location.reload()}>重新加载页面</button></div> : null}
 
       <div className={`mode-bar${demoEnabled ? ' is-demo' : ''}`}>
         <div><strong>{demoEnabled ? '示例状态 · 非真实记忆' : '真实学习记录'}</strong><span>{demoEnabled ? '虚构重温间隔，拖动时间轴查看颜色变化' : '由你确认的学习与重温记录计算'}</span></div>
@@ -1994,6 +2078,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         <aside className="left-panel">
           <div className="panel-heading"><div><span className="eyebrow">知识空间</span><h1>概念索引</h1></div><span className="count-chip">{listedConcepts.length}</span></div>
           <ConceptSearch key={sourceId} concepts={snapshot.concepts} currentDomainId={domainId} disabled={domainBusy} onSelect={selectSearchResult}
+            onSubmitQuery={(input) => activity.capture.query(input)} trackingEnabled={activity.trackingEnabled}
             onStartQueryReflection={startQueryReflection} queryReflectionDisabled={writeLocked || !hasSession} />
           <BriefReviewPanel domainLabel={domainId ? domainLabel(domainId) : '当前领域'} candidateCount={briefCandidates.length}
             budget={briefBudget} disabledReason={briefDisabledReason} onBudgetChange={setBriefBudget} onStart={() => void startBriefReview()}
@@ -2192,10 +2277,11 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         onContinueApplication={continueScenarioApplication}
         wasSourceViewed={(concept) => sourceViewedKeys.includes(sourceExposureKey(sourceId, concept))}
         onSourceExposed={(concept) => markSourceViewed(concept.id)}
-        onReadSource={(concept) => { markSourceViewed(concept.id); setScenarioReader(concept); }} /> : null}
+        onReadSource={(concept) => { activity.capture.beginReading(); markSourceViewed(concept.id); setScenarioReader(concept); }} /> : null}
       {scenarioOpen && scenarioReader && !visibleReferenceReader ? <ConceptReader key={`scenario:${sourceId}:${scenarioReader.id}`} concept={scenarioReader} sourceId={sourceId} initialSection="body"
+        {...readerTracking}
         loadReferences={loadReaderReferences} onNavigateReference={navigateReaderReference}
-        onClose={() => { referenceNavigationRef.current += 1; setReferenceReaders([]); setScenarioReader(null); }} /> : null}
+        onClose={() => { activity.capture.endReading(); referenceNavigationRef.current += 1; setReferenceReaders([]); setScenarioReader(null); }} /> : null}
       {practiceOpen ? <PracticeCardsDialog key={sourceId} sourceId={sourceId} concepts={snapshot.concepts}
         initialConceptId={selectedId ?? undefined} lockedReason={sourceReloadPending ? '知识空间已变化，请保留当前输入后重新连接。'
           : writeLocked || !hasSession ? '当前无法写入真实学习记录。' : null}
@@ -2205,10 +2291,26 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       {retentionConfirmation ? <RetentionConfirmation active={retentionConfirmation.active} busy={busyAction === 'retention'} onClose={() => setRetentionConfirmation(null)} onConfirm={() => void saveRetention()} /> : null}
 
       {readerVisible && readerRequest && selectedConcept && !visibleReferenceReader ? <ConceptReader key={`${sourceId}:${selectedConcept.id}:${selectedConcept.source.revision}`} concept={selectedConcept} sourceId={sourceId} initialSection={readerRequest.section}
+        {...readerTracking}
         loadReferences={loadReaderReferences} onNavigateReference={navigateReaderReference} onClose={closeReader} /> : null}
       {visibleReferenceReader ? <ConceptReader key={`reference:${sourceId}:${visibleReferenceReader.concept.id}:${referenceReaders.length}`}
+        {...readerTracking}
         concept={visibleReferenceReader.concept} sourceId={sourceId} initialSection="body" initialSectionId={visibleReferenceReader.sectionId}
         loadReferences={loadReaderReferences} onNavigateReference={navigateReaderReference} onClose={closeReferenceReader} /> : null}
+
+      {activity.open && activity.settings ? <ActivityHistoryDialog key={activity.scopeKey} scopeKey={activity.scopeKey} initialConceptId={selectedId ?? undefined}
+        concepts={snapshot.concepts} settings={activity.settings} queueStatus={activity.queueStatus} onClose={() => { activity.capture.endReading(); referenceReviewTicket.current += 1; setReferenceReview(null); setActivityReader(null); activity.setOpen(false); }}
+        loadPage={activity.loadPage} onUpdateSettings={activity.updateSettings} onClear={activity.clear} onExport={activity.export} onRetry={activity.retry}
+        onReviewReference={(reference, status) => void openReferenceReview(reference, status)} /> : null}
+      {referenceReview && referenceReview.sourceId === sourceId && activity.open ? <ReferenceReviewDialog key={`${activity.scopeKey}:${referenceReview.ticket}`}
+        scopeKey={activity.scopeKey} reference={referenceReview.reference} status={referenceReview.status} concepts={referenceReview.concepts}
+        loadReferences={loadReaderReferences} onConfirm={confirmReferenceReview}
+        onClose={() => { referenceReviewTicket.current += 1; setReferenceReview(null); }} /> : null}
+      {activityReader && activityReader.sourceId === sourceId && activity.open && !visibleReferenceReader ? <ConceptReader
+        key={`activity:${sourceId}:${activityReader.concept.id}:${activityReader.concept.source.revision}`}
+        concept={activityReader.concept} sourceId={sourceId} initialSection="body" initialSectionId={activityReader.sectionId} {...readerTracking}
+        loadReferences={loadReaderReferences} onNavigateReference={navigateReaderReference}
+        onClose={() => { activity.capture.endReading(); referenceNavigationRef.current += 1; setReferenceReaders([]); setActivityReader(null); }} /> : null}
 
       {notice ? <div className={`notice notice-${notice.tone}`} role="status">{notice.text}</div> : null}
     </div>

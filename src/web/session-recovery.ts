@@ -1,18 +1,29 @@
 export interface LocalSession {
   writeToken: string;
   sourceId: string;
+  instanceId?: string;
 }
 
 export interface SessionRecoveryOptions {
   getSession: () => Promise<LocalSession>;
   isExpired: (error: unknown) => boolean;
-  onRecovered?: (session: LocalSession) => void;
+  onRecovered?: (session: LocalSession, original: LocalSession) => void;
+  onInstanceMismatch?: (actual: LocalSession, original: LocalSession) => void;
+  instanceMismatchError?: () => Error;
   onSourceMismatch?: (actualSourceId: string) => void;
   sourceMismatchError?: () => Error;
 }
 
 interface CodedError extends Error {
   code?: string;
+}
+
+export function normalizeInstanceId(value?: string): string {
+  if (value === undefined) return 'legacy';
+  if (typeof value !== 'string' || !value.trim() || value !== value.trim() || value.length > 200 || /[\x00-\x1f\x7f]/.test(value)) {
+    throw Object.assign(new Error('本地服务实例标识无效。'), { code: 'SESSION_INVALID' });
+  }
+  return value;
 }
 
 function assertSession(session: LocalSession): LocalSession {
@@ -27,7 +38,8 @@ function assertSession(session: LocalSession): LocalSession {
     error.code = 'SESSION_INVALID';
     throw error;
   }
-  return session;
+  normalizeInstanceId(session.instanceId);
+  return Object.freeze({ ...session });
 }
 
 function sourceMismatchError(options: SessionRecoveryOptions): Error {
@@ -69,7 +81,11 @@ export function createSessionRecovery(options: SessionRecoveryOptions) {
           options.onSourceMismatch?.(refreshed.sourceId);
           throw sourceMismatchError(options);
         }
-        options.onRecovered?.(refreshed);
+        if (normalizeInstanceId(refreshed.instanceId) !== normalizeInstanceId(original.instanceId)) {
+          options.onInstanceMismatch?.(refreshed, original);
+          throw Object.assign(options.instanceMismatchError?.() ?? new Error('知识空间实例已变化，请重新加载。'), { code: 'INSTANCE_MISMATCH' });
+        }
+        options.onRecovered?.(refreshed, original);
         return send(refreshed);
       }
     },

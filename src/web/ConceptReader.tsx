@@ -2,16 +2,22 @@ import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } f
 import type { Concept } from '../shared/types';
 import { MarkdownView } from './MarkdownView';
 import { referencesMatchConcept, relativeSource, sectionNavigationMessage, type ReaderSection } from './concept-reader-state';
-import type { KnowledgeReference, KnowledgeReferences } from '../shared/knowledge-references';
+import type { KnowledgeContentBlock, KnowledgeReference, KnowledgeReferences } from '../shared/knowledge-references';
+import { isForegroundReader, observeReaderContent } from './reader-activity';
 
+export interface ReaderOpenedFact { conceptId: string; sourceRevision: string; contentPart: ReaderSection; requestedSectionId?: string }
+export interface ReaderVisibleFact { conceptId: string; sourceRevision: string; contentPart: ReaderSection; blocks: KnowledgeContentBlock[] }
 export interface ConceptReaderProps {
   concept: Concept; sourceId: string; initialSection: ReaderSection; onClose: () => void;
   loadReferences?: (concept: Concept, signal?: AbortSignal) => Promise<KnowledgeReferences>;
   onNavigateReference?: (reference: KnowledgeReference) => void | Promise<void>;
   initialSectionId?: string;
+  trackingEnabled?: boolean;
+  onReaderOpened?: (fact: ReaderOpenedFact) => void;
+  onContentVisible?: (fact: ReaderVisibleFact) => void;
 }
 export function ConceptReader({ concept, sourceId, initialSection, onClose, loadReferences, onNavigateReference,
-  initialSectionId }: ConceptReaderProps) {
+  initialSectionId, trackingEnabled = false, onReaderOpened, onContentVisible }: ConceptReaderProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const backdropDown = useRef(false);
@@ -25,6 +31,12 @@ export function ConceptReader({ concept, sourceId, initialSection, onClose, load
   const [renderedBody, setRenderedBody] = useState<{ identity: string; section: ReaderSection; version: number } | null>(null);
   const renderVersion = renderedBody?.identity === identity && renderedBody.section === section ? renderedBody.version : 0;
   const initialLocated = useRef<string | null>(null);
+  const opened = useRef(new Set<string>());
+  const seenBlocks = useRef(new Map<string, Set<string>>());
+  const activityView = useRef({ identity, section, trackingEnabled });
+  activityView.current = { identity, section, trackingEnabled };
+  const activityCallbacks = useRef({ onReaderOpened, onContentVisible });
+  activityCallbacks.current = { onReaderOpened, onContentVisible };
   const navigationEpoch = useRef(0);
   const navigationPending = useRef(false);
   const references = referenceState?.identity === identity && referencesMatchConcept(referenceState.data, concept) ? referenceState.data : null;
@@ -112,6 +124,36 @@ export function ConceptReader({ concept, sourceId, initialSection, onClose, load
     };
   }, []);
 
+  useEffect(() => {
+    const report = () => {
+      const key = `${identity}:${section}`;
+      if (!trackingEnabled || !activityCallbacks.current.onReaderOpened || !isForegroundReader(dialogRef.current, document)
+        || activityView.current.identity !== identity || activityView.current.section !== section || !activityView.current.trackingEnabled || opened.current.has(key)) return;
+      opened.current.add(key);
+      activityCallbacks.current.onReaderOpened?.({ conceptId: concept.id, sourceRevision: concept.source.revision, contentPart: section,
+        ...(section === 'body' && initialSectionId ? { requestedSectionId: initialSectionId } : {}) });
+    };
+    document.addEventListener('visibilitychange', report);
+    document.addEventListener('focusin', report);
+    report();
+    return () => { document.removeEventListener('visibilitychange', report); document.removeEventListener('focusin', report); };
+  }, [identity, section, trackingEnabled, initialSectionId]);
+
+  useEffect(() => {
+    const root = bodyRef.current;
+    if (!trackingEnabled || !root || !renderVersion || !references?.blocks || !activityCallbacks.current.onContentVisible
+      || !(section === 'body' ? concept.body : concept.summary)?.trim()) return;
+    const key = `${identity}:${section}`;
+    let seen = seenBlocks.current.get(key);
+    if (!seen) { seen = new Set(); seenBlocks.current.set(key, seen); }
+    return observeReaderContent({ root, contentPart: section, blocks: references.blocks, seen,
+      visibility: document, isActive: () => Boolean(isForegroundReader(dialogRef.current, document) && activityView.current.trackingEnabled
+        && activityView.current.identity === identity && activityView.current.section === section && activityCallbacks.current.onContentVisible),
+      onVisible: (blocks) => activityCallbacks.current.onContentVisible?.({ conceptId: concept.id,
+        sourceRevision: concept.source.revision, contentPart: section, blocks }),
+    });
+  }, [identity, section, trackingEnabled, references, renderVersion]);
+
   const switchSection = (next: ReaderSection) => {
     setSection(next);
     setCurrentSection(null);
@@ -170,7 +212,7 @@ export function ConceptReader({ concept, sourceId, initialSection, onClose, load
       setCurrentSection(visible);
     }} tabIndex={0} role="region" aria-label={section === 'body' ? '完整资料正文' : '核心摘要正文'}
       style={{ '--reader-font-size': `${fontSize}px` } as CSSProperties}>
-      <MarkdownView key={`${identity}:${section}`} content={section === 'body' ? concept.body || '此概念暂无正文。' : concept.summary || '此概念暂无摘要。'}
+      <MarkdownView key={`${identity}:${section}`} contentPart={section} content={section === 'body' ? concept.body || '此概念暂无正文。' : concept.summary || '此概念暂无摘要。'}
         source={{ sourceId, conceptId: concept.id, sourceRevision: concept.source.revision }}
         references={section === 'body' ? references?.references : undefined}
         onNavigateReference={section === 'body' ? navigateReference : undefined}

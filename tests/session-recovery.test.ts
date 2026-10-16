@@ -154,3 +154,30 @@ test('rejects blank sessions before any write or blank renewal can be used', asy
   );
   assert.equal(writes, 1);
 });
+
+test('same source restored instance never retries an old token', async () => {
+  let sends = 0;
+  const retry = recovery(async () => ({ ...refreshed, instanceId: 'restored' }));
+  await assert.rejects(retry.run(initial, async () => { sends++; throw expired(); }), { code: 'INSTANCE_MISMATCH' });
+  assert.equal(sends, 1);
+});
+
+test('recovery freezes original identity before caller mutation', async () => {
+  const original = { ...initial, instanceId: 'original' };
+  const retry = recovery(async () => ({ ...refreshed, instanceId: 'restored' }));
+  await assert.rejects(retry.run(original, async () => {
+    original.instanceId = 'restored';
+    throw expired();
+  }), { code: 'INSTANCE_MISMATCH' });
+});
+
+test('same instance token rotation retries once with unchanged instance', async () => {
+  const retry = recovery(async () => ({ ...refreshed, instanceId: 'original' }));
+  let sends = 0;
+  assert.equal(await retry.run({ ...initial, instanceId: 'original' }, async session => {
+    assert.equal(session.instanceId, 'original');
+    if (++sends === 1) throw expired();
+    return 'saved';
+  }), 'saved');
+  assert.equal(sends, 2);
+});

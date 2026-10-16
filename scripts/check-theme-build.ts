@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DARK_THEME, themeCssRule, themeRootCss } from '../src/web/theme-palette.js';
 import { SYSTEM_THEME_QUERY, THEME_BROWSER_COLORS } from '../src/web/theme-bootstrap.js';
 import { themeStorageKey, type ThemePreference, type ResolvedTheme } from '../src/web/theme-preferences.js';
@@ -8,7 +10,8 @@ import { lightWorkspaceVariables } from '../src/web/theme-workspace.js';
 
 // Check the production HTML, including the bootstrap compiled by Vite. Source
 // unit tests alone cannot detect a missing injection or a transpiler closure.
-const html = await readFile(new URL('../dist/index.html', import.meta.url), 'utf8');
+const buildDir = process.env.LM_THEME_BUILD_DIR ?? fileURLToPath(new URL('../dist/', import.meta.url));
+const html = await readFile(join(buildDir, 'index.html'), 'utf8');
 const head = html.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i)?.[1];
 assert.ok(head, 'Production HTML must contain a head');
 assert.match(html.slice(0, 1024), /<meta\s+charset="UTF-8"\s*\/?\s*>/i);

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import { parseMarkdownReferenceTokens, parseMarkdownSections } from '../core/markdown-sections.js';
+import { parseMarkdownReferenceTokens, parseMarkdownSections, parseMarkdownContentBlocks } from '../core/markdown-sections.js';
 import type { Concept } from '../shared/types.js';
 import type { KnowledgeReference, KnowledgeReferences, KnowledgeSection } from '../shared/knowledge-references.js';
 import type { KnowledgeSource } from './kg.js';
@@ -103,7 +103,8 @@ export function getKnowledgeReferences(source: KnowledgeSource, conceptId: strin
     if (match.section) return { ...resolved, sectionId: match.section.sectionId, status: 'resolved-section' };
     return { ...resolved, status: match.ambiguous ? 'ambiguous' : 'missing-section' };
   });
-  const result = { conceptId: concept.id, sourceRevision: concept.source.revision, sections: sectionsFor(cache, concept), references };
+  const result = { conceptId: concept.id, sourceRevision: concept.source.revision, sections: sectionsFor(cache, concept), references,
+    blocks: [...parseMarkdownContentBlocks(concept.summary, 'summary'), ...parseMarkdownContentBlocks(concept.body, 'body')] };
   cache.pages.set(concept.id, result);
   return result;
 }

@@ -61,3 +61,21 @@ export function ThemeProvider({ userId, children }: { userId: string | null; chi
 export function useTheme(): ThemeContextValue {
   return useContext(ThemeContext);
 }
+
+/** Synthetic benchmark only: an in-memory theme, with no account preferences. */
+export function ThemePreviewProvider({ theme, children }: { theme: 'dark' | 'light'; children: ReactNode }) {
+  const snapshot = useMemo(() => ({ preference: theme, resolvedTheme: theme }), [theme]);
+  useLayoutEffect(() => {
+    const root = document.documentElement, meta = document.querySelector('meta[name="theme-color"]');
+    const previous = { theme: root.dataset.theme, preference: root.dataset.themePreference,
+      scheme: root.style.colorScheme, color: meta?.getAttribute('content') ?? null };
+    applyDocumentTheme(document, snapshot);
+    return () => {
+      if (previous.theme === undefined) delete root.dataset.theme; else root.dataset.theme = previous.theme;
+      if (previous.preference === undefined) delete root.dataset.themePreference; else root.dataset.themePreference = previous.preference;
+      root.style.colorScheme = previous.scheme;
+      if (previous.color === null) meta?.removeAttribute('content'); else meta?.setAttribute('content', previous.color);
+    };
+  }, [snapshot]);
+  return <ThemeContext.Provider value={{ ...snapshot, setPreference: () => undefined }}>{children}</ThemeContext.Provider>;
+}
