@@ -5,10 +5,22 @@ import { createActivityQueue } from './activity-queue';
 import { createActivityCapture } from './activity-capture';
 import { createActivitySettingsGate } from './activity-settings-gate';
 
-export function useActivity(input: { accountId: string; sourceId: string; instanceId: string; writeToken: string; mode: 'real' | 'example' | 'forecast'; locked: boolean }) {
+interface ActivityContext { accountId: string; sourceId: string; instanceId: string; writeToken: string; mode: 'real' | 'example' | 'forecast'; locked: boolean }
+type CapturedContext = ActivityContext & { authRevision: number };
+
+export function useActivity(input: ActivityContext) {
   const scopeKey = JSON.stringify([input.accountId, input.sourceId, input.instanceId]);
-  const current = useRef(input); current.current = input;
-  const [state, setState] = useState<{ scopeKey: string; settings: ActivitySettings | null }>({ scopeKey, settings: null });
+  const current = useRef(input);
+  const authRevision = useRef(0);
+  const settingsRead = useRef(0);
+  if (current.current.accountId !== input.accountId || current.current.sourceId !== input.sourceId
+    || current.current.instanceId !== input.instanceId || current.current.writeToken !== input.writeToken) {
+    authRevision.current += 1;
+    settingsRead.current += 1;
+  }
+  current.current = input;
+  const captureContext = useCallback((): CapturedContext => ({ ...current.current, authRevision: authRevision.current }), []);
+  const [state, setState] = useState<{ scopeKey: string; authRevision: number; settings: ActivitySettings | null }>({ scopeKey, authRevision: authRevision.current, settings: null });
   const [queueStatus, setQueueStatus] = useState({ pending: 0, conflicts: 0, exhausted: 0, message: undefined as string | undefined });
   const [open, setOpen] = useState(false);
   const gate = useMemo(createActivitySettingsGate, []);
@@ -24,58 +36,67 @@ export function useActivity(input: { accountId: string; sourceId: string; instan
     } },
   }), []);
   const refreshQueue = useCallback(async () => {
-    const captured = current.current;
+    const captured = captureContext();
+    // Example/forecast modes intentionally suspend collection, rather than
+    // indicating a failure to read or persist the real activity queue.
+    if (captured.mode !== 'real' || !captured.writeToken || !captured.sourceId) return;
     const status = await queue.snapshot();
-    if (current.current.accountId !== captured.accountId || current.current.sourceId !== captured.sourceId || current.current.instanceId !== captured.instanceId) return;
+    if (authRevision.current !== captured.authRevision || current.current.mode !== 'real'
+      || (status.status === 'unavailable' && status.reason === 'context-changed')) return;
     setQueueStatus((previous) => ({ pending: status.rows.filter((row) => row.state === 'pending').length,
       conflicts: status.rows.filter((row) => row.state === 'conflict').length, exhausted: status.rows.filter((row) => row.state === 'exhausted').length,
       message: status.status === 'unavailable' ? '查阅追踪暂不可用；知识查询和学习记录可继续使用。' : previous.message }));
-  }, [queue]);
+  }, [captureContext, queue]);
   const capture = useMemo(() => createActivityCapture({ emit: (request, capturedContext) => {
-    const captured = current.current;
+    const captured = captureContext();
     if (capturedContext.scopeKey !== JSON.stringify([captured.accountId, captured.sourceId, captured.instanceId])
       || captured.mode !== 'real' || captured.locked || !captured.writeToken || gate.snapshot().suspended) return;
     void queue.enqueue(request).then(async (result) => {
-      if (current.current.accountId !== captured.accountId || current.current.sourceId !== captured.sourceId || current.current.instanceId !== captured.instanceId) return;
+      if (authRevision.current !== captured.authRevision) return;
       if (result.status === 'not-saved') setQueueStatus((previous) => ({ ...previous, message: `本次查阅记录未保存（${result.reason}）。` }));
       else await queue.flush();
       await refreshQueue();
     });
-  } }), [gate, queue, refreshQueue]);
-  const settings = state.scopeKey === scopeKey ? state.settings : null;
-  const checkScope = useCallback((captured: typeof input) => {
-    if (current.current.accountId !== captured.accountId || current.current.sourceId !== captured.sourceId || current.current.instanceId !== captured.instanceId || current.current.writeToken !== captured.writeToken) {
+  } }), [captureContext, gate, queue, refreshQueue]);
+  const settings = state.scopeKey === scopeKey && state.authRevision === authRevision.current ? state.settings : null;
+  const checkScope = useCallback((captured: CapturedContext) => {
+    if (authRevision.current !== captured.authRevision || current.current.accountId !== captured.accountId || current.current.sourceId !== captured.sourceId || current.current.instanceId !== captured.instanceId || current.current.writeToken !== captured.writeToken) {
       throw new Error('账号或知识空间已变化，请重新打开查阅记录。');
     }
   }, []);
   useLayoutEffect(() => {
     gate.setScope(JSON.stringify([input.accountId, input.sourceId, input.instanceId, input.writeToken]));
     const known = gate.snapshot();
-    queue.setContext({ ...input, authenticated: Boolean(input.writeToken), locked: input.locked || known.suspended, settings: known.settings ?? undefined });
+    queue.setContext({ ...input, authRevision: authRevision.current, authenticated: Boolean(input.writeToken), locked: input.locked || known.suspended, settings: known.settings ?? undefined });
     capture.setContext({ scopeKey, epoch: known.settings?.epoch ?? 0, enabled: Boolean(known.settings?.enabled && input.writeToken && input.mode === 'real' && !input.locked && !known.suspended) });
   }, [capture, gate, input.accountId, input.sourceId, input.instanceId, input.writeToken, input.mode, input.locked, queue, scopeKey, settings, suspended]);
-  const commitSettings = useCallback(async (next: ActivitySettings, captured: typeof input, verified = true) => {
+  const commitSettings = useCallback(async (next: ActivitySettings, captured: CapturedContext, verified = true) => {
     checkScope(captured);
-    if (!gate.accept(next, verified)) return false;
+    const ticket = gate.beginCommit(next, verified);
+    if (!ticket) return false;
     const result = await queue.applySettings(next); checkScope(captured);
-    if (!result.applied && ['epoch-changed', 'context-changed', 'settings-unavailable', 'inactive'].includes(result.reason ?? '')) {
+    // Superseded work must not suspend a newer, successfully aligned setting.
+    if (!ticket.isCurrent() || (!result.applied && result.reason === 'context-changed')) return false;
+    if (!result.applied && ['epoch-changed', 'settings-unavailable'].includes(result.reason ?? '')) {
       gate.markUncertain(); capture.cancel(); setSuspended(true); return false;
     }
-    if (!result.applied) setQueueStatus((previous) => ({ ...previous,
+    if (!result.applied && result.reason !== 'inactive') setQueueStatus((previous) => ({ ...previous,
       message: '服务端设置已确认，但浏览器待同步副本未能更新，请检查存储后重试同步。' }));
     const known = gate.snapshot(); setSuspended(known.suspended);
-    setState({ scopeKey: JSON.stringify([captured.accountId, captured.sourceId, captured.instanceId]), settings: known.settings });
+    setState({ scopeKey: JSON.stringify([captured.accountId, captured.sourceId, captured.instanceId]), authRevision: captured.authRevision, settings: known.settings });
     return true;
   }, [capture, checkScope, gate, queue]);
   const reloadSettings = useCallback(async (signal?: AbortSignal) => {
-    const captured = current.current;
+    const captured = captureContext();
+    const ticket = ++settingsRead.current;
     const result = await api.getActivitySettings(captured.sourceId, signal);
     checkScope(captured);
     if (result.sourceId !== captured.sourceId) throw new Error('查阅记录来源不一致。');
+    if (signal?.aborted || ticket !== settingsRead.current) return result.settings;
     await commitSettings(result.settings, captured);
     await refreshQueue();
     return result.settings;
-  }, [checkScope, commitSettings, refreshQueue]);
+  }, [captureContext, checkScope, commitSettings, refreshQueue]);
   useEffect(() => {
     const controller = new AbortController(); setOpen(false);
     if (input.writeToken && input.sourceId) void reloadSettings(controller.signal).catch(() => {
@@ -89,12 +110,13 @@ export function useActivity(input: { accountId: string; sourceId: string; instan
     return () => window.removeEventListener('online', retry);
   }, [queue, refreshQueue, reloadSettings]);
   const loadPage = useCallback(async (options: Parameters<typeof api.getActivity>[0], signal?: AbortSignal) => {
-    const captured = current.current; const page = await api.getActivity(options, captured.sourceId, signal); checkScope(captured);
+    const captured = captureContext(); const page = await api.getActivity(options, captured.sourceId, signal); checkScope(captured);
     if (page.sourceId !== captured.sourceId) throw new Error('查阅记录来源不一致。'); return page;
-  }, [checkScope]);
+  }, [captureContext, checkScope]);
   const updateSettings = useCallback(async (payload: ActivitySettingsUpdate) => {
+    settingsRead.current += 1;
     gate.beginControl(); capture.cancel(); setSuspended(true);
-    const captured = current.current;
+    const captured = captureContext();
     try {
       const result = await api.updateActivitySettings(payload, captured.writeToken, captured.sourceId); checkScope(captured);
       gate.endControl(); if (!await commitSettings(result.settings, captured)) await reloadSettings(); await refreshQueue();
@@ -103,10 +125,11 @@ export function useActivity(input: { accountId: string; sourceId: string; instan
       try { checkScope(captured); gate.endControl(); await reloadSettings(); } catch { /* remain suspended */ }
       throw error;
     }
-  }, [capture, checkScope, commitSettings, gate, refreshQueue, reloadSettings]);
+  }, [capture, captureContext, checkScope, commitSettings, gate, refreshQueue, reloadSettings]);
   const clear = useCallback(async (payload: Parameters<typeof api.clearActivity>[0]) => {
+    settingsRead.current += 1;
     gate.beginControl(); capture.cancel(); setSuspended(true);
-    const captured = current.current;
+    const captured = captureContext();
     try {
       const result = await api.clearActivity(payload, captured.writeToken, captured.sourceId); checkScope(captured);
       if (payload.scope === 'operation') {
@@ -121,8 +144,8 @@ export function useActivity(input: { accountId: string; sourceId: string; instan
       try { checkScope(captured); gate.endControl(); await reloadSettings(); } catch { /* retain the original failure */ }
       throw error;
     }
-  }, [capture, checkScope, commitSettings, gate, queue, refreshQueue, reloadSettings]);
-  const exportActivity = useCallback(async () => { const captured = current.current; const result = await api.exportActivity(captured.sourceId); checkScope(captured); return result; }, [checkScope]);
+  }, [capture, captureContext, checkScope, commitSettings, gate, queue, refreshQueue, reloadSettings]);
+  const exportActivity = useCallback(async () => { const captured = captureContext(); const result = await api.exportActivity(captured.sourceId); checkScope(captured); return result; }, [captureContext, checkScope]);
   const retry = useCallback(async () => { await reloadSettings(); await queue.retryPending(); await queue.flush(); await refreshQueue(); }, [queue, refreshQueue, reloadSettings]);
   return {
     scopeKey, open, setOpen, settings, capture, queueStatus,

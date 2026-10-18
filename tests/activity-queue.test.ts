@@ -486,3 +486,164 @@ test('INSTANCE_MISMATCH pauses activity scope without retries or dropping frozen
   assert.equal(h.storage.values.get(key), original);
   assert.deepEqual(await h.queue.enqueue(request(2)), { status: 'not-saved', reason: 'settings-unavailable' });
 });
+
+function deferredStorageLocks() {
+  let remaining = 0;
+  const waiting: (() => void)[] = [];
+  return {
+    holdNext(count = 1) { remaining += count; },
+    release() { assert.ok(waiting.length, 'a real queue storage operation must be waiting'); waiting.shift()!(); },
+    withStorageLock<T>(_scope: string, action: () => T): Promise<T> {
+      if (remaining > 0) {
+        remaining -= 1;
+        return new Promise<T>((resolve, reject) => waiting.push(() => {
+          try { resolve(action()); } catch (error) { reject(error); }
+        }));
+      }
+      return Promise.resolve().then(action);
+    },
+  };
+}
+
+test('confirmed settings reconcile in example, forecast and locked modes while event gates stay closed', async () => {
+  for (const presentation of [{ mode: 'example' as const, locked: false }, { mode: 'forecast' as const, locked: false },
+    { mode: 'real' as const, locked: true }]) {
+    const h = harness();
+    await h.queue.enqueue(request());
+    h.queue.setContext({ ...context, ...presentation, authRevision: 1 });
+    const confirmed = { enabled: true, epoch: 1, revision: 1 };
+    assert.deepEqual(await h.queue.applySettings(confirmed), { applied: true });
+    const record = JSON.parse(h.storage.values.get(activityQueueStorageKey(context))!);
+    assert.deepEqual(record.settings, confirmed);
+    assert.deepEqual(record.rows, []);
+    assert.equal('authRevision' in record.scope, false);
+    assert.deepEqual(await h.queue.enqueue({} as ActivityAppendRequest), { status: 'not-saved', reason: 'inactive' });
+    assert.equal((await h.queue.flush()).status, 'inactive');
+    assert.equal(h.sent.length, 0);
+  }
+});
+
+test('demo-to-real and unlock transitions do not cancel a verified settings receipt awaiting its local lock', async () => {
+  const held = deferredStorageLocks();
+  const h = harness({ withStorageLock: held.withStorageLock });
+  h.queue.setContext({ ...context, mode: 'example', locked: true, settings: undefined, authRevision: 1 });
+  held.holdNext();
+  const applying = h.queue.applySettings(settings);
+  h.queue.setContext({ ...context, mode: 'real', locked: true, authRevision: 1 });
+  h.queue.setContext({ ...context, mode: 'real', locked: false, authRevision: 1 });
+  held.release();
+  assert.deepEqual(await applying, { applied: true });
+  assert.deepEqual((await h.queue.snapshot()).rows, []);
+  assert.equal((await h.queue.enqueue(request())).status, 'queued');
+  assert.equal((await h.queue.flush()).items[0]?.status, 'accepted');
+  assert.equal(h.sent.length, 1);
+});
+
+test('mode-only transitions still invalidate in-flight events even when settings reconciliation survives', async () => {
+  const held = deferredStorageLocks();
+  const h = harness({ withStorageLock: held.withStorageLock });
+  held.holdNext();
+  const enqueue = h.queue.enqueue(request());
+  h.queue.setContext({ ...context, mode: 'example' });
+  held.release();
+  assert.deepEqual(await enqueue, { status: 'not-saved', reason: 'context-changed' });
+  assert.equal(h.storage.values.size, 0);
+  assert.equal(h.sent.length, 0);
+});
+
+test('scope, auth, credential generation and confirmed settings changes invalidate a waiting settings receipt', async () => {
+  for (const next of [{ ...context, accountId: 'other' }, { ...context, sourceId: 'other' },
+    { ...context, instanceId: 'restored' }, { ...context, authenticated: false }, { ...context, authRevision: 2 },
+    { ...context, settings: { enabled: false, epoch: 1, revision: 1 } },
+    { ...context, settings: { enabled: true, epoch: 0, revision: 1 } }, { ...context, settings: undefined }, null]) {
+    const held = deferredStorageLocks();
+    const h = harness({ withStorageLock: held.withStorageLock });
+    h.queue.setContext({ ...context, authRevision: 1 });
+    const key = activityQueueStorageKey(context);
+    await h.queue.enqueue(request());
+    const original = h.storage.values.get(key);
+    held.holdNext();
+    const applying = h.queue.applySettings(settings);
+    h.queue.setContext(next && { ...next, authRevision: next.authRevision ?? 1 });
+    held.release();
+    assert.deepEqual(await applying, { applied: false, reason: 'context-changed' });
+    assert.equal(h.storage.values.get(key), original);
+  }
+});
+
+test('the latest settings application wins and an old receipt cannot roll back a disable epoch', async () => {
+  const held = deferredStorageLocks();
+  const h = harness({ withStorageLock: held.withStorageLock });
+  await h.queue.enqueue(request());
+  held.holdNext(2);
+  const old = h.queue.applySettings(settings);
+  const disabled = { enabled: false, epoch: 1, revision: 1 };
+  const latest = h.queue.applySettings(disabled);
+  held.release();
+  assert.deepEqual(await old, { applied: false, reason: 'context-changed' });
+  held.release();
+  assert.deepEqual(await latest, { applied: true });
+  const stored = JSON.parse(h.storage.values.get(activityQueueStorageKey(context))!);
+  assert.deepEqual(stored.settings, disabled); assert.deepEqual(stored.rows, []);
+  assert.deepEqual(await h.queue.enqueue(request()), { status: 'not-saved', reason: 'disabled' });
+  assert.equal(h.sent.length, 0);
+});
+
+test('operation deletion invalidates a waiting settings application without restoring deleted events', async () => {
+  const held = deferredStorageLocks();
+  const h = harness({ withStorageLock: held.withStorageLock });
+  await h.queue.enqueue(request(1)); await h.queue.enqueue(request(2));
+  held.holdNext();
+  const applying = h.queue.applySettings(settings);
+  assert.deepEqual(await h.queue.clearOperation('operation-1'), { cleared: true });
+  const afterClear = h.storage.values.get(activityQueueStorageKey(context));
+  held.release();
+  assert.deepEqual(await applying, { applied: false, reason: 'context-changed' });
+  assert.equal(h.storage.values.get(activityQueueStorageKey(context)), afterClear);
+  assert.deepEqual((await h.queue.snapshot()).rows.map(row => row.request.event.eventId), ['event-2']);
+});
+
+test('server terminal responses invalidate a waiting settings receipt instead of reviving tracking', async () => {
+  for (const code of ['ACTIVITY_DISABLED', 'ACTIVITY_EPOCH_CHANGED', 'TOKEN_REQUIRED', 'INSTANCE_MISMATCH']) {
+    const held = deferredStorageLocks();
+    const h = harness({ withStorageLock: held.withStorageLock,
+      transport: { async append() { throw Object.assign(new Error('synthetic terminal response'), { code }); } } });
+    await h.queue.enqueue(request());
+    held.holdNext();
+    const applying = h.queue.applySettings(settings);
+    assert.equal((await h.queue.flush()).status, 'done');
+    const afterTerminal = h.storage.values.get(activityQueueStorageKey(context));
+    held.release();
+    assert.deepEqual(await applying, { applied: false, reason: 'context-changed' });
+    assert.equal(h.storage.values.get(activityQueueStorageKey(context)), afterTerminal);
+    assert.equal((await h.queue.flush()).status, 'inactive');
+  }
+});
+
+test('a scope switch after terminal storage write but before its continuation preserves the new scope settings', async () => {
+  let switchAfterWrite = false;
+  const restored = { ...context, accountId: 'owner-b', instanceId: 'restored', authRevision: 2 };
+  const h = harness({
+    withStorageLock<T>(_scope: string, action: () => T): Promise<T> {
+      const result = action();
+      return Promise.resolve().then(() => {
+        if (switchAfterWrite) {
+          switchAfterWrite = false;
+          h.queue.setContext(restored);
+        }
+        return result;
+      });
+    },
+    transport: { async append() {
+      switchAfterWrite = true;
+      throw Object.assign(new Error('synthetic disabled response'), { code: 'ACTIVITY_DISABLED' });
+    } },
+  });
+  await h.queue.enqueue(request());
+  assert.deepEqual(await h.queue.flush(), { status: 'context-changed', items: [] });
+  assert.equal((await h.queue.enqueue(request(2))).status, 'queued');
+  const newScope = JSON.parse(h.storage.values.get(activityQueueStorageKey(restored))!);
+  assert.deepEqual(newScope.settings, settings);
+  assert.deepEqual(newScope.rows.map((row: { request: ActivityAppendRequest }) => row.request.event.eventId), ['event-2']);
+  assert.deepEqual(JSON.parse(h.storage.values.get(activityQueueStorageKey(context))!).rows, []);
+});

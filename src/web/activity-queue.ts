@@ -8,6 +8,8 @@ export const ACTIVITY_QUEUE_MAX_ATTEMPTS = 3;
 export interface ActivityQueueScope { accountId: string; sourceId: string; instanceId?: string }
 export interface ActivityQueueContext extends ActivityQueueScope {
   authenticated: boolean;
+  /** In-memory credential generation; never part of persisted scope or requests. */
+  authRevision?: number;
   mode: 'real' | 'example' | 'forecast';
   locked?: boolean;
   /** Only settings obtained from the server belong here. No client default. */
@@ -68,6 +70,13 @@ function scopeOf(context: ActivityQueueScope): ActivityQueueScope {
 }
 function scopeEquals(a: ActivityQueueScope, b: ActivityQueueScope): boolean {
   return a.accountId === b.accountId && a.sourceId === b.sourceId && (a.instanceId ?? 'legacy') === (b.instanceId ?? 'legacy');
+}
+function settingsContextEquals(left: ActivityQueueContext | null, right: ActivityQueueContext | null): boolean {
+  if (!left || !right) return left === right;
+  return scopeEquals(left, right) && left.authenticated === right.authenticated
+    && (left.authRevision ?? 0) === (right.authRevision ?? 0)
+    && left.settings?.enabled === right.settings?.enabled && left.settings?.epoch === right.settings?.epoch
+    && left.settings?.revision === right.settings?.revision;
 }
 function validSettings(value: unknown): value is ActivitySettings {
   const settings = value as ActivitySettings | null;
@@ -136,8 +145,15 @@ export function createActivityQueue(options: ActivityQueueOptions) {
   const classify = options.classifyError ?? classifyActivityQueueError;
   let context: ActivityQueueContext | null = null;
   let generation = 0;
+  // Server settings can be reconciled during a read-only preview. UI mode and
+  // temporary locks still invalidate event work, but do not cancel that receipt.
+  let settingsGeneration = 0;
+  function authenticatedContext(): ActivityQueueContext | null {
+    return context?.authenticated && context.accountId.trim() && context.sourceId.trim() ? context : null;
+  }
   function active(): ActivityQueueContext | null {
-    return context?.authenticated && context.mode === 'real' && context.accountId.trim() && context.sourceId.trim() ? context : null;
+    const current = authenticatedContext();
+    return current?.mode === 'real' ? current : null;
   }
   function gate(): ActivityQueueNotSavedReason | null {
     const current = active();
@@ -157,11 +173,13 @@ export function createActivityQueue(options: ActivityQueueOptions) {
   return {
     setContext(next: ActivityQueueContext | null): void {
       generation += 1;
-      context = next ? { ...next, ...(next.settings && validSettings(next.settings) ? { settings: { ...next.settings } } : { settings: undefined }) } : null;
+      const cleaned = next ? { ...next, ...(next.settings && validSettings(next.settings) ? { settings: { ...next.settings } } : { settings: undefined }) } : null;
+      if (!settingsContextEquals(context, cleaned)) settingsGeneration += 1;
+      context = cleaned;
     },
     /** Apply a server-confirmed setting/epoch. Never invent epochs locally. */
     async applySettings(settings: ActivitySettings): Promise<{ applied: boolean; reason?: ActivityQueueNotSavedReason }> {
-      const captured = active();
+      const captured = authenticatedContext();
       if (!captured) return { applied: false, reason: 'inactive' };
       if (!validSettings(settings)) return { applied: false, reason: 'settings-unavailable' };
       if (captured.settings && (captured.settings.epoch > settings.epoch || captured.settings.revision > settings.revision)) {
@@ -169,14 +187,15 @@ export function createActivityQueue(options: ActivityQueueOptions) {
       }
       // Consent changes gate this page immediately, even if persistent storage fails.
       generation += 1;
+      const capturedSettingsGeneration = ++settingsGeneration;
       context = { ...captured, settings: { enabled: settings.enabled, epoch: settings.epoch, revision: settings.revision } };
-      const capturedGeneration = generation;
       try {
         return await storageLock(lockScope(captured), () => {
-          if (generation !== capturedGeneration) return { applied: false, reason: 'context-changed' as const };
+          if (settingsGeneration !== capturedSettingsGeneration) return { applied: false, reason: 'context-changed' as const };
           const record = readRecord(options.storage, scopeOf(captured), settings);
           if (record.settings.epoch > settings.epoch || record.settings.revision > settings.revision) {
             context = { ...context!, settings: undefined };
+            generation += 1; settingsGeneration += 1;
             return { applied: false, reason: 'epoch-changed' as const };
           }
           if (!settings.enabled || record.settings.epoch !== settings.epoch) record.rows = [];
@@ -214,13 +233,14 @@ export function createActivityQueue(options: ActivityQueueOptions) {
       const captured = active();
       const capturedGeneration = generation;
       if (!captured?.settings) return { cleared: false, reason: 'settings-unavailable' };
+      settingsGeneration += 1;
       try {
         return await storageLock(lockScope(captured), () => {
           if (capturedGeneration !== generation) return { cleared: false, reason: 'context-changed' as const };
           const record = currentRecord(captured);
           record.rows = record.rows.filter((row) => row.request.event.operationId !== operationId);
           saveRecord(options.storage, record);
-          generation += 1;
+          generation += 1; settingsGeneration += 1;
           return { cleared: true };
         });
       } catch (error) { return { cleared: false, reason: storageReason(error) }; }
@@ -302,10 +322,11 @@ export function createActivityQueue(options: ActivityQueueOptions) {
               }
               saveRecord(options.storage, record);
             });
+            if (generation !== capturedGeneration) return { status: 'context-changed', items };
             items.push({ eventId: row.request.event.eventId, status: reportOutcome });
             if (['disabled', 'epoch-changed', 'auth-required', 'source-changed'].includes(outcome)) {
               context = { ...captured, settings: undefined };
-              generation += 1;
+              generation += 1; settingsGeneration += 1;
               break;
             }
           }
