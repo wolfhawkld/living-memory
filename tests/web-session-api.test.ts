@@ -53,27 +53,29 @@ function sourceFixture(prefix = 'living-memory-web-api-'): { root: string; dataD
 }
 
 async function startApp(root: string, dataDir: string, now = '2026-09-17T10:00:00.000Z'): Promise<RunningApp> {
-  const probe = createServer();
-  await new Promise<void>((resolve, reject) => {
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', () => resolve());
-  });
-  const port = (probe.address() as { port: number }).port;
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
-
-  let currentNow = now;
-  const app = createApp({
-    root,
-    dataDir,
-    port,
-    now: () => new Date(currentNow),
-    staticDir: join(dataDir, 'no-dist'),
-  });
-  const server = createServer(app);
+  const server = createServer();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => resolve());
+    server.listen(0, '127.0.0.1', () => resolve());
   });
+  const port = (server.address() as { port: number }).port;
+
+  let currentNow = now;
+  let app: LivingMemoryApp;
+  try {
+    app = createApp({
+      root,
+      dataDir,
+      port,
+      now: () => new Date(currentNow),
+      staticDir: join(dataDir, 'no-dist'),
+    });
+  } catch (error) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw error;
+  }
+  // Keep the OS-assigned port bound throughout app initialization.
+  server.on('request', app);
   return {
     app,
     server,
