@@ -13,7 +13,7 @@ function fixture() {
     backupInstance: async options => { calls.push(['backup', options]); return manifest; },
     verifyInstanceBundle: bundle => { calls.push(['verify', bundle]); return manifest; },
     restoreInstance: async options => { calls.push(['restore', options]); return restored; },
-    activateRestoredConnectors: (dataDir, confirmed) => { calls.push(['activate', dataDir, confirmed]); },
+    activateRestoredConnectors: async (dataDir, confirmed, options) => { calls.push(options ? ['activate', dataDir, confirmed, options] : ['activate', dataDir, confirmed]); },
   };
   return { calls, backend };
 }
@@ -69,4 +69,39 @@ test('terminal errors contain only a fixed code and help explains stop/quarantin
   const help = await runInstanceBackupCli(['--help'], f.backend);
   assert.equal(typeof help, 'string'); assert.match(String(help), /停止本地服务/); assert.match(String(help), /草稿不在备份/); assert.match(String(help), /不会自动激活飞书/);
   assert.deepEqual(f.calls, []);
+});
+
+test('sudo scan is an explicit boolean available only to backup and connector activation', async () => {
+  const f = fixture();
+  const backup = ['backup', '--data-dir', '/data', '--kg-root', '/kg', '--cli-state-dir', '/cli', '--output', '/bundle'];
+  await runInstanceBackupCli([...backup, '--sudo-offline-scan'], f.backend);
+  await runInstanceBackupCli(['activate-connectors', '--data-dir', '/data', '--confirm-bindings', '--sudo-offline-scan'], f.backend);
+  assert.deepEqual(f.calls, [
+    ['backup', { dataDir: '/data', kgRoot: '/kg', cliStateDir: '/cli', output: '/bundle', offlineCheck: 'sudo' }],
+    ['activate', '/data', true, { offlineCheck: 'sudo' }],
+  ]);
+  f.calls.length = 0;
+  for (const argv of [
+    [...backup, '--sudo-offline-scan=true'], [...backup, '--sudo-offline-scan=false'],
+    [...backup, '--sudo-offline-scan', 'true'], [...backup, '--sudo-offline-scan', '--sudo-offline-scan'],
+    ['verify', '--bundle', '/bundle', '--sudo-offline-scan'],
+    ['restore', '--bundle', '/bundle', '--target', '/target', '--sudo-offline-scan'],
+    ['activate-connectors', '--data-dir', '/data', '--confirm-bindings', '--sudo-offline-scan=true'],
+  ]) await assert.rejects(runInstanceBackupCli(argv, f.backend), { code: 'INVALID_INSTANCE_ARGUMENT' });
+  assert.deepEqual(f.calls, []);
+});
+
+test('activation awaits asynchronous rejection and scan failures print only approved fixed codes', async () => {
+  const f = fixture();
+  const stdout: string[] = [], stderr: string[] = [];
+  for (const code of ['OFFLINE_SCAN_AUTH_REQUIRED', 'OFFLINE_SCAN_UNAVAILABLE', 'DATABASE_OPEN']) {
+    f.backend.activateRestoredConnectors = async () => {
+      await Promise.resolve();
+      throw Object.assign(new Error('/private/account PASSWORD=private helper diagnostic'), { code });
+    };
+    assert.equal(await instanceBackupMain(['activate-connectors', '--data-dir', '/private/data', '--confirm-bindings', '--sudo-offline-scan'],
+      { stdout: value => stdout.push(value), stderr: value => stderr.push(value) }, f.backend), 1);
+    assert.equal(stdout.length, 0);
+    assert.equal(stderr.pop(), JSON.stringify({ error: { code } }) + '\n');
+  }
 });

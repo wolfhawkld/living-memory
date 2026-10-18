@@ -29,6 +29,6 @@ G／T／P 分别是 `renderer.info` 中几何体、纹理和程序的对象数�
 
 「导出采样 JSON」保存 `format: living-memory-performance-benchmark`、`version: 1`，包括合成数据标识、固定规模及每轮采样／资源快照。单次探针报告的格式为 `living-memory-graph-performance`。这些文件用于排查渲染与生命周期，不属于学习备份、活动记录或[完整实例迁移](instance-migration.md)格式。
 
-纯函数和注入式测试核对实际 render 计数、异常保留、分位数、停止与清理、合成图关系唯一性及端点有效性；页面 SSR 只检查默认不自动运行和入口配置。整体回归、最终 CI 与目标设备验收仍在进行。当前没有凭这些检查宣称已经采到本人桌面的 GPU 性能、通过全部视觉验收或验证长期记忆收益。
+纯函数和注入式测试核对实际 render 计数、异常保留、分位数、停止与清理、合成图关系唯一性及端点有效性；页面 SSR 只检查默认不自动运行和入口配置。本轮最终自动回归进行中，结果见 [develop CI](https://github.com/wolfhawkld/living-memory/actions/workflows/check.yml?query=branch%3Adevelop)，目标设备验收单独保留。当前没有凭这些检查宣称已经采到本人桌面的 GPU 性能、通过全部视觉验收或验证长期记忆收益。
 
 实现入口为[探针](../../src/web/graph-performance.ts)、[合成数据](../../src/web/performance-fixture.ts)和[手动采样页](../../src/web/PerformanceBenchmark.tsx)。实际知识查询与复习仍使用[查阅记录](activity-tracking.md)和原学习流程，性能页面不向其中写入事件。

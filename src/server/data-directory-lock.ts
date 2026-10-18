@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -40,12 +40,31 @@ export function assertDatabaseFilesOffline(paths: readonly string[], options: { 
   try {
     for (const name of readdirSync(proc).filter((name) => /^\d+$/.test(name))) {
       const directory = join(proc, name);
-      let processStat;
-      try { processStat = statSync(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
-      if (processStat.uid !== uid) continue;
+      let processUids: number[];
+      try {
+        // A nondumpable process may have a root-owned /proc directory while
+        // still running as this user. Directory ownership is not its identity.
+        const status = readFileSync(join(directory, 'status'), 'utf8');
+        const fields = status.split('\n').filter((line) => line.startsWith('Uid:'));
+        const match = fields.length === 1 && /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(fields[0]);
+        if (!match) throw new DataDirectoryLockError('OFFLINE_CHECK_UNAVAILABLE');
+        processUids = match.slice(1).map(Number);
+        if (!processUids.every(Number.isSafeInteger)) throw new DataDirectoryLockError('OFFLINE_CHECK_UNAVAILABLE');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          try { statSync(directory); } catch (gone) { if ((gone as NodeJS.ErrnoException).code === 'ENOENT') continue; }
+        }
+        throw error;
+      }
+      if (!processUids.includes(uid)) continue;
       let descriptors: string[];
       try { descriptors = readdirSync(join(directory, 'fd')); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          try { statSync(directory); } catch (gone) { if ((gone as NodeJS.ErrnoException).code === 'ENOENT') continue; }
+        }
+        throw error;
+      }
       for (const descriptor of descriptors) {
         try {
           const file = statSync(join(directory, 'fd', descriptor));

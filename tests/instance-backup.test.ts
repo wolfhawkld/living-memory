@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import childProcess, { type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
+import { syncBuiltinESMExports } from 'node:module';
 import { test } from 'node:test';
-import { unlinkSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { unlinkSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, copyFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backupInstance, restoreInstance, verifyInstanceBundle, activateRestoredConnectors } from '../src/server/instance-backup.js';
 import { acquireDataDirectoryLock } from '../src/server/data-directory-lock.js';
@@ -91,14 +96,14 @@ test('two-user full instance roundtrip preserves stable/raw identities, all lear
     assert.equal(isRestoreQuarantined(report.startup.dataDir),true);
     const connectorEnv=isRestoreQuarantined(report.startup.dataDir)?{LM_FEISHU_ENABLED:'0'}:{LM_FEISHU_ENABLED:'1'};
     assert.deepEqual(parseFeishuConfig(connectorEnv),{ok:true,value:{enabled:false}});
-    assert.throws(()=>activateRestoredConnectors(report.startup.dataDir,false),{code:'CONNECTOR_CONFIRMATION_REQUIRED'});
+    await assert.rejects(activateRestoredConnectors(report.startup.dataDir,false),{code:'CONNECTOR_CONFIRMATION_REQUIRED'});
     assert.equal(isRestoreQuarantined(report.startup.dataDir),true);
     const lease=acquireDataDirectoryLock(report.startup.dataDir);
-    try {assert.throws(()=>activateRestoredConnectors(report.startup.dataDir,true,{procRoot:f.options.procRoot}),{code:'DATA_DIRECTORY_BUSY'});}
+    try {await assert.rejects(activateRestoredConnectors(report.startup.dataDir,true,{procRoot:f.options.procRoot}),{code:'DATA_DIRECTORY_BUSY'});}
     finally {lease.release();}
-    activateRestoredConnectors(report.startup.dataDir,true,{procRoot:f.options.procRoot});
+    await activateRestoredConnectors(report.startup.dataDir,true,{procRoot:f.options.procRoot});
     assert.equal(isRestoreQuarantined(report.startup.dataDir),false);
-    assert.throws(()=>activateRestoredConnectors(report.startup.dataDir,true,{procRoot:f.options.procRoot}),{code:'RESTORE_QUARANTINE_NOT_PRESENT'});
+    await assert.rejects(activateRestoredConnectors(report.startup.dataDir,true,{procRoot:f.options.procRoot}),{code:'RESTORE_QUARANTINE_NOT_PRESENT'});
   } finally {f.cleanup();}
 });
 
@@ -177,7 +182,7 @@ test('backup and restore reject nonempty targets, source overlap and held runtim
   } finally {f.cleanup();}
 });
 
-test('source symlink and concurrent source modification fail before bundle publication',async()=>{
+test('source symlink and concurrent source modification fail before bundle publication',async t=>{
   const f=await instanceFixture();
   try {
     const file=join(f.options.kgRoot,'Math/Alpha.md');
@@ -185,10 +190,17 @@ test('source symlink and concurrent source modification fail before bundle publi
     await assert.rejects(backupInstance(f.options),{code:'UNSAFE_INSTANCE_FILE'});
     assert.equal(existsSync(f.options.output),false);
     unlinkSync(join(f.options.kgRoot,'linked.md'));
-    const saving=backupInstance(f.options);
-    writeFileSync(file,readFileSync(file,'utf8')+'\nconcurrent synthetic edit\n');
+    const originalRead=fs.readFileSync;let reads=0;
+    t.mock.method(fs,'readFileSync',(...args:Parameters<typeof fs.readFileSync>)=>{
+      if(String(args[0])===file && ++reads===2)writeFileSync(file,originalRead(file,'utf8')+'\nconcurrent synthetic edit\n');
+      return originalRead(...args);
+    });
+    syncBuiltinESMExports();
+    t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+    await assert.rejects(backupInstance(f.options),{code:'INSTANCE_SOURCE_CHANGED'});
+    assert.equal(reads,2);
+    t.mock.restoreAll();syncBuiltinESMExports();
     const afterOwnEdit=treeHashes(f.options.kgRoot);
-    await assert.rejects(saving,{code:'INSTANCE_SOURCE_CHANGED'});
     assert.equal(existsSync(f.options.output),false);
     assert.deepEqual(treeHashes(f.options.kgRoot),afterOwnEdit);
   } finally {f.cleanup();}
@@ -269,4 +281,118 @@ test('never-initialized member keeps stable empty knowledge identity without bac
     await assert.rejects(restoreInstance({bundle:f.options.output,target:invalidTarget,now}));
     assert.equal(existsSync(invalidTarget),false);
   } finally {f.cleanup();}
+});
+
+function syntheticProcess(procRoot:string, database?:string) {
+  const pid=join(procRoot,'12345');mkdirSync(join(pid,'fd'),{recursive:true});
+  const uid=process.getuid!();writeFileSync(join(pid,'status'),`Name:\tsynthetic\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+  if(database)symlinkSync(database,join(pid,'fd','3'));
+  return pid;
+}
+function assertNoBackupStage(base:string,output:string) {
+  assert.equal(existsSync(output),false);
+  assert.deepEqual(readdirSync(base).filter(name=>name.startsWith('.bundle.lm-') && name.endsWith('.tmp')),[]);
+}
+function assertLeaseReleased(dataDir:string) {
+  const lease=acquireDataDirectoryLock(dataDir);lease.release();
+}
+
+test('initial native scan rejects open or unknown processes before staging and releases the lease',async()=>{
+  for(const kind of ['open','unknown'] as const){
+    const f=await instanceFixture();
+    try {
+      const before=treeHashes(f.options.kgRoot);
+      const pid=syntheticProcess(f.options.procRoot,kind==='open'?join(f.options.dataDir,'living-memory.sqlite'):undefined);
+      if(kind==='unknown')unlinkSync(join(pid,'status'));
+      await assert.rejects(backupInstance(f.options),{code:kind==='open'?'DATABASE_OPEN':'OFFLINE_CHECK_UNAVAILABLE'});
+      assertNoBackupStage(f.base,f.options.output);assertLeaseReleased(f.options.dataDir);
+      assert.deepEqual(treeHashes(f.options.kgRoot),before);
+    } finally {f.cleanup();}
+  }
+});
+
+test('final native scan detects a newly opened source database and never publishes the staged bundle',async()=>{
+  const f=await instanceFixture();
+  try {
+    const before=treeHashes(f.options.kgRoot);
+    let reached=false;
+    await assert.rejects(backupInstance({...f.options,now:()=>{
+      reached=true;syntheticProcess(f.options.procRoot,join(f.options.dataDir,'accounts.sqlite'));return now();
+    }}),{code:'DATABASE_OPEN'});
+    assert.equal(reached,true);assertNoBackupStage(f.base,f.options.output);assertLeaseReleased(f.options.dataDir);
+    assert.deepEqual(treeHashes(f.options.kgRoot),before);
+  } finally {f.cleanup();}
+});
+
+test('source main database inode replacement after copying is refused even when replacement bytes are identical',async()=>{
+  const f=await instanceFixture();
+  try {
+    const path=join(f.options.dataDir,'living-memory.sqlite'),original=readFileSync(path),inode=statSync(path).ino;
+    await assert.rejects(backupInstance({...f.options,now:()=>{
+      const replacement=join(f.options.dataDir,'replacement.sqlite');copyFileSync(path,replacement);renameSync(replacement,path);return now();
+    }}),{code:'INSTANCE_SOURCE_CHANGED'});
+    assert.notEqual(statSync(path).ino,inode);assert.deepEqual(readFileSync(path),original);
+    assertNoBackupStage(f.base,f.options.output);assertLeaseReleased(f.options.dataDir);
+  } finally {f.cleanup();}
+});
+
+test('activation with an open or unknown process preserves quarantine bytes and releases its lease',async()=>{
+  const f=await instanceFixture();
+  try {
+    await backupInstance(f.options);
+    const restored=await restoreInstance({bundle:f.options.output,target:join(f.base,'restore-scan'),now});
+    const path=join(restored.startup.dataDir,'restore-quarantine.json'),before=readFileSync(path);
+    for(const kind of ['open','unknown'] as const){
+      const pid=syntheticProcess(f.options.procRoot,kind==='open'?join(restored.startup.dataDir,'living-memory.sqlite'):undefined);
+      if(kind==='unknown')unlinkSync(join(pid,'status'));
+      await assert.rejects(activateRestoredConnectors(restored.startup.dataDir,true,{procRoot:f.options.procRoot}),
+        {code:kind==='open'?'DATABASE_OPEN':'OFFLINE_CHECK_UNAVAILABLE'});
+      assert.deepEqual(readFileSync(path),before);assert.equal(isRestoreQuarantined(restored.startup.dataDir),true);
+      assertLeaseReleased(restored.startup.dataDir);rmSync(pid,{recursive:true});
+    }
+  } finally {f.cleanup();}
+});
+
+test('sudo helper close failure blocks publication and activation without masking an earlier scan error',async t=>{
+  for(const phase of ['init','close','scan-and-close','activate-close'] as const){
+    const f=await instanceFixture();
+    try {
+      let restored:string|undefined;
+      if(phase==='activate-close'){
+        await backupInstance(f.options);
+        restored=(await restoreInstance({bundle:f.options.output,target:join(f.base,'sudo-activation'),now})).startup.dataDir;
+      }
+      const child=new EventEmitter() as ChildProcess,stdout=new PassThrough();
+      let exited=false,scans=0;const messages:Record<string,unknown>[]=[];
+      const exit=()=>{if(!exited){exited=true;child.emit('close',0,null);}};
+      const stdin=new Writable({write(chunk,_encoding,done){
+        const message=JSON.parse(String(chunk));messages.push(message);
+        const scan=message.type==='scan'?++scans:0;
+        const code=phase==='init'&&message.type==='init'?'AUTH_REQUIRED'
+          :phase==='scan-and-close'&&scan===2?'DATABASE_OPEN'
+          :message.type==='close'?'UNAVAILABLE':'OK';
+        queueMicrotask(()=>stdout.write(JSON.stringify({version:1,nonce:message.nonce,sequence:message.sequence,code})+'\n'));
+        done();
+      },final(done){queueMicrotask(exit);done();}});
+      Object.assign(child,{stdin,stdout,kill:()=>{exit();return true;}});
+      let spawned=0;
+      t.mock.method(childProcess,'spawn',(command:unknown)=>{assert.equal(command,'/usr/bin/sudo');spawned++;return child;});
+      try {
+        if(restored){
+          const path=join(restored,'restore-quarantine.json'),before=readFileSync(path);
+          await assert.rejects(activateRestoredConnectors(restored,true,{offlineCheck:'sudo'}),{code:'OFFLINE_SCAN_UNAVAILABLE'});
+          assert.deepEqual(readFileSync(path),before);assert.equal(isRestoreQuarantined(restored),true);
+        } else {
+          const {procRoot:_unused,...options}=f.options;
+          await assert.rejects(backupInstance({...options,offlineCheck:'sudo'}),
+            {code:phase==='init'?'OFFLINE_SCAN_AUTH_REQUIRED':phase==='scan-and-close'?'DATABASE_OPEN':'OFFLINE_SCAN_UNAVAILABLE'});
+          assertNoBackupStage(f.base,f.options.output);
+        }
+        assert.equal(spawned,1);assert.equal(exited,true);assert.equal(stdin.writableEnded,true);
+        assert.equal(messages[0].type,'init');
+        if(phase==='close'||phase==='activate-close')assert.deepEqual(messages.map(message=>message.type),['init','scan','scan','close']);
+        assertLeaseReleased(restored??f.options.dataDir);
+      } finally {t.mock.restoreAll();}
+    } finally {f.cleanup();}
+  }
 });

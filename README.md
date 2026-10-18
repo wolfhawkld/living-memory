@@ -72,11 +72,11 @@ npm start
 
 完整备份需停止服务，使用上述工具核验并保存私有实例 bundle；恢复后先隔离核对，飞书需另行明确激活。学习 JSON 包括练习卡题干、参考答案及自己的回答，不含原知识正文文件、附件、账号密码或浏览器草稿；活动 JSON 另行导出。浏览器待同步记录与复习草稿另存在本机，不能只靠服务端备份恢复。
 
-Windows 原生首次运行的命令、HTTP 与 CLI 已有[实测记录](docs/development/platform-validation/windows-2026-10-01.md)；完整实例迁移当前针对 Linux/WSL，Windows 待测，macOS 暂缓。`develop` 的 `/performance` 提供[固定合成图谱手动采样](docs/development/graph-performance.md)，真实桌面 GPU 与大知识库性能仍待验证。图片/Mermaid 等专项人工验收情况见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。ChatGPT 语音资源接入、Obsidian 插件、社交、在线/跨设备同步与移动端属于后续范围。
+Windows 原生首次运行的命令、HTTP 与 CLI 已有[实测记录](docs/development/platform-validation/windows-2026-10-01.md)；完整实例迁移当前针对 Linux/WSL，Windows 待测，macOS 暂缓。WSL 的 systemd/PAM 可能限制文件句柄检查，迁移工具提供显式选择的只读扫描提权通道，真实提权和私人迁移仍待本机验收。`develop` 的 `/performance` 提供[固定合成图谱手动采样](docs/development/graph-performance.md)，真实桌面 GPU 与大知识库性能仍待验证。图片/Mermaid 等专项人工验收情况见[迭代 TODO](docs/planning/iteration-todo-2026-09-22.md)。ChatGPT 语音资源接入、Obsidian 插件、社交、在线/跨设备同步与移动端属于后续范围。
 
 ## 验证与路线
 
-2026-10-16 本轮查阅追踪、引用变更核对、完整迁移和性能采样的软件范围已实现，整体回归、最终 CI 与目标设备验收进行中；尚未据此确认私人迁移、真实 GPU 结果或个人记忆收益。
+2026-10-18 本轮查阅追踪、引用变更核对、完整迁移和性能采样的软件范围已实现；本轮最终自动回归进行中，结果见 [develop CI](https://github.com/wolfhawkld/living-memory/actions/workflows/check.yml?query=branch%3Adevelop)，目标设备与私人迁移验收单独保留。软件回归不能确认真实提权、私人迁移、GPU 结果或个人记忆收益。
 
 2026-10-01 已在 WSL2/Linux x86_64、Node 22.23.1 下验证隔离目录安装、构建、首次建号、知识源接入和重启保留。[发行提交 `1c7a639` 的 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36852873767) 通过 496 项 Node/HTTP 测试、构建、主题检查和 10 项浏览器回归。该结果验证软件路径，不构成目标设备性能或学习收益结论。
 

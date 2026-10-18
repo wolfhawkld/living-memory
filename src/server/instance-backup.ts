@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
-import { acquireDataDirectoryLock, assertDatabaseFilesOffline } from './data-directory-lock.js';
+import { acquireDataDirectoryLock } from './data-directory-lock.js';
+import { createOfflineScanner, type OfflineScanner } from './offline-scan.js';
 import { parseSourceIdentityRegistry, readSourceIdentityRegistry, resolveSourceIdentity, type SourceIdentityRegistry } from './source-identities.js';
 import { isRestoreQuarantined, readInstanceId, type InstanceIdentity, type RestoreQuarantine } from './instance-state.js';
 import { isValidInstant } from '../core/time-model.js';
@@ -25,6 +26,7 @@ export interface InstanceManifest {
 }
 export interface BackupInstanceOptions {
   dataDir: string; kgRoot: string; cliStateDir: string; output: string; envFile?: string; cliSessionFile?: string;
+  offlineCheck?: 'native' | 'sudo';
   /** Only synthetic tests substitute proc; production always inspects real /proc. */
   procRoot?: string; now?: () => Date;
 }
@@ -144,6 +146,19 @@ function newStage(target: string): string {
   mkdirSync(stage, { mode: 0o700 }); return stage;
 }
 
+function databasePaths(dataDir: string): string[] {
+  return ['living-memory.sqlite', 'accounts.sqlite'].flatMap((name) => ['', '-wal', '-shm', '-journal'].map((suffix) => join(dataDir, name + suffix)));
+}
+function mainDatabaseIdentities(dataDir: string): string {
+  return JSON.stringify(['living-memory.sqlite', 'accounts.sqlite'].map((name) => {
+    const path = join(dataDir, name);
+    if (!existsSync(path)) return [name, null];
+    const stat = lstatSync(path, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new InstanceBackupError('UNSAFE_INSTANCE_FILE');
+    return [name, stat.dev.toString(), stat.ino.toString()];
+  }));
+}
+
 /** Offline, local, private directory bundle. Never mutates source knowledge. */
 export async function backupInstance(options: BackupInstanceOptions): Promise<InstanceManifest> {
   const dataDir = canonical(options.dataDir), kgRoot = canonical(options.kgRoot), cli = canonical(options.cliStateDir), output = canonical(options.output);
@@ -151,11 +166,13 @@ export async function backupInstance(options: BackupInstanceOptions): Promise<In
   ensureSeparate(output, [dataDir, kgRoot, cli, ...(options.envFile ? [options.envFile] : []), ...(options.cliSessionFile ? [options.cliSessionFile] : [])]);
   if (contains(dataDir, kgRoot) || contains(kgRoot, dataDir)) throw new InstanceBackupError('UNSAFE_INSTANCE_PATH');
   if (contains(cli, kgRoot) || contains(kgRoot, cli)) throw new InstanceBackupError('UNSAFE_INSTANCE_PATH');
-  const lock = acquireDataDirectoryLock(dataDir); let stage: string | null = null;
+  const lock = acquireDataDirectoryLock(dataDir); let stage: string | null = null; let scanner: OfflineScanner | null = null; let operationFailed = false;
   try {
     const databaseNames = ['living-memory.sqlite', ...(existsSync(join(dataDir, 'accounts.sqlite')) ? ['accounts.sqlite'] : [])];
     if (!existsSync(join(dataDir, databaseNames[0]))) throw new InstanceBackupError('INSTANCE_DATABASE_MISSING');
-    assertDatabaseFilesOffline(databaseNames.flatMap((name) => ['', '-wal', '-shm', '-journal'].map((suffix) => join(dataDir, name + suffix))), { procRoot: options.procRoot });
+    const mainIdentities = mainDatabaseIdentities(dataDir);
+    scanner = await createOfflineScanner({ mode: options.offlineCheck, dataDir, procRoot: options.procRoot });
+    await scanner.scan(databasePaths(dataDir));
     stage = newStage(output);
     const excluded: string[] = ['browser pending writes and drafts', 'runtime leases', 'old CLI session secrets'];
     const sources: SourceEntry[] = []; const configuration: string[] = [];
@@ -226,8 +243,16 @@ export async function backupInstance(options: BackupInstanceOptions): Promise<In
     const manifest: InstanceManifest = { format: 'living-memory-instance', version: 1, applicationVersion, createdAt: (options.now?.() ?? new Date()).toISOString(),
       instanceId: readInstanceId(dataDir), files, databases, sources, configuration, excluded, browserState: 'not-included' };
     writePrivate(join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2));
-    verifyInstanceBundle(stage); publish(stage, output); stage = null; return manifest;
-  } finally { if (stage) rmSync(stage, { recursive: true, force: true }); lock.release(); }
+    verifyInstanceBundle(stage);
+    if (mainDatabaseIdentities(dataDir) !== mainIdentities) throw new InstanceBackupError('INSTANCE_SOURCE_CHANGED');
+    await scanner.scan(databasePaths(dataDir));
+    await scanner.close(); scanner = null;
+    publish(stage, output); stage = null; return manifest;
+  } catch (error) { operationFailed = true; throw error; }
+  finally {
+    try { try { await scanner?.close(); } catch (error) { if (!operationFailed) throw error; } }
+    finally { try { if (stage) rmSync(stage, { recursive: true, force: true }); } finally { lock.release(); } }
+  }
 }
 
 /** Validate every byte and source mapping before a target is created. */
@@ -348,17 +373,26 @@ export async function restoreInstance(options: { bundle: string; target: string;
 }
 
 /** Explicit offline acknowledgement; this function never connects or sends. */
-export function activateRestoredConnectors(dataDir: string, confirmed: boolean, options: { procRoot?: string } = {}): void {
+export async function activateRestoredConnectors(dataDir: string, confirmed: boolean, options: { procRoot?: string; offlineCheck?: 'native' | 'sudo' } = {}): Promise<void> {
   if (!confirmed) throw new InstanceBackupError('CONNECTOR_CONFIRMATION_REQUIRED');
-  const lock = acquireDataDirectoryLock(dataDir);
+  const lock = acquireDataDirectoryLock(dataDir); let scanner: OfflineScanner | null = null; let operationFailed = false;
   try {
-    assertDatabaseFilesOffline(['living-memory.sqlite', 'accounts.sqlite'].flatMap((name) => ['', '-wal', '-shm'].map((suffix) => join(dataDir, name + suffix))), { procRoot: options.procRoot });
+    const mainIdentities = mainDatabaseIdentities(dataDir);
+    scanner = await createOfflineScanner({ mode: options.offlineCheck, dataDir, procRoot: options.procRoot });
+    await scanner.scan(databasePaths(dataDir));
     if (!isRestoreQuarantined(dataDir)) throw new InstanceBackupError('RESTORE_QUARANTINE_NOT_PRESENT');
     const path = join(dataDir, 'restore-quarantine.json');
     const state = JSON.parse(readOrdinary(path).toString('utf8')) as RestoreQuarantine;
     if (!state || typeof state !== 'object' || Array.isArray(state) || Object.keys(state).sort().join(',') !== 'connectorsBlocked,format,restoredAt,version'
       || state.format !== 'living-memory-restore-quarantine' || state.version !== 1 || state.connectorsBlocked !== true || !isValidInstant(state.restoredAt)) throw new InstanceBackupError('RESTORE_QUARANTINE_INVALID');
+    if (mainDatabaseIdentities(dataDir) !== mainIdentities) throw new InstanceBackupError('INSTANCE_SOURCE_CHANGED');
+    await scanner.scan(databasePaths(dataDir));
+    await scanner.close(); scanner = null;
     const temporary = `${path}.${randomUUID()}.tmp`;
     writePrivate(temporary, JSON.stringify({ ...state, connectorsBlocked: false })); renameSync(temporary, path);
-  } finally { lock.release(); }
+  } catch (error) { operationFailed = true; throw error; }
+  finally {
+    try { try { await scanner?.close(); } catch (error) { if (!operationFailed) throw error; } }
+    finally { lock.release(); }
+  }
 }

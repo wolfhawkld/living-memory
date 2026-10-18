@@ -27,7 +27,30 @@ node --import tsx scripts/instance-backup.ts verify \
 
 需要归档配置时，在 `backup` 命令中显式加 `--env-file /private/current/environment.env`。CLI 收据可能由 `LM_CLI_STATE_DIR` 或原命令的 `--state-dir` 指向独立目录，请传实际位置；它不一定随 `LM_DATA_DIR` 变化。备份必须在停止写入的状态完成，核验会检查文件完整性和已知数据库结构。静态 bundle 的 `verify` 不会启动服务或飞书。
 
-当前离线检查依赖 Linux／WSL 的 `/proc` 与同一操作系统用户的数据库文件描述符信息。若无法确认离线状态，会拒绝操作；端口空闲不能代替数据库离线核验。CLI 不提供替代 `/proc` 或绕过检查的参数。Windows 原生完整迁移仍待验证，macOS 不在本期支持范围内。
+当前离线检查依赖 Linux／WSL 的 `/proc` 与同一操作系统用户的数据库文件描述符信息。若无法确认离线状态，会拒绝操作；端口空闲不能代替数据库离线核验。CLI 不提供替代 `/proc`、忽略进程或导入一次性证明的参数。Windows 原生完整迁移仍待验证，macOS 不在本期支持范围内。
+
+### WSL 的受限文件句柄
+
+2026-10-18 在本机确认：用户的 systemd／PAM 进程可能不允许普通账号读取其文件描述符，使默认检查返回 `OFFLINE_CHECK_UNAVAILABLE`。这属于工具与主机权限的兼容边界，不应通过终止系统进程或放宽全局 ptrace 设置处理。
+
+需要额外读取权限时，在可信源码目录中，以原账号给 `backup` 命令加上 `--sudo-offline-scan`：
+
+```bash
+node --import tsx scripts/instance-backup.ts backup \
+  --data-dir /private/current/data \
+  --kg-root /private/current/knowledge \
+  --cli-state-dir /private/current/cli \
+  --output /private/backups/living-memory-new \
+  --sudo-offline-scan
+```
+
+该选项只启动随源码提供的单用途 Python 只读辅助器。sudo 密码由 sudo 在本机终端读取，不经过应用输入、管道或聊天。备份、数据库连接、文件复制和服务仍由原账号执行，不要将整个 Node 命令改为 `sudo node`。此通道需要 `/usr/bin/sudo` 和 `/usr/bin/python3`；非交互环境只尝试已有授权，没有授权时返回 `OFFLINE_SCAN_AUTH_REQUIRED`。
+
+辅助器只收到本轮进程身份和受控数据库文件的设备号／inode，不收到路径、知识正文或配置密钥；它扫描真实 `/proc` 的 UID 与文件句柄元数据，不打开数据库内容。每次操作使用独立的实时管道，校验请求序号和父进程身份，拒绝重复／过期／超量数据。首扫成功后才暂存备份，源连接关闭及 bundle 核验后再次扫描，辅助器正常确认关闭后才发布；任一步未知或失败均不放行，原目录锁始终由原账号持有。辅助器不作为后台服务或可复用证明保存。
+
+FD 扫描只代表检查点的观察，不能原子阻止任意旧程序随后打开数据库。迁移期间仍须停止旧服务和 CLI；运行锁排斥遵守该协议的新服务。目录属主也不等于进程 UID，检查使用 status 的四项 UID，避免漏掉不可转储的进程；相关 Linux 行为见 [proc_pid](https://man7.org/linux/man-pages/man5/proc_pid.5.html) 与 [proc_pid_fd](https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html)。
+
+该通道的协议与失败分支使用合成进程和假子进程测试；真实 sudo 权限、私人备份及本机部署尚待本人终端验收，自动回归不代替这些结果。
 
 ## 恢复与核对
 
@@ -58,3 +81,5 @@ node --import tsx scripts/instance-backup.ts activate-connectors \
 ```
 
 该命令只解除恢复隔离标记，不连接飞书、不发送消息，也不修改学习表现。之后仍需由服务启动过程读取有效的飞书启用配置。恢复或激活失败时，CLI 仅输出固定错误码；原始异常、密钥和个人内容不会打印到终端。
+
+若激活时也遇到同样的 `/proc` 权限限制，可在原账号执行的命令中另加 `--sudo-offline-scan`，使用新一轮只读扫描；它不会沿用备份时的授权结果。`verify` 和 `restore` 不接受此选项，也不会触发提权。

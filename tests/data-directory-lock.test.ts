@@ -32,9 +32,31 @@ test('legacy preflight uses actual open file identities instead of a free TCP po
   try {
     const db = join(dir, 'living-memory.sqlite'), proc = join(dir, 'proc');
     writeFileSync(db, 'synthetic'); mkdirSync(join(proc, '123', 'fd'), { recursive: true });
+    const uid = process.getuid!();
+    writeFileSync(join(proc, '123', 'status'), `Name:\tsynthetic\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
     assertDatabaseFilesOffline([db], { procRoot: proc });
     symlinkSync(db, join(proc, '123', 'fd', '7'));
     assert.throws(() => assertDatabaseFilesOffline([db], { procRoot: proc }), { code: 'DATABASE_OPEN' });
     assert.throws(() => assertDatabaseFilesOffline([db], { procRoot: join(dir, 'missing') }), { code: 'OFFLINE_CHECK_UNAVAILABLE' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('legacy preflight uses all status UIDs rather than /proc directory ownership and refuses unknown identities', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lm-offline-status-'));
+  try {
+    const db = join(dir, 'living-memory.sqlite'), proc = join(dir, 'proc'), pid = join(proc, '123');
+    const owner = process.getuid!(), target = owner + 1;
+    writeFileSync(db, 'synthetic'); mkdirSync(join(pid, 'fd'), { recursive: true });
+    symlinkSync(db, join(pid, 'fd', '7'));
+    // The synthetic directory belongs to owner; the saved UID alone matches
+    // target. Checking stat(directory).uid would incorrectly skip this FD.
+    writeFileSync(join(pid, 'status'), `Uid:\t${owner}\t${owner}\t${target}\t${owner}\n`);
+    assert.throws(() => assertDatabaseFilesOffline([db], { procRoot: proc, uid: target }), { code: 'DATABASE_OPEN' });
+    writeFileSync(join(pid, 'status'), `Uid:\t${owner}\t${owner}\t${owner}\t${owner}\n`);
+    assertDatabaseFilesOffline([db], { procRoot: proc, uid: target });
+    writeFileSync(join(pid, 'status'), 'Uid:\tunknown\n');
+    assert.throws(() => assertDatabaseFilesOffline([db], { procRoot: proc, uid: target }), { code: 'OFFLINE_CHECK_UNAVAILABLE' });
+    rmSync(join(pid, 'status'));
+    assert.throws(() => assertDatabaseFilesOffline([db], { procRoot: proc, uid: target }), { code: 'OFFLINE_CHECK_UNAVAILABLE' });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
