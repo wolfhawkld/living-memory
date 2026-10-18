@@ -76,7 +76,7 @@ Windows 原生首次运行的命令、HTTP 与 CLI 已有[实测记录](docs/dev
 
 ## 验证与路线
 
-2026-10-18 本轮查阅追踪、引用变更核对、完整迁移和性能采样的软件范围已实现；本轮最终自动回归进行中，结果见 [develop CI](https://github.com/wolfhawkld/living-memory/actions/workflows/check.yml?query=branch%3Adevelop)，目标设备与私人迁移验收单独保留。软件回归不能确认真实提权、私人迁移、GPU 结果或个人记忆收益。
+2026-10-18 本轮查阅追踪、引用变更核对、完整迁移和性能采样的软件范围已实现；[本轮检查证据](docs/planning/iteration-todo-2026-09-22.md#本轮自动检查证据)分别记录已通过的精确提交及迁移兼容修复的核验，目标设备与私人迁移验收单独保留。软件回归不能确认真实提权、私人迁移、GPU 结果或个人记忆收益。
 
 2026-10-01 已在 WSL2/Linux x86_64、Node 22.23.1 下验证隔离目录安装、构建、首次建号、知识源接入和重启保留。[发行提交 `1c7a639` 的 CI](https://github.com/wolfhawkld/living-memory/actions/runs/36852873767) 通过 496 项 Node/HTTP 测试、构建、主题检查和 10 项浏览器回归。该结果验证软件路径，不构成目标设备性能或学习收益结论。
 
