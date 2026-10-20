@@ -14,6 +14,7 @@ import type {
   RecallRating,
   Snapshot,
   ObservationRequest,
+  Observation,
   ReviewRequest,
   RetentionRequest,
 } from '../shared/types';
@@ -71,6 +72,12 @@ import { graphRenderQualityKey, readGraphRenderQuality, writeGraphRenderQuality,
 import { ConceptSearch, type QueryReflectionEntry } from './ConceptSearch';
 import { PendingWritesPanel } from './PendingWritesPanel';
 import { ConceptHistoryPanel } from './ConceptHistoryPanel';
+import { ObservationRevisionDialog } from './ObservationRevisionDialog';
+import { ObservationRevisionPendingPanel } from './ObservationRevisionPendingPanel';
+import { useObservationRevisions } from './useObservationRevisions';
+import type { ObservationRevisionPendingRow } from './observation-revision-pending';
+import './observation-revision-dialog.css';
+import './observation-revision-pending.css';
 import { LearningSummaryPanel } from './LearningSummaryPanel';
 import { LearningProgressPanel } from './LearningProgressPanel';
 import './learning-progress.css';
@@ -296,6 +303,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const referenceReviewTicket = useRef(0);
   const referenceNavigationRef = useRef(0);
   const [attempt, setAttempt] = useState<RecallAttempt | null>(null);
+  const [revisionWindow, setRevisionWindow] = useState<{ observation: Observation; contextKey: string } | null>(null);
+  const [revisionOpening, setRevisionOpening] = useState(false);
+  const revisionOpenTicket = useRef(0);
   const [briefBudget, setBriefBudget] = useState<3 | 5>(3);
   const [briefSession, setBriefSession] = useState<BriefReviewSession | null>(null);
   const [briefSuspended, setBriefSuspended] = useState<BriefReviewCheckpoint | null>(null);
@@ -406,6 +416,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const writeLocked = demoEnabled || simulated || simulationLoading || sourceReloadPending;
   const activity = useActivity({ accountId: account?.id ?? 'local-owner', sourceId, instanceId, writeToken,
     mode: demoEnabled ? 'example' : simulated ? 'forecast' : 'real', locked: writeLocked || loading });
+  const revisions = useObservationRevisions({ accountId: account?.id ?? 'local-owner', sourceId, instanceId, writeToken,
+    mode: demoEnabled ? 'example' : simulated ? 'forecast' : 'real',
+    locked: writeLocked || loading || Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft)
+      || overviewOpen || reviewPlanOpen || importOpen || identityOpen || activity.open || Boolean(retentionConfirmation)
+      || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) });
+  const revisionVisible = Boolean(revisionWindow && revisionWindow.contextKey === revisions.contextKey);
+  const revisionMaintenanceLocked = revisions.status !== 'available' || revisions.rows.some(row => row.state !== 'archived');
   const reviewPlan = useReviewPlan(sourceId, Boolean(sourceId && hasSession && !writeLocked), snapshot);
   writeLockedRef.current = writeLocked;
   const asOf = simulated && !demoEnabled ? new Date(simulationBaseRef.current + simDays * DAY_MS).toISOString() : undefined;
@@ -418,7 +435,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     simulated,
     attempt: Boolean(attempt) || scenarioOpen || practiceOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen,
     reviewDialogOpen: reviewDialogOpen || Boolean(retentionConfirmation),
-    configOpen: configOpen || reviewPlanOpen || importOpen || identityOpen || activity.open,
+    configOpen: configOpen || reviewPlanOpen || importOpen || identityOpen || activity.open || revisionVisible || revisionOpening || revisions.busy,
     busyAction,
     refreshing,
     simulationLoading,
@@ -732,7 +749,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   useEffect(() => {
     changeHandlersRef.current.flush();
-  }, [attempt, briefSession, scenarioOpen, practiceOpen, applicationDraft, overviewOpen, reviewPlanOpen, importOpen, identityOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest, activity.open, activityReader, referenceReview]);
+  }, [attempt, briefSession, scenarioOpen, practiceOpen, applicationDraft, overviewOpen, reviewPlanOpen, importOpen, identityOpen, retentionConfirmation, busyAction, configOpen, demoEnabled, loading, refreshing, reviewDialogOpen, simulated, simulationLoading, sourceId, sourceReloadPending, writeToken, readerRequest, activity.open, activityReader, referenceReview, revisionVisible, revisionOpening, revisions.busy]);
 
   useEffect(() => {
     if (overviewOpen && sourceId && !demoEnabled && !simulated && !sourceReloadPending) void overviewLoader.refresh();
@@ -849,7 +866,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     ? summarizeDomainVisibility(displaySnapshot, viewSnapshot, domainId) : null, [displaySnapshot, viewSnapshot, domainId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
-  const domainBusy = activity.open || Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const domainBusy = activity.open || revisionVisible || revisionOpening || revisions.busy || Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
   const changeGraphLimit = useCallback((value: GraphLimitPreference) => {
     if (domainBusy || listMode || !graphPreferenceKey) return;
     setGraphPreference({ key: graphPreferenceKey, value });
@@ -884,7 +901,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const briefProgressLock = sourceReloadPending || (briefSession && briefSession.sourceId !== sourceId)
     ? '知识源已变化，请结束本轮后重新加载。' : writeLocked || !hasSession ? '当前无法写入真实记录，请结束本轮后重试。'
     : briefStorageConflictRef.current ? briefStorageError : null;
-  const learningOverlayOpen = activity.open || Boolean(attempt) || scenarioOpen || practiceOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen;
+  const learningOverlayOpen = activity.open || revisionVisible || revisionOpening || Boolean(attempt) || scenarioOpen || practiceOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen;
 
   // Source refreshes may remove a domain or a relation. Reconcile only when no
   // answer/dialog is active, and never turn a view change into a learning event.
@@ -938,6 +955,35 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     sourceId, conceptId: selectedConcept?.id ?? '', sourceRevision: selectedConcept?.source.revision ?? '',
     applicationEventId: focusedApplicationEventId,
   }, historyEnabled, snapshot);
+  const lastRevisionConfirmation = useRef(revisions.confirmedVersion);
+  useEffect(() => {
+    if (lastRevisionConfirmation.current === revisions.confirmedVersion) return;
+    lastRevisionConfirmation.current = revisions.confirmedVersion;
+    if (writeLocked || !hasSession) return;
+    void loadSnapshot(undefined, sourceId).catch(() => showNotice({ tone: 'error', text: '自评修订已保存，汇总刷新失败，请重新加载页面。' }));
+    void reviewPlan.refresh().catch(() => undefined);
+  }, [revisions.confirmedVersion, writeLocked, hasSession, loadSnapshot, sourceId, reviewPlan.refresh, showNotice]);
+  useEffect(() => {
+    revisionOpenTicket.current++;
+    setRevisionOpening(false);
+    setRevisionWindow(current => current?.contextKey === revisions.contextKey ? current : null);
+  }, [revisions.contextKey]);
+  const openObservationRevision = useCallback((observation: Observation) => {
+    if (domainBusy || writeLocked || !hasSession || !confirmCorrectionNavigation()
+      || pendingWrites.some(write => write.path === '/observations' && write.eventId === observation.eventId)) return;
+    setRevisionWindow({ observation, contextKey: revisions.contextKey });
+  }, [domainBusy, writeLocked, hasSession, confirmCorrectionNavigation, pendingWrites, revisions.contextKey]);
+  const openPendingRevision = useCallback(async (row: ObservationRevisionPendingRow) => {
+    if (domainBusy || writeLocked || !hasSession || !confirmCorrectionNavigation()) return;
+    const ticket = ++revisionOpenTicket.current, key = revisions.contextKey;
+    setRevisionOpening(true);
+    try {
+      const history = await revisions.channel.readHistory(row.request.observationEventId, { limit: 20 });
+      if (ticket !== revisionOpenTicket.current || history.observation.eventId !== row.request.observationEventId) return;
+      setRevisionWindow({ observation: history.observation, contextKey: key });
+    } catch { if (ticket === revisionOpenTicket.current) showNotice({ tone: 'error', text: '未能核对原观察，待同步请求保持不变。请确认原知识空间可用后重试。' }); }
+    finally { if (ticket === revisionOpenTicket.current) setRevisionOpening(false); }
+  }, [domainBusy, writeLocked, hasSession, confirmCorrectionNavigation, revisions.channel, revisions.contextKey, showNotice]);
   const pendingLearningCount = pendingWrites.filter((write) => write.conceptId === selectedId
     && (write.path === '/reviews' || write.path === '/observations' || write.path === '/retentions' || write.path === '/applications' || write.path === '/corrections' || write.path === '/relation-reviews')).length;
   const pendingCorrectionApplications = useMemo(() => pendingWrites.flatMap((write) => {
@@ -1339,9 +1385,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [sourceId, sourceViewedKeys]);
 
   const startRecall = useCallback(() => {
-    if (!snapshot || !selectedConcept || !selectedState || writeLocked || attempt || briefSession || briefActionRef.current || busyAction) return;
+    if (!snapshot || !selectedConcept || !selectedState || writeLocked || domainBusy || attempt || briefSession || briefActionRef.current || busyAction) return;
     beginRecall(selectedConcept, selectedState);
-  }, [attempt, beginRecall, briefSession, busyAction, selectedConcept, selectedState, snapshot, writeLocked]);
+  }, [attempt, beginRecall, briefSession, busyAction, selectedConcept, selectedState, snapshot, writeLocked, domainBusy]);
 
   const pendingReviewIds = useCallback(() => new Set(getPendingWrites(sourceId)
     .filter((write) => !['/applications', '/corrections', '/relation-reviews'].includes(write.path)).map((write) => write.conceptId).filter((id): id is string => Boolean(id))), [sourceId]);
@@ -1800,24 +1846,27 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [domainId, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const dataMaintenanceLockedReason = writeLocked || !hasSession ? '请先连接当前知识空间并切换到真实记录。'
+    : revisionMaintenanceLocked ? '请先处理自评修订待同步项，并确认本机队列可读取。'
     : pendingWrites.length ? '请先同步待写入记录，再进行数据维护。'
     : briefSuspended ? '请先继续或结束未完成的复习，再进行数据维护。' : null;
 
   const previewImport = useCallback(async (request: ImportPreviewRequest) => {
     await layoutWritesRef.current.settle();
+    await revisions.channel.assertMaintenanceReady();
     if (!importOpenRef.current || sourceIdRef.current !== sourceId || writeLockedRef.current || pendingSourceIdRef.current || getPendingWrites(sourceId).length || readBriefReviewCheckpoint(sourceId)) {
       return Promise.reject(new Error('当前有未完成记录或知识空间已变化，请先处理后再导入。'));
     }
     return api.previewImport(request, writeTokenRef.current, sourceId);
-  }, [sourceId]);
+  }, [sourceId, revisions.channel]);
 
   const commitImport = useCallback(async (request: ImportCommitRequest) => {
     await layoutWritesRef.current.settle();
+    await revisions.channel.assertMaintenanceReady();
     if (!importOpenRef.current || sourceIdRef.current !== sourceId || writeLockedRef.current || pendingSourceIdRef.current || getPendingWrites(sourceId).length || readBriefReviewCheckpoint(sourceId)) {
       return Promise.reject(new Error('当前有未完成记录或知识空间已变化，请先处理后再导入。'));
     }
     return api.commitImport(request, writeTokenRef.current, sourceId);
-  }, [sourceId]);
+  }, [sourceId, revisions.channel]);
 
   const refreshRestoredData = useCallback((expectedSourceId: string, successText: string, focusConceptId?: string) => {
     // A committed receipt remains successful even if refreshing the UI fails.
@@ -1861,23 +1910,26 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   const loadIdentities = useCallback(async () => {
     await layoutWritesRef.current.settle();
+    await revisions.channel.assertMaintenanceReady();
     if (!identityOpenRef.current || sourceIdRef.current !== sourceId || writeLockedRef.current || pendingSourceIdRef.current
       || getPendingWrites(sourceId).length || readBriefReviewCheckpoint(sourceId)) throw new Error('请先处理未完成记录并确认当前知识空间。');
     await api.refresh(writeTokenRef.current, sourceId);
     return api.getIdentityStatus(sourceId);
-  }, [sourceId]);
+  }, [sourceId, revisions.channel]);
   const previewIdentityLink = useCallback(async (request: IdentityLinkRequest) => {
     await layoutWritesRef.current.settle();
+    await revisions.channel.assertMaintenanceReady();
     if (!identityOpenRef.current || sourceIdRef.current !== sourceId || writeLockedRef.current || pendingSourceIdRef.current
       || getPendingWrites(sourceId).length || readBriefReviewCheckpoint(sourceId)) throw new Error('请先处理未完成记录并确认当前知识空间。');
     return api.previewIdentityLink(request, writeTokenRef.current, sourceId);
-  }, [sourceId]);
+  }, [sourceId, revisions.channel]);
   const commitIdentityLink = useCallback(async (request: IdentityLinkCommit) => {
     await layoutWritesRef.current.settle();
+    await revisions.channel.assertMaintenanceReady();
     if (!identityOpenRef.current || sourceIdRef.current !== sourceId || writeLockedRef.current || pendingSourceIdRef.current
       || getPendingWrites(sourceId).length || readBriefReviewCheckpoint(sourceId)) throw new Error('请先处理未完成记录并确认当前知识空间。');
     return api.commitIdentityLink(request, writeTokenRef.current, sourceId);
-  }, [sourceId]);
+  }, [sourceId, revisions.channel]);
   const linked = useCallback((receipt: IdentityLinkReceipt) => {
     refreshRestoredData(receipt.sourceId, '历史已衔接，原有学习记录与时间保持不变。', receipt.conceptId);
   }, [refreshRestoredData]);
@@ -2104,7 +2156,10 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
             {listedConcepts.length === 0 ? <EmptyPanel title={snapshot.concepts.length ? '当前领域暂无概念' : '知识空间还没有概念'} text={snapshot.concepts.length ? '切换知识域，或搜索知识库中的其他概念。' : '请先将知识 Markdown 放入此账号的知识目录，再点击刷新知识源。'} /> : null}
           </div>
           <PendingWritesPanel writes={pendingWrites} onArchiveCorrection={archiveCorrection} disabled={writeLocked || Boolean(busyAction)} />
-          <div className="left-footer"><span className={`sync-led${pendingWrites.length ? ' is-pending' : ''}`} /><span>{pendingWrites.length ? `${pendingWrites.length} 条记录等待同步` : '本地状态已同步'}</span>{pendingWrites.length ? <button type="button" className="sync-retry" onClick={() => void retryPending()} disabled={writeLocked || busyAction === 'pending'}>{busyAction === 'pending' ? '同步中…' : '重试同步'}</button> : null}</div>
+          {!demoEnabled && !simulated ? <ObservationRevisionPendingPanel key={revisions.contextKey} state={revisions} disabled={writeLocked || domainBusy || !hasSession}
+            onRefresh={revisions.channel.refresh} onRetry={revisions.channel.retryAll}
+            onOpen={row => void openPendingRevision(row)} onClearArchived={revisions.channel.clearArchived} /> : null}
+          <div className="left-footer"><span className={`sync-led${pendingWrites.length ? ' is-pending' : ''}`} /><span>{pendingWrites.length ? `${pendingWrites.length} 条其他学习记录等待同步` : '其他学习记录已同步'}</span>{pendingWrites.length ? <button type="button" className="sync-retry" onClick={() => void retryPending()} disabled={writeLocked || busyAction === 'pending'}>{busyAction === 'pending' ? '同步中…' : '重试同步'}</button> : null}</div>
         </aside>
 
         <section className="graph-panel">
@@ -2162,7 +2217,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
               <p className="state-reason">{selectedState.reason ?? '状态由当前时间与最近确认事件投影。'}</p>
               <button type="button" className="retention-button" disabled={writeLocked || Boolean(busyAction) || pendingConceptIds.has(selectedConcept.id)} onClick={() => setRetentionConfirmation({ eventId: newEventId(), conceptId: selectedConcept.id, sourceRevision: selectedConcept.source.revision, occurredAt: new Date().toISOString(), active: !snapshot.states[selectedConcept.id]?.retention?.active, previousEventId: snapshot.states[selectedConcept.id]?.retention?.eventId ?? null })}>{snapshot.states[selectedConcept.id]?.retention?.active ? '恢复时间衰减…' : '设为长期保持…'}</button>
               <div className="detail-actions"><button type="button" className="primary-button" onClick={() => void submitReview('review')} disabled={writeLocked || busyAction === 'review'}>{busyAction === 'review' ? '保存中…' : '确认已重温'}</button><button type="button" className="secondary-button" onClick={() => { reviewEventRef.current = null; setEstimatedDate(new Date().toISOString().slice(0, 10)); setReviewDialogOpen(true); }} disabled={writeLocked || busyAction === 'review'}>补记过去重温</button></div>
-              <button type="button" className="recall-button" onClick={startRecall} disabled={writeLocked || Boolean(attempt)}><span>✦</span>先想一句，再查看资料</button>
+              <button type="button" className="recall-button" onClick={startRecall} disabled={writeLocked || domainBusy || Boolean(attempt)}><span>✦</span>先想一句，再查看资料</button>
               <button type="button" className="recall-button" disabled={writeLocked || domainBusy || !hasSession} onClick={() => {
                 setApplicationDraft({ sourceId, concept: structuredClone(selectedConcept) });
               }}>记录应用 / 总结</button>
@@ -2195,12 +2250,29 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
                   setHistoryFocus(null);
                 }}
                 onRevealAnswer={() => markSourceViewed(selectedConcept.id)}
+                observationRevision={{ disabled: writeLocked || domainBusy || !hasSession,
+                  pendingObservationEventIds: pendingWrites.filter(write => write.path === '/observations' && write.eventId).map(write => write.eventId!),
+                  pendingRevisionParentIds: revisions.rows.filter(row => row.state !== 'archived').map(row => row.request.observationEventId),
+                  onOpen: openObservationRevision }}
               /> : <p className="source-hint">{attempt ? '回忆任务期间隐藏学习历史与旧回答。' : demoEnabled ? '示例模式不展示真实学习历史；关闭示例后可查看已保存记录。' : '知识源正在切换，学习历史暂时隐藏。'}</p>}
               <CrossDomainPanel neighbors={crossDomainNeighbors} expandedIds={visibleExpandedIds} visibleIds={visibleIds} onToggle={toggleExpanded} onNavigate={changeDomain} disabled={domainBusy} canExpand={canExpand} />
             </>
           ) : <EmptyPanel title="选择一个概念" text="点击图谱节点，或在左侧搜索后选择结果，查看概念与时间状态。" />}
         </aside>
       </main>
+
+      {revisionVisible && revisionWindow ? <ObservationRevisionDialog
+        key={JSON.stringify([revisionWindow.contextKey, revisionWindow.observation.eventId])}
+        scopeKey={revisionWindow.contextKey} observation={revisionWindow.observation}
+        disabledReason={writeLocked || !hasSession ? '当前知识空间不可写，请回到真实记录后重试。' : null}
+        pendingRow={revisions.rows.find(row => row.state !== 'archived' && row.request.observationEventId === revisionWindow.observation.eventId)}
+        loadHistory={options => revisions.channel.readHistory(revisionWindow.observation.eventId, options, revisionWindow.contextKey)}
+        onSubmit={request => revisions.channel.submit(request, revisionWindow.contextKey)}
+        onRetryPending={request => revisions.channel.retry(request.eventId, request, revisionWindow.contextKey)}
+        onRecheckRejected={row => revisions.channel.archiveRejected(row, revisionWindow.contextKey)}
+        onRevealAnswer={() => markSourceViewed(revisionWindow.observation.conceptId)}
+        onDirtyChange={dirty => onCorrectionEditingChange(`observation-revision:${revisionWindow.observation.eventId}`, dirty)}
+        onClose={() => setRevisionWindow(null)} /> : null}
 
       {reviewDialogOpen && selectedConcept ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setReviewDialogOpen(false); }}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="review-dialog-title"><div className="modal-kicker">补记历史 · 估计时间</div><h2 id="review-dialog-title">你大约在什么时候重温过？</h2><p>这条记录会标记为估计事件，只作为时间起点参考，不会伪装成精确测量。</p><label htmlFor="estimated-date">日期</label><input id="estimated-date" type="date" value={estimatedDate} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setEstimatedDate(event.target.value)} /><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setReviewDialogOpen(false)}>取消</button><button type="button" className="primary-button" onClick={() => void submitReview('estimated', estimatedDate)} disabled={writeLocked || !estimatedDate || busyAction === 'review'}>保存估计记录</button></div></div></div> : null}
 

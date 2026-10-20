@@ -19,6 +19,8 @@ import type { LearningOverview } from '../shared/learning-overview';
 import type { ScenarioPrompts } from '../shared/scenario-prompts';
 import type { PracticeCardRequest, PracticeAttemptRequest, PracticeCardsResponse, PracticeHistoryResponse } from '../shared/practice';
 import type { CorrectionRequest } from '../shared/corrections';
+import type { ObservationRevisionRequest } from '../shared/observation-revisions';
+import type { ObservationRevisionHistory, ObservationRevisionReceipt } from '../shared/observation-revision-history';
 import type { RelationReviewRequest, RelationReviewResponse } from '../shared/relation-reviews';
 import type { ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 import type { IdentityStatus, IdentityLinkRequest, IdentityLinkPreview, IdentityLinkCommit, IdentityLinkReceipt } from '../shared/identity';
@@ -715,6 +717,16 @@ export const api = {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
     });
   },
+  getObservationRevisions: (observationEventId: string, sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) => {
+    if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识空间，请重新连接。', { code: 'SOURCE_REQUIRED' }));
+    const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
+    if (options.cursor) params.set('cursor', options.cursor);
+    return requestJson<ObservationRevisionHistory>(`/observations/${encodeURIComponent(observationEventId)}/revisions?${params}`, {
+      headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
+    });
+  },
+  postObservationRevision: (payload: ObservationRevisionRequest, writeToken: string, sourceId: string) =>
+    writeJson<ObservationRevisionReceipt>(`/observations/${encodeURIComponent(payload.observationEventId)}/revisions`, payload, writeToken, sourceId),
   getSnapshot: (asOf?: string, sourceId?: string, scope?: 'all') => {
     const params = new URLSearchParams();
     if (asOf) params.set('asOf', asOf);

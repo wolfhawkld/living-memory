@@ -1,0 +1,9 @@
+.observation-revision-pending { padding: 12px; border: 1px solid var(--ui-border, rgba(126, 155, 195, .25)); border-radius: 10px; margin: 8px 0; color: var(--ui-text, #dce7f7); font-size: 12px; max-height: 230px; overflow: auto; background: var(--ui-panel, #101b2d); }
+.observation-revision-pending p { color: var(--ui-text-muted, #a8b9d1); line-height: 1.5; }
+.observation-revision-pending ul { list-style: none; margin: 8px 0; padding: 0; }
+.observation-revision-pending li { display: grid; gap: 5px; padding: 8px 0; border-top: 1px solid var(--ui-border, rgba(126, 155, 195, .25)); overflow-wrap: anywhere; }
+.observation-revision-pending small { color: var(--ui-text-muted, #a8b9d1); }
+.observation-revision-pending-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.observation-revision-pending button { border: 1px solid var(--ui-border, rgba(126, 155, 195, .25)); background: var(--ui-panel, #101b2d); color: var(--ui-text, #dce7f7); border-radius: 6px; padding: 6px 8px; cursor: pointer; }
+.observation-revision-pending button:disabled { opacity: .5; cursor: default; }
+.concept-history-current-assessment { border-left: 3px solid var(--ui-accent, #76a9e9); padding-left: 8px; margin: 8px 0; }

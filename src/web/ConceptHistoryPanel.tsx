@@ -41,6 +41,12 @@ export interface ConceptHistoryPanelProps {
   relationReview?: RelationReviewIntegration;
   focusedApplicationEventId?: string;
   onClearFocus?: () => void;
+  observationRevision?: {
+    disabled: boolean;
+    pendingObservationEventIds: readonly string[];
+    pendingRevisionParentIds: readonly string[];
+    onOpen(observation: Observation): void;
+  };
 }
 
 export interface HistoryObservationAnswerProps {
@@ -75,6 +81,19 @@ function ratingLabel(rating: Observation['rating']): string {
   if (rating === 'clear') return '能解释';
   if (rating === 'partial') return '有些模糊';
   return '想不起';
+}
+
+export function currentObservationAssessmentLabel(event: Observation, history: ConceptHistory): string {
+  const state = history.observationAssessments?.[event.eventId];
+  const assessment = state?.currentAssessment;
+  if (!state || !['active', 'withdrawn'].includes(state.status) || !assessment
+    || !['clear', 'partial', 'blank'].includes(assessment.rating)
+    || (event.learning ? !assessment.learning || !['success', 'partial', 'failure', 'unverified'].includes(assessment.learning.outcome)
+      || !['self-check', 'application', 'unknown'].includes(assessment.learning.basis)
+      || (assessment.learning.outcome !== 'unverified' && assessment.learning.basis === 'unknown') : assessment.learning !== null)) return '当前判断：状态待核对';
+  const outcome = assessment.learning ? ` · ${{ success: '成功', partial: '部分成功', failure: '未成功', unverified: '尚未核对' }[assessment.learning.outcome]}` : '';
+  return state.status === 'withdrawn' ? `暂不计入统计 · 保留判断：${ratingLabel(assessment.rating)}${outcome}`
+    : `当前采用：${ratingLabel(assessment.rating)}${outcome}`;
 }
 
 function exposureLabel(event: Observation): string {
@@ -180,20 +199,25 @@ function ObservationEntry({
   entry,
   history,
   onRevealAnswer,
+  observationRevision,
 }: {
   entry: Extract<ConceptHistoryEntry, { type: 'observation' }>;
   history: ConceptHistory;
   onRevealAnswer: () => void;
+  observationRevision?: ConceptHistoryPanelProps['observationRevision'];
 }): ReactElement {
   const event = entry.event;
   const oldRevision = oldRevisionLabel(event, history);
   return (
-    <li className={`concept-history-entry concept-history-entry-observation${oldRevision ? ' concept-history-entry-is-old' : ''}`}>
+    <li data-observation-event-id={event.eventId} className={`concept-history-entry concept-history-entry-observation${oldRevision ? ' concept-history-entry-is-old' : ''}`}>
       <span className="concept-history-dot" aria-hidden="true" />
       <div className="concept-history-entry-card">
         <div className="concept-history-entry-heading">
           <strong>{event.learning?.task === 'scenario' ? '场景调用观察' : '学习观察'}</strong>
-          <span className="concept-history-rating">{event.learning?.task === 'scenario' ? { success: '适用', partial: '部分适用', failure: '未成功', unverified: '未核对' }[event.learning.outcome] : ratingLabel(event.rating)}</span>
+          <span className="concept-history-rating">最初自评 · {event.learning?.task === 'scenario' ? { success: '适用', partial: '部分适用', failure: '未成功', unverified: '未核对' }[event.learning.outcome] : ratingLabel(event.rating)}</span>
+        </div>
+        <div className="concept-history-current-assessment">{currentObservationAssessmentLabel(event, history)}
+          {observationRevision?.pendingRevisionParentIds.includes(event.eventId) ? <small> · 有本机请求待确认；采用状态以已读取的服务记录为准</small> : null}
         </div>
         <time className="concept-history-event-time" dateTime={event.observedAt}>{formatDate(event.observedAt)}</time>
         <div className="concept-history-secondary">
@@ -216,6 +240,9 @@ function ObservationEntry({
           <div>{event.evidenceMode === 'mental' ? '自报结果' : '核对结果'}：{{ success: '成功', partial: '部分成功', failure: '未成功', unverified: '尚未核对' }[event.learning.outcome]} · {{ 'self-check': '自己对照资料', application: '实际应用核对', unknown: '依据未记录' }[event.learning.basis]}</div>
         </div> : null}
         <HistoryObservationAnswer event={event} onRevealAnswer={onRevealAnswer} />
+        {observationRevision ? <button type="button" className="concept-history-answer-toggle"
+          disabled={observationRevision.disabled || observationRevision.pendingObservationEventIds.includes(event.eventId)}
+          onClick={() => observationRevision.onOpen(event)}>修订这条观察</button> : null}
       </div>
     </li>
   );
@@ -285,7 +312,7 @@ function ApplicationEntry({ event, history, concept, onRevealAnswer, correctionH
   </li>;
 }
 
-function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrection, onRefreshHistory, correctionDisabled, pendingCorrectionApplications, onCorrectionEditingChange, correctionRecoveryVersions, relationReview }: {
+function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrection, onRefreshHistory, correctionDisabled, pendingCorrectionApplications, onCorrectionEditingChange, correctionRecoveryVersions, relationReview, observationRevision }: {
   entry: ConceptHistoryEntry;
   history: ConceptHistory;
   concept?: Concept;
@@ -296,6 +323,7 @@ function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrectio
   pendingCorrectionApplications: readonly string[];
   correctionRecoveryVersions: Readonly<Record<string, number>>;
   relationReview?: RelationReviewIntegration;
+  observationRevision?: ConceptHistoryPanelProps['observationRevision'];
   onCorrectionEditingChange?: (applicationEventId: string, editing: boolean) => void;
 }): ReactElement {
   if (entry.type === 'application') {
@@ -331,7 +359,7 @@ function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrectio
   </li>;
   return entry.type === 'anchor'
     ? <AnchorEntry entry={entry} history={history} />
-    : <ObservationEntry entry={entry} history={history} onRevealAnswer={onRevealAnswer} />;
+    : <ObservationEntry entry={entry} history={history} onRevealAnswer={onRevealAnswer} observationRevision={observationRevision} />;
 }
 
 function PendingNotice({ count }: { count: number }): ReactElement | null {
@@ -358,6 +386,7 @@ export function ConceptHistoryPanel({
   focusedApplicationEventId,
   onClearFocus,
   onCorrectionEditingChange,
+  observationRevision,
 }: ConceptHistoryPanelProps) {
   const sectionRef = useRef<HTMLElement>(null);
   const resolvedFocus = history?.focusedApplicationEventId;
@@ -422,6 +451,7 @@ export function ConceptHistoryPanel({
                   pendingCorrectionApplications={pendingCorrectionApplications}
                   correctionRecoveryVersions={correctionRecoveryVersions}
                   relationReview={relationReview}
+                  observationRevision={observationRevision ? { ...observationRevision, disabled: observationRevision.disabled || loading || loadingMore || Boolean(error) } : undefined}
                   onCorrectionEditingChange={onCorrectionEditingChange}
                 />
               ))}

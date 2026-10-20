@@ -1,0 +1,22 @@
+.observation-revision-dialog { width: min(1180px, 94vw); max-height: 92vh; max-height: 92dvh; margin: auto; padding: 0; border: 1px solid var(--ui-border-strong, #29405f); border-radius: 14px; background: var(--ui-panel, #0c1525); color: var(--ui-text, var(--text, #dce7f5)); box-shadow: var(--ui-shadow, 0 24px 80px rgba(0, 0, 0, .55)); overflow: hidden; }
+.observation-revision-dialog[open] { display: flex; flex-direction: column; }
+.observation-revision-dialog::backdrop { background: var(--ui-backdrop, rgba(2, 6, 14, .78)); backdrop-filter: blur(8px); }
+.observation-revision-dialog header, .observation-revision-dialog footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 18px 24px; border-bottom: 1px solid var(--ui-border, rgba(126, 158, 203, .16)); }
+.observation-revision-dialog footer { border-top: 1px solid var(--ui-border, rgba(126, 158, 203, .16)); border-bottom: 0; }
+.observation-revision-dialog h2 { margin: 0; font-size: 21px; }
+.observation-revision-dialog h3 { margin: 0 0 12px; font-size: 16px; }
+.observation-revision-scroll { overflow: auto; min-height: 0; padding: 20px 24px; }
+.observation-revision-scroll p { line-height: 1.7; overflow-wrap: anywhere; }
+.observation-revision-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 20px 0; }
+.observation-revision-columns section { min-width: 0; padding: 16px; background: var(--ui-raised, #121e32); border: 1px solid var(--ui-border, rgba(126, 158, 203, .16)); border-radius: 9px; }
+.observation-revision-dialog label { display: block; margin: 12px 0; color: var(--ui-text-muted, var(--muted, #99abc3)); font-size: 14px; }
+.observation-revision-dialog select, .observation-revision-dialog textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 7px; padding: 10px; color: var(--ui-text, var(--text, #dce7f5)); background: var(--ui-input, #0a1322); border: 1px solid var(--ui-border-strong, #29405f); border-radius: 6px; }
+.observation-revision-dialog textarea { min-height: 90px; resize: vertical; }
+.observation-revision-dialog button { padding: 9px 13px; border: 1px solid var(--ui-border-strong, #29405f); border-radius: 7px; background: var(--ui-raised, #121e32); color: var(--ui-text, var(--text, #dce7f5)); cursor: pointer; }
+.observation-revision-dialog :disabled { opacity: .55; cursor: default; }
+.observation-revision-dialog :focus-visible { outline: 2px solid var(--ui-accent, #9cc5ff); outline-offset: 3px; }
+.observation-revision-dialog [role="alert"] { color: var(--ui-warning, #f1be73); }
+.observation-revision-dialog ol { padding-left: 22px; }
+.observation-revision-dialog li { padding: 12px 0; border-bottom: 1px solid var(--ui-border, rgba(126, 158, 203, .16)); }
+.observation-revision-note { white-space: pre-wrap; }
+@media (max-width: 750px) { .observation-revision-columns { grid-template-columns: 1fr; } .observation-revision-dialog header, .observation-revision-dialog footer, .observation-revision-scroll { padding: 16px; } }

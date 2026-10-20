@@ -13,6 +13,7 @@ import {
   ConceptHistoryPanel,
   HistoryObservationAnswer,
   type ConceptHistoryPanelProps,
+  currentObservationAssessmentLabel,
 } from '../src/web/ConceptHistoryPanel.js';
 
 function anchor(overrides: Partial<AnchorEvent> = {}): AnchorEvent {
@@ -272,4 +273,28 @@ test('the standalone answer component also keeps the answer out of SSR markup', 
   assert.match(html, /展开原始回答/);
   assert.match(html, /aria-expanded="false"/);
   assert.doesNotMatch(html, /只在主动展开后可见/);
+});
+test('history distinguishes original assessment, adopted or withdrawn assessment and unresolved state without exposing answers', () => {
+  const event = observation();
+  const adopted = { observationEventId: event.eventId, status: 'active' as const,
+    currentAssessment: { rating: 'blank' as const, learning: null }, latestRevisionEventId: 'revision-1', appliedRevisionCount: 1, issues: [] };
+  const h = history({ entries: [{ type: 'observation', event }], observationAssessments: { [event.eventId]: adopted } });
+  const integration = { disabled: false, pendingObservationEventIds: [], pendingRevisionParentIds: [event.eventId], onOpen() {} };
+  const html = panel({ history: h, observationRevision: integration });
+  assert.match(html, /最初自评 · 有些模糊/); assert.match(html, /当前采用：想不起/); assert.match(html, /修订这条观察/);
+  assert.match(html, /采用状态以已读取的服务记录为准/); assert.doesNotMatch(html, /秘密的原始回答/);
+  h.observationAssessments![event.eventId] = { ...adopted, status: 'withdrawn' };
+  assert.match(currentObservationAssessmentLabel(event, h), /暂不计入统计/);
+  h.observationAssessments![event.eventId] = { ...adopted, status: 'unresolved', currentAssessment: null };
+  assert.equal(currentObservationAssessmentLabel(event, h), '当前判断：状态待核对');
+  delete h.observationAssessments;
+  assert.equal(currentObservationAssessmentLabel(event, h), '当前判断：状态待核对');
+});
+test('original pending observation cannot be revised and loading history disables its entry', () => {
+  const event = observation();
+  for (const originalPending of [true, false]) {
+    const html = panel({ loading: !originalPending, observationRevision: { disabled: false,
+      pendingObservationEventIds: originalPending ? [event.eventId] : [], pendingRevisionParentIds: [], onOpen() {} } });
+    assert.match(html, /disabled=""[^>]*>修订这条观察/);
+  }
 });
