@@ -46,7 +46,7 @@ async function running(options: { accountsEnabled?: boolean } = {}): Promise<Run
     const body = options.body === undefined ? undefined : JSON.stringify(options.body);
     const req = httpRequest({
       hostname: '127.0.0.1', port, path, method: options.method ?? 'GET',
-      headers: { host: `127.0.0.1:${port}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(options.cookie ? { cookie: options.cookie } : {}), ...(options.headers ?? {}) },
+      headers: { 'X-LM-Learning-Protocol': '2', host: `127.0.0.1:${port}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(options.cookie ? { cookie: options.cookie } : {}), ...(options.headers ?? {}) },
     }, (response) => {
       let text = '';
       response.setEncoding('utf8');

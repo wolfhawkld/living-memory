@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { buildImportPlan } from '../src/server/import-plan.js';
 import { Store, StoreError } from '../src/server/store.js';
-import { MODEL_VERSION, type ApplicationRecord, type Concept, type ExportData, type RelationSuggestion } from '../src/shared/types.js';
+import { MODEL_VERSION, type ApplicationRecord, type Concept, type ExportData, type ExportDataV1, type RelationSuggestion } from '../src/shared/types.js';
 import type { RelationReviewEvent } from '../src/shared/relation-reviews.js';
 
 const now = '2026-01-10T00:00:00.000Z';
@@ -20,7 +20,7 @@ const app: ApplicationRecord = { eventId: 'application-alpha', conceptId: 'backu
 function review(overrides: Partial<RelationReviewEvent> = {}): RelationReviewEvent {
   return { eventId: 'review-first', applicationEventId: app.eventId, conceptId: app.conceptId, occurredAt: '2026-01-03T00:00:00.000Z', recordedAt: '2026-01-03T00:01:00.000Z', previousEventId: null, status: 'resolved', note: '  historical evidence  ', basis: { source: { conceptId: suggestion.source.conceptId, current: { ...suggestion.source, title: 'Reviewed Alpha', sourceRevision: 'review-a' } }, target: { conceptId: suggestion.target.conceptId, current: { ...suggestion.target, title: 'Reviewed Beta', sourceRevision: 'review-b' } }, beforePresent: false, afterPresent: true }, ...overrides };
 }
-function data(overrides: Partial<ExportData> = {}): ExportData {
+function data(overrides: Partial<ExportDataV1> = {}): ExportDataV1 {
   const config = { modelVersion: MODEL_VERSION, halfLifeDays: 7, revision: 1 };
   return { schemaVersion: 1, exportedAt: '2026-01-09T00:00:00.000Z', source: { ...source, name: 'Synthetic backup' }, concepts: [{ id: 'backup-alpha', title: 'Alpha', source: alpha.source }, { id: 'backup-beta', title: 'Beta', source: beta.source }], config, configHistory: [config], anchors: [], observations: [], retentions: [], applications: [app], corrections: [], relationReviews: [review()], layout: {}, ...overrides };
 }

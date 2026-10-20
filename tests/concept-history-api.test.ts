@@ -88,7 +88,7 @@ async function running(options: { fixture?: Fixture; now?: string; sharedDataDir
       port,
       path,
       method: options.method ?? 'GET',
-      headers: {
+      headers: { 'X-LM-Learning-Protocol': '2',
         host: '127.0.0.1:4317',
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         ...(options.headers ?? {}),

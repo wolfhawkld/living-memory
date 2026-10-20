@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { buildImportPlan, type PreparedImport } from '../src/server/import-plan.js';
-import type { Concept, ExportData } from '../src/shared/types.js';
+import type { Concept, ExportData, ExportDataV1 } from '../src/shared/types.js';
 import { MODEL_VERSION } from '../src/shared/types.js';
 import { DEFAULT_IMPORT_OPTIONS, type ImportOptions } from '../src/shared/import-data.js';
 
@@ -17,7 +17,7 @@ const liveConcept: Concept = {
   source: { path: 'Alpha.md', revision: 'rev-2' },
 };
 
-function baseExport(overrides: Partial<ExportData> = {}): ExportData {
+function baseExport(overrides: Partial<ExportDataV1> = {}): ExportDataV1 {
   return {
     schemaVersion: 1,
     exportedAt: '2026-01-09T00:00:00.000Z',
@@ -59,7 +59,7 @@ function baseExport(overrides: Partial<ExportData> = {}): ExportData {
   };
 }
 
-function currentExport(overrides: Partial<ExportData> = {}): ExportData {
+function currentExport(overrides: Partial<ExportDataV1> = {}): ExportDataV1 {
   return {
     ...baseExport({
       exportedAt: '2026-01-09T12:00:00.000Z',
@@ -77,7 +77,7 @@ function currentExport(overrides: Partial<ExportData> = {}): ExportData {
 function plan(
   data: ExportData,
   options: ImportOptions = { restoreLayout: true, restoreReviewPlan: true },
-  current = currentExport(),
+  current: ExportData = currentExport(),
   concepts: Concept[] = [liveConcept],
   acceptedPaths?: Record<string, string[]>,
 ): PreparedImport {
@@ -104,7 +104,7 @@ function movedCurrent(): ExportData {
   return currentExport({ concepts: [{ id: movedLiveConcept.id, title: movedLiveConcept.title, source: movedLiveConcept.source }] });
 }
 
-function movedBackup(overrides: Partial<ExportData> = {}): ExportData {
+function movedBackup(overrides: Partial<ExportDataV1> = {}): ExportDataV1 {
   return baseExport({
     concepts: [{ id: movedLiveConcept.id, title: movedLiveConcept.title, source: { path: 'legacy/Alpha.md', revision: 'rev-1' } }],
     ...overrides,

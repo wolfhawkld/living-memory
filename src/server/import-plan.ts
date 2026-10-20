@@ -4,6 +4,7 @@ import type {
   ApplicationRecord,
   Concept,
   ExportData,
+  ExportDataV2,
   LearningEvidence,
   Layout,
   ModelConfig,
@@ -47,6 +48,8 @@ import {
   validatePracticeAttempts,
   validatePracticeCardChain,
 } from './practice-import.js';
+import { parseObservationRevision, type ObservationRevision } from '../shared/observation-revisions.js';
+import { planObservationRevisionImport, ObservationRevisionImportError } from './observation-revision-import.js';
 
 /** Input accepted by the pure import planner. */
 export interface ImportPlanInput {
@@ -66,9 +69,10 @@ export type PreparedConfig = ModelConfig & { recordedAt: string };
 /** The validated, mapped records consumed by the eventual store commit step. */
 export interface PreparedImport {
   preview: ImportPreview;
-  normalized: ExportData;
+  normalized: ExportDataV2;
   newAnchors: AnchorEvent[];
   newObservations: Observation[];
+  newObservationRevisions: ObservationRevision[];
   newRetentions: RetentionEvent[];
   newApplications: ApplicationRecord[];
   newCorrections: CorrectionEvent[];
@@ -247,7 +251,9 @@ function validateOptions(value: ImportOptions): ImportOptions {
 
 function validateExportEnvelope(data: unknown, now: string): Record<string, unknown> {
   const record = requireRecord(data, '导入数据');
-  if (record.schemaVersion !== 1) invalid('仅支持 schemaVersion 1 的导出文件。', 'UNSUPPORTED_SCHEMA');
+  if (record.schemaVersion !== 1 && record.schemaVersion !== 2) invalid('仅支持 schemaVersion 1 或 2 的导出文件。', 'UNSUPPORTED_SCHEMA');
+  if (record.schemaVersion === 1 && Object.hasOwn(record, 'observationRevisions')) invalid('v1 文件不能包含自评修订字段。', 'INVALID_OBSERVATION_REVISIONS');
+  if (record.schemaVersion === 2) requireArray(record.observationRevisions, 'observationRevisions');
   const exported = timestamp(record.exportedAt, 'exportedAt');
   const currentNow = timestamp(now, 'now');
   if (exported.ms > currentNow.ms) invalid('exportedAt 不能晚于当前时间。', 'FUTURE_EXPORT');
@@ -1558,6 +1564,7 @@ function sortTokenCollections(value: ExportData): ExportData {
   copy.configHistory = [...copy.configHistory].sort((a, b) => a.revision - b.revision);
   copy.anchors = [...copy.anchors].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.observations = [...copy.observations].sort((a, b) => a.eventId.localeCompare(b.eventId));
+  if (copy.schemaVersion === 2) copy.observationRevisions = [...copy.observationRevisions].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.retentions = [...(copy.retentions ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.applications = [...(copy.applications ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.corrections = [...(copy.corrections ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
@@ -1604,7 +1611,9 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     }
     : null;
   const rawRelationReviews = optionalArray(record, 'relationReviews');
+  const rawObservationRevisions = record.schemaVersion === 2 ? requireArray(record.observationRevisions, 'observationRevisions') : [];
   const references = collectReferences(rawEvents, record);
+  for (const raw of rawObservationRevisions) if (isRecord(raw) && typeof raw.conceptId === 'string') references.add(raw.conceptId.trim());
   for (const raw of rawRelationReviews) {
     if (!isRecord(raw)) continue;
     if (typeof raw.conceptId === 'string') references.add(raw.conceptId);
@@ -1620,7 +1629,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   }
   const mapping = buildConceptMapping(backupConcepts, input.concepts, references, input.acceptedPaths, state);
   const parsedEvents = parseEventArrays(record, now.ms, state);
-  if (eventCount(rawEvents) + rawRelationReviews.length + (rawPractice ? rawPractice.cards.length + rawPractice.attempts.length : 0) > MAX_EVENTS) {
+  if (eventCount(rawEvents) + rawObservationRevisions.length + rawRelationReviews.length + (rawPractice ? rawPractice.cards.length + rawPractice.attempts.length : 0) > MAX_EVENTS) {
     invalid(`事件总数不能超过 ${MAX_EVENTS}。`, 'IMPORT_LIMIT');
   }
   const hasDuplicatePracticeSource = hasRawPracticeSourceDuplicate(record.practice, state);
@@ -1639,6 +1648,15 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   const mappedRelationReviews = rawRelationReviews.map((value, index) => mappedRelationReview(validateRelationReview(value, index, now.ms, state), mapping, state));
   const mappedPracticeCards = (parsedPractice?.cards ?? []).map((card) => mappedPracticeCard(card, mapping, state));
   const mappedPracticeAttempts = parsedPractice?.attempts ?? [];
+  const mappedObservationRevisions: ObservationRevision[] = [];
+  for (const raw of rawObservationRevisions) {
+    try {
+      const event = parseObservationRevision(raw);
+      mappedObservationRevisions.push(parseObservationRevision({ ...event, conceptId: mappedId(mapping, event.conceptId) }));
+    } catch {
+      addIssue(state, 'OBSERVATION_REVISION_IMPORT_INVALID_INCOMING', '自评修订记录无效，不能导入。');
+    }
+  }
 
   for (const originalCard of parsedPractice?.cards ?? []) {
     for (const source of originalCard.sources) {
@@ -1686,6 +1704,26 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     practiceCards: mappedPracticeCards,
     practiceAttempts: mappedPracticeAttempts,
   }, input.current, mapping, state);
+  let newObservationRevisions: ObservationRevision[] = [];
+  let observationRevisionDuplicates = 0;
+  const occupiedEventIds = new Set([...collectCurrentEvents(input.current).values()].map(identity => identity.event.eventId));
+  for (const events of [mappedAnchors, mappedObservations, mappedRetentions, mappedApplications, mappedCorrections,
+    mappedRelationReviews, mappedPracticeCards, mappedPracticeAttempts]) {
+    for (const event of events) occupiedEventIds.add(event.eventId);
+  }
+  try {
+    const revisionPlan = planObservationRevisionImport({
+      currentObservations: input.current.observations,
+      observations: [...input.current.observations, ...classified.newObservations],
+      currentRevisions: input.current.observationRevisions ?? [], incomingRevisions: mappedObservationRevisions,
+      occupiedEventIds, exportedAt: exportedAt.raw,
+    });
+    newObservationRevisions = revisionPlan.newRevisions;
+    observationRevisionDuplicates = revisionPlan.duplicateEventIds.length;
+  } catch (error) {
+    const code = error instanceof ObservationRevisionImportError ? error.code : 'OBSERVATION_REVISION_IMPORT_INVALID_INPUT';
+    addIssue(state, code, '自评修订链无法安全合并，请核对原观察与完整记录。');
+  }
   const orderedPracticeCards = validatePracticeCardChain(
     mappedPracticeCards,
     input.current.practice?.cards ?? [],
@@ -1728,8 +1766,8 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   const incomingPlan = record.reviewPlan === undefined ? currentPlan : validateReviewPlan(record.reviewPlan, 'reviewPlan');
   const reviewPlan = mergeReviewPlan(currentPlan, incomingPlan, mapping, options.restoreReviewPlan);
   const anchorRequests = buildAnchorRequests(record, parsedEvents.anchors, mapping, exportedAt.raw, input.sourceId, state);
-  const normalizedInput: ExportData = {
-    schemaVersion: 1,
+  const normalizedInput: ExportDataV2 = {
+    schemaVersion: 2,
     exportedAt: exportedAt.raw,
     source: clone(record.source) as ExportData['source'],
     concepts: mapping.metadata,
@@ -1737,6 +1775,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     configHistory: configMerge.incoming,
     anchors: mappedAnchors,
     observations: mappedObservations,
+    observationRevisions: mappedObservationRevisions,
     retentions: mappedRetentions,
     applications: mappedApplications,
     corrections: mappedCorrections,
@@ -1765,7 +1804,8 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
       applications: classified.newApplications.length,
       corrections: classified.newCorrections.length,
     },
-    duplicates: classified.duplicates,
+    duplicates: classified.duplicates + observationRevisionDuplicates,
+    ...(record.schemaVersion === 2 ? { observationRevisions: newObservationRevisions.length } : {}),
     configurations: configMerge.newConfigs.length,
     matchedConcepts: mapping.matches.filter((match) => match.toId !== null).length,
     remappedConcepts: mapping.matches.filter((match) => match.match === 'path-revision').length,
@@ -1795,6 +1835,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     normalized: normalizedInput,
     newAnchors: classified.newAnchors,
     newObservations: classified.newObservations,
+    newObservationRevisions,
     newRetentions: orderedRetentions.filter((event) => classified.newRetentions.some((candidate) => candidate.eventId === event.eventId)),
     newApplications: classified.newApplications,
     newCorrections: orderedCorrections,

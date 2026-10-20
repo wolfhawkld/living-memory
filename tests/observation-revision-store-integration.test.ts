@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -71,6 +71,7 @@ function fixture(createTables = true) {
     answer: 'Synthetic attempt', confidence: null, confidenceAt: null, exposure: 'unexposed', observedExposure: false,
     cue: 'independent', outcome: 'partial', checkNotes: '' }, concepts);
   if (createTables) createObservationRevisionTables(db);
+  else db.exec('DROP TABLE observation_revisions');
   return { dataDir, store, db, ledger: createTables ? ledger(db, store) : null,
     close() { store.close(); rmSync(dataDir, { recursive: true, force: true }); } };
 }
@@ -272,4 +273,99 @@ test('two processes racing from the same parent tail produce exactly one persist
     assert.equal(f.ledger!.append(winner.eventId === leftRequest.eventId ? leftRequest : rightRequest).status, 'duplicate');
     assert.equal(originalSnapshot(f.store), before);
   } finally { left.stop(); right.stop(); f.close(); }
+});
+
+
+test('all eight original writers reject an event ID already owned by a revision', () => {
+  const f = fixture();
+  try {
+    f.store.observationRevisions.append(request('revision-owned'));
+    const original = (table: string) => JSON.parse(String(f.db.prepare(`SELECT request_payload FROM ${table} WHERE namespace=? LIMIT 1`).get(NAMESPACE)!.request_payload));
+    const actions = [
+      () => f.store.addReview({ ...original('anchors'), eventId: 'revision-owned' }),
+      () => f.store.addObservation({ ...original('observations'), eventId: 'revision-owned' }, 'original-anchor'),
+      () => f.store.addRetention({ ...original('retentions'), eventId: 'revision-owned' }, 'original-retention'),
+      () => f.store.addApplication({ ...original('applications'), eventId: 'revision-owned' }),
+      () => f.store.addCorrection({ ...original('corrections'), eventId: 'revision-owned' }),
+      () => f.store.addRelationReview({ ...original('relation_reviews'), eventId: 'revision-owned' }),
+      () => f.store.addPracticeCard({ ...original('practice_cards'), eventId: 'revision-owned' }, concepts),
+      () => f.store.addPracticeAttempt({ ...original('practice_attempts'), eventId: 'revision-owned' }, concepts),
+    ];
+    for (const action of actions) assert.throws(action, (error: unknown) => error instanceof Error && (error as {code?:string}).code === 'EVENT_CONFLICT');
+    assert.equal(f.store.observationRevisions.getRevisionCount(), 1);
+  } finally { f.close(); }
+});
+
+
+/** Pause a real writer immediately before BEGIN, after any legacy fast lookup. */
+function mixedWriter(dbPath: string, releasePath: string, eventId: string, kind: 'review' | 'revision') {
+  const candidate = kind === 'revision' ? request(eventId) : { eventId, conceptId: 'alpha', sourceRevision: 'v1', kind: 'review' };
+  const script = `
+    import { existsSync } from 'node:fs';
+    import { Store } from './src/server/store.ts';
+    const store = new Store({ dbPath: process.argv[1], namespace: '${NAMESPACE}', now: () => new Date('${NOW}') });
+    const db = store.db, original = db.exec.bind(db);
+    const flag = process.argv[2], deadline = Date.now() + 20000;
+    db.exec = (sql) => {
+      if (sql === 'BEGIN IMMEDIATE') {
+        process.stdout.write(JSON.stringify({ phase: 'ready' })+'\\n');
+        while (!existsSync(flag)) {
+          if (Date.now() > deadline) throw new Error('Synthetic barrier timed out');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+      }
+      return original(sql);
+    };
+    try {
+      const candidate = JSON.parse(process.argv[3]);
+      const receipt = ${JSON.stringify(kind)} === 'review' ? store.addReview(candidate) : store.observationRevisions.append(candidate);
+      process.stdout.write(JSON.stringify({ phase: 'result', receipt })+'\\n');
+    } catch (error) { process.stdout.write(JSON.stringify({ phase: 'result', error: { code: error.code, status: error.status } })+'\\n'); }
+    finally { store.close(); }
+  `;
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, dbPath, releasePath, JSON.stringify(candidate)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let readyResolve!: () => void, readyReject!: (error: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  let result: { receipt?: { status: string }; error?: { code: string; status: number } } | undefined;
+  let output = '', stderr = '';
+  const done = new Promise<NonNullable<typeof result>>((resolve, reject) => {
+    const timer = setTimeout(() => { child.kill(); const error = new Error('Synthetic mixed writer timed out'); readyReject(error); reject(error); }, 25000);
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.stdout.on('data', chunk => {
+      output += chunk;
+      let end: number;
+      while ((end = output.indexOf('\n')) !== -1) {
+        const line = output.slice(0, end); output = output.slice(end + 1);
+        const value = JSON.parse(line);
+        if (value.phase === 'ready') readyResolve();
+        if (value.phase === 'result') result = value;
+      }
+    });
+    child.on('error', error => { clearTimeout(timer); readyReject(error); reject(error); });
+    child.on('exit', code => { clearTimeout(timer); if (code === 0 && result) resolve(result);
+      else { const error = new Error(`Synthetic mixed writer exited ${code}: ${stderr}`); readyReject(error); reject(error); } });
+  });
+  void done.catch(() => {});
+  return { ready, done, stop: () => child.kill() };
+}
+
+test('real processes enforce the same global event ID when a revision or legacy writer wins before a waiting BEGIN', async () => {
+  for (const winner of ['revision', 'review'] as const) {
+    const f = fixture(), release = join(f.dataDir, 'release-barrier');
+    const eventId = `mixed-${winner}`;
+    const child = mixedWriter(f.store.dbPath, release, eventId, winner === 'revision' ? 'review' : 'revision');
+    try {
+      await child.ready;
+      const accepted = winner === 'revision' ? f.store.observationRevisions.append(request(eventId))
+        : f.store.addReview({ eventId, conceptId: 'alpha', sourceRevision: 'v1', kind: 'review' });
+      assert.equal(accepted.status, 'accepted');
+      writeFileSync(release, 'go');
+      const result = await child.done;
+      assert.deepEqual(result.error, { code: winner === 'revision' ? 'EVENT_CONFLICT' : 'OBSERVATION_REVISION_EVENT_CONFLICT', status: 409 });
+      const total = Number(f.db.prepare('SELECT count(*) AS n FROM anchors WHERE namespace=? AND event_id=?').get(NAMESPACE, eventId)!.n)
+        + Number(f.db.prepare('SELECT count(*) AS n FROM observation_revisions WHERE namespace=? AND event_id=?').get(NAMESPACE, eventId)!.n);
+      assert.equal(total, 1);
+    } finally { child.stop(); await child.done.catch(() => {}); f.close(); }
+  }
 });

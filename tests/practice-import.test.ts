@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { buildImportPlan } from '../src/server/import-plan.js';
 import type { PracticeAttempt, PracticeCardEvent, PracticeData } from '../src/shared/practice.js';
-import type { Concept, ExportData } from '../src/shared/types.js';
+import type { Concept, ExportData, ExportDataV1 } from '../src/shared/types.js';
 import { MODEL_VERSION } from '../src/shared/types.js';
 
 const now = '2026-01-10T00:00:00.000Z';
@@ -31,7 +31,7 @@ function attempt(overrides: Partial<PracticeAttempt> = {}): PracticeAttempt {
   };
 }
 
-function base(overrides: Partial<ExportData> = {}): ExportData {
+function base(overrides: Partial<ExportDataV1> = {}): ExportDataV1 {
   return {
     schemaVersion: 1,
     exportedAt: '2026-01-09T00:00:00.000Z',
@@ -45,7 +45,7 @@ function base(overrides: Partial<ExportData> = {}): ExportData {
   };
 }
 
-function current(overrides: Partial<ExportData> = {}): ExportData {
+function current(overrides: Partial<ExportDataV1> = {}): ExportDataV1 {
   return base({
     exportedAt: '2026-01-09T12:00:00.000Z',
     concepts: [{ id: liveConcept.id, title: liveConcept.title, source: liveConcept.source }],

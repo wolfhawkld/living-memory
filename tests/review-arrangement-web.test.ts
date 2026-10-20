@@ -136,6 +136,7 @@ test('review plan requests use source-scoped authentication, no-store reads, and
   const originalFetch = globalThis.fetch;
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   globalThis.fetch = async (input, init) => {
+    if (String(input) === '/api/session') return Response.json({ learningProtocolVersion: 2, writeToken: 'test-csrf', sourceId: 'user-a' });
     calls.push({ path: String(input), init });
     return new Response(JSON.stringify(arrangement()), { status: 200, headers: { 'content-type': 'application/json' } });
   };

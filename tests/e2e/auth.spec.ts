@@ -17,7 +17,7 @@ test('authenticated browser sessions reject anonymous API clients, logout, and s
   await page.getByRole('button', { name: '退出登录', exact: true }).click();
   await expect(page.getByRole('heading', { name: '登录你的知识空间', exact: true })).toBeVisible();
 
-  const afterLogout = await context.request.get('/api/snapshot');
+  const afterLogout = await context.request.get('/api/snapshot', { headers: { 'X-LM-Learning-Protocol': '2' } });
   expect(afterLogout.status()).toBe(401);
 
   await page.getByLabel('用户名', { exact: true }).fill(TEST_OWNER_USERNAME);
@@ -26,7 +26,7 @@ test('authenticated browser sessions reject anonymous API clients, logout, and s
   await expect(page.locator('.account-name')).toHaveText(TEST_OWNER_USERNAME);
   await expect(page.getByRole('button', { name: '退出登录', exact: true })).toBeVisible();
 
-  const afterLogin = await context.request.get('/api/snapshot');
+  const afterLogin = await context.request.get('/api/snapshot', { headers: { 'X-LM-Learning-Protocol': '2' } });
   expect(afterLogin.status()).toBe(200);
 
   await page.reload();

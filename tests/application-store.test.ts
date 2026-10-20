@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -154,7 +154,7 @@ test('applications export all private fields and parse input boundaries strictly
   }
 });
 
-test('opening an older database adds the applications table without rewriting existing observations', () => {
+test('opening an unsupported partial database rejects without rewriting old observations', () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'living-memory-application-migration-'));
   const dbPath = join(dataDir, 'legacy.sqlite');
   const db = new DatabaseSync(dbPath);
@@ -179,22 +179,19 @@ test('opening an older database adds the applications table without rewriting ex
     INSERT INTO config_history VALUES ('legacy-source', 1, 'time-only-v0', 7, '2026-01-01T00:00:00.000Z');
     INSERT INTO observations VALUES ('legacy-source', 'old-observation', 'concept-alpha', 'rev-1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 1, 7, NULL, NULL, NULL, 'old', 'clear', 'unknown', 0, '{}');
   `);
+  const originalRows = db.prepare('SELECT * FROM observations').all();
+  const originalSchema = db.prepare('SELECT type, name, sql FROM sqlite_master ORDER BY name').all();
   db.close();
+  const originalBytes = readFileSync(dbPath);
   try {
-    const store = new Store({ dbPath, namespace: 'legacy-source', now: () => new Date('2026-01-02T00:00:00.000Z') });
+    assert.throws(() => new Store({ dbPath, namespace: 'legacy-source', now: () => new Date('2026-01-02T00:00:00.000Z') }), { code: 'LEARNING_SCHEMA_INVALID' });
+    assert.deepEqual(readFileSync(dbPath), originalBytes);
+    const unchanged = new DatabaseSync(dbPath, { readOnly: true });
     try {
-      const migrated = new DatabaseSync(dbPath);
-      try {
-        const tables = migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'applications'").all() as Array<{ name: string }>;
-        assert.deepEqual(tables.map((table) => table.name), ['applications']);
-      } finally {
-        migrated.close();
-      }
-      assert.equal(store.getObservations()[0].answer, 'old');
-      assert.deepEqual(store.getApplications(), []);
-    } finally {
-      store.close();
-    }
+      assert.deepEqual(unchanged.prepare('SELECT * FROM observations').all(), originalRows);
+      assert.deepEqual(unchanged.prepare('SELECT type, name, sql FROM sqlite_master ORDER BY name').all(), originalSchema);
+      assert.equal((unchanged.prepare('SELECT answer FROM observations').get() as { answer: string }).answer, 'old');
+    } finally { unchanged.close(); }
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

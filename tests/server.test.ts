@@ -50,7 +50,7 @@ async function running(options: { root?: string; dataDir?: string; port?: number
     const body = requestOptions.body === undefined ? undefined : JSON.stringify(requestOptions.body);
     const req = httpRequest({
       hostname: '127.0.0.1', port, path, method: requestOptions.method ?? 'GET',
-      headers: { host: `127.0.0.1:${options.port ?? 4317}`, ...(body ? { 'content-type': 'application/json' } : {}), ...(requestOptions.headers ?? {}) },
+      headers: { 'X-LM-Learning-Protocol': '2', host: `127.0.0.1:${options.port ?? 4317}`, ...(body ? { 'content-type': 'application/json' } : {}), ...(requestOptions.headers ?? {}) },
     }, (res) => {
       let text = '';
       res.setEncoding('utf8');

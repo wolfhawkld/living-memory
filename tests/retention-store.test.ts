@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { createServer, request as httpRequest, type Server } from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -136,7 +136,7 @@ test('retention writes reject stale previous events and event IDs shared with ot
   }
 });
 
-test('opening a pre-evidence database adds the nullable learning column without rewriting old observations', () => {
+test('opening an unsupported five-table database rejects without rewriting old observations', () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'living-memory-retention-migration-'));
   const dbPath = join(dataDir, 'legacy.sqlite');
   const db = new DatabaseSync(dbPath);
@@ -156,19 +156,19 @@ test('opening a pre-evidence database adds the nullable learning column without 
     INSERT INTO config_history VALUES ('legacy-source', 1, 'time-only-v0', 7, '2026-01-01T00:00:00.000Z');
     INSERT INTO observations VALUES ('legacy-source', 'old-observation', 'concept-alpha', 'rev-1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 1, 7, NULL, NULL, NULL, 'old', 'clear', 'unknown', 0, '{}');
   `);
+  const originalRows = db.prepare('SELECT * FROM observations').all();
+  const originalSchema = db.prepare('SELECT type, name, sql FROM sqlite_master ORDER BY name').all();
   db.close();
+  const originalBytes = readFileSync(dbPath);
   try {
-    const store = new Store({ dbPath, namespace: 'legacy-source', now: () => new Date('2026-01-02T00:00:00.000Z') });
+    assert.throws(() => new Store({ dbPath, namespace: 'legacy-source', now: () => new Date('2026-01-02T00:00:00.000Z') }), { code: 'LEARNING_SCHEMA_UNSUPPORTED_LEGACY' });
+    assert.deepEqual(readFileSync(dbPath), originalBytes);
+    const unchanged = new DatabaseSync(dbPath, { readOnly: true });
     try {
-      const columns = new DatabaseSync(dbPath).prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
-      assert.ok(columns.some((column) => column.name === 'learning_json'));
-      const old = store.getObservations().find((event) => event.eventId === 'old-observation');
-      assert.ok(old);
-      assert.equal(old.learning, undefined);
-      assert.ok(store.getRetentions());
-    } finally {
-      store.close();
-    }
+      assert.deepEqual(unchanged.prepare('SELECT * FROM observations').all(), originalRows);
+      assert.deepEqual(unchanged.prepare('SELECT type, name, sql FROM sqlite_master ORDER BY name').all(), originalSchema);
+      assert.equal((unchanged.prepare('SELECT answer FROM observations').get() as { answer: string }).answer, 'old');
+    } finally { unchanged.close(); }
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
@@ -187,7 +187,7 @@ async function runningApp(): Promise<RunningApp> {
   const port = (server.address() as { port: number }).port;
   const request = (path: string, options: { method?: string; body?: unknown; headers?: Record<string, string> } = {}) => new Promise<ResponseData>((resolve, reject) => {
     const body = options.body === undefined ? undefined : JSON.stringify(options.body);
-    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: { host: '127.0.0.1:4317', ...(body ? { 'content-type': 'application/json' } : {}), ...(options.headers ?? {}) } }, (response) => {
+    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: { 'X-LM-Learning-Protocol': '2', host: '127.0.0.1:4317', ...(body ? { 'content-type': 'application/json' } : {}), ...(options.headers ?? {}) } }, (response) => {
       let text = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { text += chunk; }); response.on('end', () => resolve({ status: response.statusCode ?? 0, body: text, json: <T>() => JSON.parse(text) as T }));
     });
     req.once('error', reject); if (body) req.write(body); req.end();

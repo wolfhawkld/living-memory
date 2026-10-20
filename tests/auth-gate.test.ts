@@ -1,3 +1,4 @@
+import { authSessionHeaders } from '../src/web/AuthGate.tsx';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { accountStatusKey, parseAccountStatus, validatePassword, validateUsername } from '../src/web/AuthGate.tsx';
@@ -39,4 +40,14 @@ test('account status key changes only when account identity or access revision c
   assert.notEqual(accountStatusKey(base), accountStatusKey({ ...base, user: { ...base.user, accessRevision: 2 } }));
   assert.notEqual(accountStatusKey(base), accountStatusKey({ ...base, user: { ...base.user, id: 'u-2' } }));
   assert.notEqual(accountStatusKey(base), accountStatusKey({ enabled: true, needsSetup: true, user: null }));
+});
+
+
+test('account write and logout headers retain the restored instance and preserve legacy fallback', () => {
+  const restored = { writeToken: 'synthetic-csrf', sourceId: 'same-source', instanceId: 'restored-instance' };
+  assert.equal(authSessionHeaders(restored)['X-LM-Instance-ID'], 'restored-instance');
+  assert.equal(authSessionHeaders(restored)['X-LM-Token'], restored.writeToken);
+  assert.equal(authSessionHeaders(restored)['X-LM-Source-ID'], restored.sourceId);
+  assert.equal(authSessionHeaders({ writeToken: 'old', sourceId: 'same-source' })['X-LM-Instance-ID'], 'legacy');
+  assert.equal(restored.instanceId, 'restored-instance');
 });

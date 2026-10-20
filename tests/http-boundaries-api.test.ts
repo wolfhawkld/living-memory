@@ -115,6 +115,7 @@ async function runningApp(): Promise<RunningApp> {
     const request = (path: string, options: RequestOptions = {}) => new Promise<ResponseData>((resolve, reject) => {
       const body = options.rawBody ?? (options.body === undefined ? undefined : JSON.stringify(options.body));
       const requestHeaders: Record<string, string> = {
+        'X-LM-Learning-Protocol': '2',
         host: `127.0.0.1:${port}`,
         ...(body === undefined ? {} : {
           'content-type': 'application/json',
@@ -344,7 +345,7 @@ test('local preflight is allowed while an external origin is rejected without CO
       headers: {
         origin: localOrigin,
         'access-control-request-method': 'PUT',
-        'access-control-request-headers': 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID',
+        'access-control-request-headers': 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID, X-LM-Learning-Protocol',
       },
     });
     assert.equal(local.status, 204, local.body);
@@ -352,14 +353,14 @@ test('local preflight is allowed while an external origin is rejected without CO
     assert.equal(local.headers['access-control-allow-origin'], localOrigin);
     assert.equal(local.headers.vary, 'Origin');
     assert.equal(local.headers['access-control-allow-methods'], 'GET,POST,PUT,OPTIONS');
-    assert.equal(local.headers['access-control-allow-headers'], 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID');
+    assert.equal(local.headers['access-control-allow-headers'], 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID, X-LM-Learning-Protocol');
 
     const external = await client.request('/api/config', {
       method: 'OPTIONS',
       headers: {
         origin: 'http://external.example:5173',
         'access-control-request-method': 'PUT',
-        'access-control-request-headers': 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID',
+        'access-control-request-headers': 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID, X-LM-Learning-Protocol',
       },
     });
     assert.equal(external.status, 403);

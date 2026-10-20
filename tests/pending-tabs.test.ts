@@ -29,7 +29,7 @@ function gate() {
 const pending = (id: string) => ({ id, path: '/config', method: 'PUT' as const,
   eventId: null, conceptId: null, label: '模型参数', payload: { revision: 1, halfLifeDays: 7 } });
 const ok = () => new Response(JSON.stringify({ revision: 2 }), { headers: { 'content-type': 'application/json' } });
-beforeEach(() => {
+beforeEach(async () => {
   storage = new SharedStorage();
   manager = new MemoryLockManager();
   host = new EventTarget();
@@ -38,6 +38,9 @@ beforeEach(() => {
     navigator: { value: { locks: manager }, configurable: true },
   });
   Object.defineProperty(globalThis, 'window', { value: host, configurable: true });
+  globalThis.fetch = async () => Response.json({ learningProtocolVersion: 2, writeToken: 'protocol-fixture-token', sourceId: 'protocol-fixture-source' });
+  await first.api.getSession();
+  await second.api.getSession();
 });
 afterEach(() => {
   if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);

@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { Store, StoreError, parseObservationRequest } from '../src/server/store.js';
+import { migrateLearningSchemaV1ToV2 } from '../src/server/learning-schema.js';
+import { LEGACY_LEARNING_SCHEMA_SQL } from './helpers/legacy-learning-schema.js';
 import type { Concept, ObservationRequest } from '../src/shared/types.js';
 
 const now = '2026-01-10T12:00:00.000Z';
@@ -87,23 +89,29 @@ test('mental evidence freezes original half life and decay without changing anch
   } finally { f.cleanup(); }
 });
 
-test('additive SQLite migration leaves legacy stored fields and canonical retry payload unchanged', () => {
-  const f = fixture();
+test('explicit legacy SQLite migration leaves stored fields and canonical retry payload unchanged', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'lm-evidence-legacy-'));
+  const dbPath = join(dataDir, 'test.sqlite');
+  const db = new DatabaseSync(dbPath);
+  let store: Store | undefined;
   try {
-    f.store.addObservation(request({ answer: 'legacy answer' }), null);
-    f.store.close();
-    const db = new DatabaseSync(f.dbPath);
-    const before = db.prepare('SELECT request_payload, answer, half_life_days FROM observations').get();
+    db.exec(LEGACY_LEARNING_SCHEMA_SQL);
     db.exec('ALTER TABLE observations DROP COLUMN evidence_mode');
-    db.close();
-    f.reopen(true);
-    assert.equal(Object.hasOwn(f.store.getObservations()[0]!, 'evidenceMode'), false);
-    assert.equal(f.store.addObservation(request({ answer: 'legacy answer' }), null).status, 'duplicate');
-    const migrated = new DatabaseSync(f.dbPath);
-    assert.deepEqual(migrated.prepare('SELECT request_payload, answer, half_life_days FROM observations').get(), before);
-    assert.equal((migrated.prepare('SELECT evidence_mode FROM observations').get() as { evidence_mode: null }).evidence_mode, null);
-    migrated.close();
-  } finally { f.cleanup(); }
+    const old = request({ answer: 'legacy answer' });
+    const parsed = parseObservationRequest(old);
+    const payload = JSON.stringify(Object.fromEntries(Object.entries(parsed).sort(([a], [b]) => a.localeCompare(b))));
+    db.prepare(`INSERT INTO observations(namespace,event_id,concept_id,source_revision,observed_at,recorded_at,config_revision,
+      half_life_days,anchor_event_id,elapsed_days,decay,answer,rating,exposure,observed_exposure,learning_json,request_payload)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run('synthetic',parsed.eventId,parsed.conceptId,parsed.sourceRevision,
+      parsed.observedAt,now,parsed.configRevision,7,null,null,null,parsed.answer,parsed.rating,parsed.exposure,0,null,payload);
+    const before = db.prepare('SELECT request_payload, answer, half_life_days FROM observations').get();
+    migrateLearningSchemaV1ToV2(db, { recordedAt: now });
+    store = new Store({ dbPath, namespace: 'synthetic', now: () => new Date(now) });
+    assert.equal(Object.hasOwn(store.getObservations()[0]!, 'evidenceMode'), false);
+    assert.equal(store.addObservation(old, null).status, 'duplicate');
+    assert.deepEqual(db.prepare('SELECT request_payload, answer, half_life_days FROM observations').get(), before);
+    assert.equal((db.prepare('SELECT evidence_mode FROM observations').get() as { evidence_mode: null }).evidence_mode, null);
+  } finally { store?.close(); db.close(); rmSync(dataDir, { recursive: true, force: true }); }
 });
 
 test('JSON export, preview, restore and repeated imports preserve explicit modes and absent legacy mode', () => {
@@ -113,7 +121,8 @@ test('JSON export, preview, restore and repeated imports preserve explicit modes
       donor.store.addObservation(request({ eventId, ...(evidenceMode ? { evidenceMode } : {}) }), null);
     }
     const data = JSON.parse(JSON.stringify(donor.store.exportData(source, [concept])));
-    assert.equal(data.schemaVersion, 1);
+    assert.equal(data.schemaVersion, 2);
+    assert.deepEqual(data.observationRevisions, []);
     const preview = target.store.previewImport(data, options, source, [concept]);
     assert.equal(preview.canImport, true, JSON.stringify(preview.issues));
     const commit = { data, options, importId: 'restore', previewToken: preview.token, confirmed: true as const };

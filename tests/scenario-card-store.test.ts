@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parsePracticeAttemptRequest, parsePracticeCardRequest } from '../src/server/practice-validation.js';
+import { migrateLearningSchemaV1ToV2 } from '../src/server/learning-schema.js';
+import { LEGACY_LEARNING_SCHEMA_SQL } from './helpers/legacy-learning-schema.js';
 import { Store, StoreError } from '../src/server/store.js';
 import type { PracticeAttemptRequest, PracticeCardRequest } from '../src/shared/practice.js';
 import type { Concept } from '../src/shared/types.js';
@@ -119,7 +121,7 @@ test('scenario parser and store enforce hint availability, stage shape, and non-
   }
 });
 
-test('old practice schema migrates transactionally while preserving row order, sources, namespaces, and request receipts', () => {
+test('complete legacy practice schema explicitly migrates transactionally while preserving row order, sources, namespaces, and request receipts', () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'scenario-schema-migration-'));
   const dbPath = join(dataDir, 'living-memory.sqlite');
   const rootRequest: PracticeCardRequest = {
@@ -186,6 +188,16 @@ test('old practice schema migrates transactionally while preserving row order, s
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     'legacy', oldAttempt.eventId, oldAttempt.cardId, oldAttempt.cardEventId, '2026-01-01T00:01:00.000Z', '2026-01-01T00:02:00.000Z', oldAttempt.answer, null, null, oldAttempt.exposure, 0, oldAttempt.cue, oldAttempt.outcome, oldAttempt.checkNotes, canonical(parsePracticeAttemptRequest(oldAttempt)),
   );
+  // Complete the independently defined legacy baseline; existing old practice DDL stays intact.
+  db.exec(LEGACY_LEARNING_SCHEMA_SQL);
+  const beforeCards = db.prepare('SELECT rowid, * FROM practice_cards ORDER BY rowid').all();
+  const beforeSources = db.prepare('SELECT rowid, * FROM practice_card_sources ORDER BY rowid').all();
+  const beforeAttempts = db.prepare('SELECT rowid, * FROM practice_attempts ORDER BY rowid').all();
+  migrateLearningSchemaV1ToV2(db, { recordedAt: NOW });
+  for (const [table, before] of [['practice_cards', beforeCards], ['practice_card_sources', beforeSources], ['practice_attempts', beforeAttempts]] as const) {
+    const after = db.prepare(`SELECT rowid, * FROM ${table} ORDER BY rowid`).all();
+    assert.deepEqual(after.map(row => Object.fromEntries(Object.keys(before[0]).map(key => [key, row[key]]))), before.map(row => ({ ...row })));
+  }
   db.close();
 
   try {

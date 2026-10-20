@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { buildImportPlan } from '../src/server/import-plan.js';
 import { Store, StoreError } from '../src/server/store.js';
-import { MODEL_VERSION, type ApplicationRecord, type Concept, type ExportData, type RelationSuggestion } from '../src/shared/types.js';
+import { MODEL_VERSION, type ApplicationRecord, type Concept, type ExportData, type ExportDataV1, type RelationSuggestion } from '../src/shared/types.js';
 
 const now = '2026-01-10T00:00:00.000Z';
 const options = { restoreLayout: false, restoreReviewPlan: false };
@@ -18,7 +18,7 @@ const relation: RelationSuggestion = { operation: 'change', source: { conceptId:
 function application(overrides: Partial<ApplicationRecord> = {}): ApplicationRecord {
   return { eventId: 'application-alpha', conceptId: 'backup-alpha', sourceRevision: 'a1', occurredAt: '2026-01-02T00:00:00.000Z', recordedAt: '2026-01-02T00:01:00.000Z', kind: 'application', context: 'synthetic context', content: 'synthetic evidence', outcome: 'unverified', assistance: 'unknown', result: '', limitations: '', insight: '', correction: '', references: '', relationSuggestion: relation, ...overrides };
 }
-function data(overrides: Partial<ExportData> = {}): ExportData {
+function data(overrides: Partial<ExportDataV1> = {}): ExportDataV1 {
   const config = { modelVersion: MODEL_VERSION, halfLifeDays: 7, revision: 1 };
   return { schemaVersion: 1, exportedAt: '2026-01-09T00:00:00.000Z', source: { ...source, name: 'synthetic backup root' }, concepts: [{ id: 'backup-alpha', title: 'Manifest Alpha', source: alpha.source }, { id: 'backup-beta', title: 'Manifest Beta', source: beta.source }], config, configHistory: [config], anchors: [], observations: [], retentions: [], applications: [application()], corrections: [], layout: {}, ...overrides };
 }

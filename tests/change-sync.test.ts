@@ -26,7 +26,7 @@ test('change subscription handles unnamed frames, reconnects, and closes cleanly
   const changes: unknown[] = [];
   const connections: boolean[] = [];
   const unsubscribe = subscribeToChanges({
-    createEventSource: () => source,
+    createEventSource: url => { assert.equal(url, '/api/changes?learningProtocol=2'); return source; },
     onChange: (notification) => changes.push(notification),
     onConnected: (_notification, reconnected) => connections.push(reconnected),
   });

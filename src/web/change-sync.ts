@@ -73,7 +73,7 @@ export function subscribeToChanges(options: ChangeSubscriptionOptions): () => vo
   });
   let eventSource: ChangeEventSource;
   try {
-    eventSource = createEventSource(options.url ?? '/api/changes');
+    eventSource = createEventSource(options.url ?? '/api/changes?learningProtocol=2');
   } catch (error) {
     options.onError?.(error instanceof Event ? error : new Event('error'));
     return () => undefined;

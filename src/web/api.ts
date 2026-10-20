@@ -1,3 +1,4 @@
+import { LEARNING_PROTOCOL_VERSION, LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, supportsLearningProtocol, isLearningProtocolExempt } from '../shared/learning-protocol';
 import type {
   ApplicationRecordRequest,
   ConceptHistory,
@@ -28,7 +29,7 @@ import type { ActivityViewPage } from '../shared/activity-reference-status';
 import { PendingCoordinationError, withPendingStorageLock, withPendingSyncLock } from './pending-coordination';
 import { BULK_REQUEST_TIMEOUT_MS, RequestDeadlineError, withRequestDeadline } from './request-deadline';
 
-export type SessionResponse = LocalSession & { user?: AccountUser };
+export type SessionResponse = LocalSession & { user?: AccountUser; learningProtocolVersion: typeof LEARNING_PROTOCOL_VERSION };
 
 export interface PendingWriteError {
   code: string;
@@ -103,6 +104,9 @@ const tokenInstances = new Map<string, string>();
 let activeScope: { sourceId: string; instanceId: string } | null = null;
 let scopeConfigured = false;
 let scopeGeneration = 0;
+let protocolConfirmation: { generation: number; session: SessionResponse } | null = null;
+interface ProtocolHandshake { generation: number; promise: Promise<SessionResponse> }
+let protocolHandshake: ProtocolHandshake | null = null;
 function instanceError(): ApiRequestError {
   return new ApiRequestError('知识空间实例已变化，请重新加载页面后确认操作。', { code: 'INSTANCE_MISMATCH', status: 409 });
 }
@@ -116,9 +120,12 @@ function bindToken(session: LocalSession): string {
 /** Only the authenticated loader commits an active scope; GET alone never does. */
 export function configureSessionScope(session: LocalSession | null): void {
   const next = session ? { sourceId: session.sourceId.trim(), instanceId: bindToken(session) } : null;
-  if (!scopeConfigured || next?.sourceId !== activeScope?.sourceId || next?.instanceId !== activeScope?.instanceId) scopeGeneration++;
+  if (!session || !scopeConfigured || next?.sourceId !== activeScope?.sourceId || next?.instanceId !== activeScope?.instanceId) {
+    scopeGeneration++; protocolConfirmation = null;
+  }
   scopeConfigured = true;
   activeScope = next;
+  if (!session) protocolConfirmation = null;
 }
 interface QueueScope { sourceId: string; instanceId: string; generation: number; lock: string }
 function captureScope(sourceId: string): QueueScope {
@@ -137,12 +144,19 @@ function scopedKey(prefix: string, source: string, instance: string): string {
 }
 
 async function getSession(): Promise<SessionResponse> {
+  const generation = scopeGeneration;
   const session = await requestJson<SessionResponse>('/session', { cache: 'no-store' });
+  if (generation !== scopeGeneration) throw instanceError();
+  if (!supportsLearningProtocol(session?.learningProtocolVersion)) {
+    protocolConfirmation = null;
+    throw new ApiRequestError(LEARNING_PROTOCOL_MESSAGE, { code: LEARNING_PROTOCOL_ERROR, status: 426 });
+  }
   if (!session || typeof session.writeToken !== 'string' || !session.writeToken.trim()
       || typeof session.sourceId !== 'string' || !session.sourceId.trim()) {
     throw new ApiRequestError('无法取得有效的本地会话，请重新连接。', { code: 'SESSION_INVALID' });
   }
   bindToken(session);
+  protocolConfirmation = { generation, session };
   return session;
 }
 
@@ -510,6 +524,39 @@ async function parseError(response: Response, signal: AbortSignal): Promise<ApiR
 
 async function requestBody<T>(path: string, init: RequestInit, consume: (response: Response) => Promise<T>, bulk = false): Promise<T> {
   try {
+    init.signal?.throwIfAborted();
+    const generation = scopeGeneration;
+    if (!isLearningProtocolExempt(path)) {
+      if (protocolConfirmation?.generation !== generation) {
+        if (protocolHandshake?.generation !== generation) {
+          const entry: ProtocolHandshake = { generation, promise: getSession() };
+          protocolHandshake = entry;
+          entry.promise = entry.promise.finally(() => { if (protocolHandshake === entry) protocolHandshake = null; });
+        }
+        const handshake = protocolHandshake!.promise;
+        const callerSignal = init.signal;
+        if (callerSignal) {
+          callerSignal.throwIfAborted();
+          // Cancellation releases this caller, not other callers sharing a handshake.
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = () => { callerSignal.removeEventListener('abort', onAbort); reject(callerSignal.reason); };
+            callerSignal.addEventListener('abort', onAbort, { once: true });
+            handshake.then(() => { callerSignal.removeEventListener('abort', onAbort); resolve(); }, error => {
+              callerSignal.removeEventListener('abort', onAbort); reject(error);
+            });
+          });
+        } else await handshake;
+      }
+      if (generation !== scopeGeneration) throw instanceError();
+      const confirmed = protocolConfirmation?.session;
+      if (!confirmed || protocolConfirmation?.generation !== generation) {
+        throw new ApiRequestError(LEARNING_PROTOCOL_MESSAGE, { code: LEARNING_PROTOCOL_ERROR, status: 426 });
+      }
+      if (activeScope && confirmed.sourceId.trim() !== activeScope.sourceId) {
+        throw new ApiRequestError('知识源已变化，请重新连接后确认操作。', { code: 'SOURCE_MISMATCH', status: 409 });
+      }
+      if (activeScope && normalizeInstanceId(confirmed.instanceId) !== activeScope.instanceId) throw instanceError();
+    }
     return await withRequestDeadline(async signal => {
       let response: Response;
       try {
@@ -519,6 +566,7 @@ async function requestBody<T>(path: string, init: RequestInit, consume: (respons
           signal,
           headers: {
             Accept: 'application/json',
+            [LEARNING_PROTOCOL_HEADER]: String(LEARNING_PROTOCOL_VERSION),
             ...(init.body ? { 'Content-Type': 'application/json' } : {}),
             ...init.headers,
           },

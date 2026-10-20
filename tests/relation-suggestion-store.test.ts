@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { Store, StoreError, parseApplicationRequest } from '../src/server/store.js';
+import { migrateLearningSchemaV1ToV2 } from '../src/server/learning-schema.js';
+import { LEGACY_LEARNING_SCHEMA_SQL } from './helpers/legacy-learning-schema.js';
 import { parseRelationSuggestion } from '../src/shared/relation-suggestions.js';
 import type { ApplicationRecordRequest, Concept, RelationSuggestion } from '../src/shared/types.js';
 
@@ -74,18 +76,22 @@ test('relations survive mixed history and restart with canonical conflicts and u
   } finally { store.close(); f.cleanup(); }
 });
 
-test('legacy migration adds only nullable column and preserves old request payload and omission', () => {
+test('explicit legacy migration adds only nullable column and preserves old request payload and omission', () => {
   const f = fixture();
-  let store = f.open();
   const old = request();
-  store.addApplication(old); store.close();
   const db = new DatabaseSync(f.dbPath);
-  const payload = (db.prepare('SELECT request_payload FROM applications').get() as { request_payload: string }).request_payload;
+  db.exec('PRAGMA foreign_keys=ON');
+  db.exec(LEGACY_LEARNING_SCHEMA_SQL);
   db.exec('ALTER TABLE applications DROP COLUMN relation_suggestion_json');
+  const parsed = parseApplicationRequest(old);
+  const payload = JSON.stringify(Object.fromEntries(Object.entries(parsed).sort(([a], [b]) => a.localeCompare(b))));
+  db.prepare(`INSERT INTO applications(namespace,event_id,concept_id,source_revision,occurred_at,recorded_at,kind,context,content,outcome,assistance,result,limitations,insight,correction,references_text,request_payload)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run('relations',parsed.eventId,parsed.conceptId,parsed.sourceRevision,parsed.occurredAt,now,parsed.kind,parsed.context,parsed.content,parsed.outcome,parsed.assistance,parsed.result,parsed.limitations,parsed.insight,parsed.correction,parsed.references,payload);
   const schema = db.prepare('PRAGMA table_info(applications)').all();
+  migrateLearningSchemaV1ToV2(db, { recordedAt: now });
   db.close();
+  let store = f.open();
   try {
-    store = f.open();
     const migrated = new DatabaseSync(f.dbPath);
     try {
       const columns = migrated.prepare('PRAGMA table_info(applications)').all() as Array<{ name: string; notnull: number; dflt_value: unknown }>;

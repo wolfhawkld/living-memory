@@ -32,6 +32,8 @@ export interface ImportCounts {
   /** Present only when the backup contains the additive practice section. */
   practiceCards?: number;
   practiceAttempts?: number;
+  /** New assessment/adoption decisions; absent on legacy previews and receipts. */
+  observationRevisions?: number;
 }
 export interface ImportPreview {
   sourceId: string;

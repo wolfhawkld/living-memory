@@ -1,5 +1,7 @@
 # 运行时间驱动原型
 
+当前开发版的学习 JSON 已升为 v2（仍接收旧 v1），学习结构与协议也已增加升级门禁；本页此前标注 v1 / 加列的段落为对应功能的历史实现记录。使用当前 develop 前按[版本兼容](../releases/versioning-and-compatibility.md)与[新目录迁移](instance-migration.md)处理已有库。
+
 本地预览实现 `time-only-v0`：一个全局 H，学习/重温确认建立时间起点，查询、阅读、场景调用和实际应用都不自动重置起点。知识源会建立完整的内存索引，Web 再按目录领域投影当前图谱；当前还提供场景调用与信心记录、本人确认的长期保持、实际应用/总结、逐概念历史、学习数据导入恢复和改名/移动后的人工历史衔接，分别见[场景调用说明](scenario-confidence-retention.md)、[实际应用与总结](application-records.md)、[逐概念学习历史](concept-history.md)、[学习数据导入恢复](learning-data-import.md)和[概念身份说明](concept-identity.md)。在线部署、语音和 Obsidian 宿主仍属后续范围。领域投影的详细契约见[知识域视图](domain-views.md)。
 
 少量复习、知识薄弱点总览和节点回忆变化追踪也已接入，入口与统计边界见[少量复习说明](brief-review.md)、[知识薄弱点总览](learning-overview.md)和[节点回忆变化追踪](learning-progress.md)。

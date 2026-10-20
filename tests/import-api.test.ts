@@ -56,7 +56,7 @@ async function runningApp(accountsEnabled = false): Promise<RunningApp> {
     const body = options.rawBody ?? (options.body === undefined ? undefined : JSON.stringify(options.body));
     const req = httpRequest({
       hostname: '127.0.0.1', port, path, method: options.method ?? 'GET',
-      headers: {
+      headers: { 'X-LM-Learning-Protocol': '2',
         host: `127.0.0.1:${port}`,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         ...(options.cookie ? { cookie: options.cookie } : {}),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { queuePendingWrite, getPendingWrites, flushPendingWrites } from '../src/web/api.js';
+import { api, queuePendingWrite, getPendingWrites, flushPendingWrites } from '../src/web/api.js';
 import type { ApplicationRecordRequest } from '../src/shared/types.js';
 import { createMemoryLockManager } from './helpers/memory-lock-manager.js';
 
@@ -17,6 +17,8 @@ test('offline relation suggestions freeze nested endpoint and before/after metad
   if (typeof globalThis.CustomEvent !== 'function') Object.defineProperty(globalThis, 'CustomEvent', { configurable: true,
     value: class extends Event { detail: unknown; constructor(type: string, init?: CustomEventInit) { super(type); this.detail = init?.detail; } } });
   try {
+    globalThis.fetch = async () => Response.json({ learningProtocolVersion: 2, writeToken: 'token', sourceId: 'relation-space' });
+    await api.getSession();
     const payload: ApplicationRecordRequest = { eventId: 'frozen-relation', conceptId: 'primary', sourceRevision: 'primary-v1',
       occurredAt: '2026-10-01T10:00:00Z', kind: 'summary', context: '', content: 'relation only', outcome: 'unverified',
       assistance: 'resources', result: '', limitations: '', insight: '', correction: '', references: '',

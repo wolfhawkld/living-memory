@@ -194,7 +194,7 @@ function mockCli(stateDir: string, sessionExtra: object = {}) {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ path, method, body, headers: new Headers(init?.headers) });
     let data: unknown;
-    if (path === '/api/session') data = { writeToken: 'synthetic-write-token', sourceId: 'stable-source', user: { id: 'alice' }, ...sessionExtra };
+    if (path === '/api/session') data = { learningProtocolVersion: 2, writeToken: 'synthetic-write-token', sourceId: 'stable-source', user: { id: 'alice' }, ...sessionExtra };
     else if (path === '/api/refresh') data = { status: 'refreshed' };
     else if (path === '/api/snapshot') data = snapshot;
     else if (path === '/api/activity/settings') data = { sourceId: 'stable-source', settings: { enabled: true, epoch: 0, revision: 0 } };

@@ -1,5 +1,7 @@
 # 场景回访与应用 / 总结交接
 
+当前开发版的学习 JSON 已升为 v2（仍接收旧 v1），学习结构与协议也已增加升级门禁；本页此前标注 v1 / 加列的段落为对应功能的历史实现记录。使用当前 develop 前按[版本兼容](../releases/versioning-and-compatibility.md)与[新目录迁移](instance-migration.md)处理已有库。
+
 2026-10-02，本轮补齐[核心记忆流程](../planning/core-workflow-goal-2026-10-02.md)中的两个入口，沿用既有[场景练习](scenario-confidence-retention.md)与[应用记录](application-records.md)。
 
 ## 如何使用

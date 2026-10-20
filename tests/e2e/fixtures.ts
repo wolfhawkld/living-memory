@@ -11,6 +11,7 @@ export interface TestOwnerSession {
 }
 
 interface SessionResponse {
+  learningProtocolVersion?: number;
   writeToken?: string;
   sourceId?: string;
   user?: AccountUser;
@@ -70,6 +71,7 @@ export async function authenticateTestOwner(request: APIRequestContext): Promise
 
   const sessionResponse = await request.get('/api/session');
   const session = await jsonResponse<SessionResponse>('/api/session', sessionResponse);
+  if (session.learningProtocolVersion !== 2) throw new Error('E2E authentication requires learning protocol 2.');
   if (typeof session.sourceId !== 'string' || session.sourceId.trim().length === 0
       || typeof session.writeToken !== 'string' || session.writeToken.trim().length === 0) {
     throw new Error('E2E authentication session is missing source or write credentials.');
@@ -90,6 +92,15 @@ interface E2EFixtures {
  * same cookie is copied into the fresh browser context in memory.
  */
 export const test = base.extend<E2EFixtures>({
+  // API assertions use their own client. Never inject this header into the
+  // browser context: UI requests must prove the product sends it itself.
+  request: async ({ playwright, baseURL }, use) => {
+    const request = await playwright.request.newContext({
+      baseURL,
+      extraHTTPHeaders: { 'X-LM-Learning-Protocol': '2' },
+    });
+    try { await use(request); } finally { await request.dispose(); }
+  },
   authenticatedSession: [async ({ request, context }, use) => {
     const session = await authenticateTestOwner(request);
     const storage = await request.storageState();
@@ -97,6 +108,7 @@ export const test = base.extend<E2EFixtures>({
 
     const browserSessionResponse = await context.request.get('/api/session');
     const browserSession = await jsonResponse<SessionResponse>('/api/session', browserSessionResponse);
+    if (browserSession.learningProtocolVersion !== 2) throw new Error('E2E browser context requires learning protocol 2.');
     if (browserSession.user?.id !== session.userId || browserSession.sourceId !== session.sourceId) {
       throw new Error('E2E browser context did not receive the synthetic admin session.');
     }

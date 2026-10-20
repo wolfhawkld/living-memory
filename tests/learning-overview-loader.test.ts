@@ -18,6 +18,7 @@ test('overview read is namespace-bound, uncached and cancellable, without a writ
   const signal = new AbortController().signal;
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url) === '/api/session') return Response.json({ learningProtocolVersion: 2, writeToken: 'overview-fixture-token', sourceId });
     calls += 1;
     assert.equal(url, '/api/learning-overview');
     assert.equal(init?.method ?? 'GET', 'GET');

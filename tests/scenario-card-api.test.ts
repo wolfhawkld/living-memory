@@ -78,7 +78,7 @@ async function running(accountsEnabled = false): Promise<RunningClient> {
       port,
       path,
       method: options.method ?? 'GET',
-      headers: {
+      headers: { 'X-LM-Learning-Protocol': '2',
         host: `127.0.0.1:${port}`,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         ...(options.cookie ? { cookie: options.cookie } : {}),

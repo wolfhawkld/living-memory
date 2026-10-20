@@ -92,7 +92,7 @@ async function running(): Promise<RunningApp> {
       port,
       path,
       method: options.method ?? 'GET',
-      headers: {
+      headers: { 'X-LM-Learning-Protocol': '2',
         host: '127.0.0.1:4317',
         ...(body ? { 'content-type': 'application/json' } : {}),
         ...(options.headers ?? {}),
@@ -141,8 +141,8 @@ async function openChanges(client: RunningApp, headers: Record<string, string> =
     const req = httpRequest({
       hostname: '127.0.0.1',
       port: client.port,
-      path: '/api/changes',
-      headers: { host: '127.0.0.1:4317', ...headers },
+      path: '/api/changes?learningProtocol=2',
+      headers: { 'X-LM-Learning-Protocol': '2', host: '127.0.0.1:4317', ...headers },
     }, (response) => {
       if (response.statusCode !== 200) {
         let body = '';
@@ -380,7 +380,7 @@ test('token and source guards reject writes without changing the projection or f
     const concept = alpha(before);
 
     const wrongSource = `${currentSession.sourceId}-wrong`;
-    const changesGuard = await client.request('/api/changes', { headers: { 'x-lm-source-id': wrongSource } });
+    const changesGuard = await client.request('/api/changes?learningProtocol=2', { headers: { 'x-lm-source-id': wrongSource } });
     assert.equal(changesGuard.status, 409);
     assert.equal(changesGuard.json<{ error: { code: string } }>().error.code, 'SOURCE_MISMATCH');
 

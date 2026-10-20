@@ -17,8 +17,8 @@ class StorageMemory {
   removeItem(key:string) { this.values.delete(key); }
 }
 const pending = (id:string) => ({ id, method:'PUT' as const,path:'/config',payload:{revision:1},eventId:null,conceptId:null,label:'config' });
-const old = {writeToken:'old',sourceId:'same'};
-const fresh = {writeToken:'new',sourceId:'same',instanceId:'restored'};
+const old = {learningProtocolVersion:2,writeToken:'old',sourceId:'same'};
+const fresh = {learningProtocolVersion:2,writeToken:'new',sourceId:'same',instanceId:'restored'};
 const ok = () => new Response(JSON.stringify({status:'accepted'}));
 async function setup(name:string) {
   const mod:typeof import('../src/web/api') = await import(new URL(`../src/web/api.ts?instance=${name}`,import.meta.url).href);
@@ -29,14 +29,24 @@ async function setup(name:string) {
   return {mod,storage};
 }
 
+async function confirmProtocol(mod: typeof import('../src/web/api'), session: typeof old & { instanceId?: string }) {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => Response.json(session);
+    await mod.api.getSession();
+  } finally { globalThis.fetch = original; }
+}
+
 test('legacy bytes preserved and restored instance has separate queue and headers', async () => {
   const {mod,storage} = await setup('separate');
   mod.configureSessionScope(old);
+  await confirmProtocol(mod,old);
   await mod.queuePendingWrite('same',pending('legacy'));
   const legacyKey='living-memory.pending-writes.v1.same';
   const bytes=storage.getItem(legacyKey);
   assert.ok(bytes);
   mod.configureSessionScope(fresh);
+  await confirmProtocol(mod,fresh);
   assert.deepEqual(mod.getPendingWrites('same'),[]);
   let sends=0;
   globalThis.fetch=async (_url,init) => { sends++;assert.equal((init?.headers as Record<string,string>)['x-lm-instance-id'],'restored');return ok(); };
@@ -50,6 +60,7 @@ test('legacy bytes preserved and restored instance has separate queue and header
 test('midflight restored scope preserves old queue and new queue without stale error annotation', async () => {
   const {mod,storage}=await setup('flight');
   mod.configureSessionScope(old);
+  await confirmProtocol(mod,old);
   await mod.queuePendingWrite('same',pending('old'));
   const bytes=storage.getItem('living-memory.pending-writes.v1.same');
   let release!:(response:Response)=>void;
@@ -59,6 +70,7 @@ test('midflight restored scope preserves old queue and new queue without stale e
   const flushing=mod.flushPendingWrites('old','same');
   await ready;
   mod.configureSessionScope(fresh);
+  await confirmProtocol(mod,fresh);
   await mod.queuePendingWrite('same',pending('new'));
   release(new Response(JSON.stringify({error:{code:'TOKEN_REQUIRED'}}),{status:401}));
   // A late recovery response is not allowed to reactivate an old instance.
@@ -76,6 +88,7 @@ test('old token retains original instance despite newer GET and direct mismatch 
   session=fresh;
   await mod.api.getSession();
   mod.configureSessionScope(fresh);
+  await confirmProtocol(mod,fresh);
   let writes=0;
   globalThis.fetch=async()=>{writes++;return ok();};
   await assert.rejects(mod.writeJson('/config',{},'old','same'),{code:'INSTANCE_MISMATCH'});
@@ -88,6 +101,7 @@ test('old token retains original instance despite newer GET and direct mismatch 
 test('logout blocks writes and queue capture until explicit new scope configuration', async () => {
   const {mod}=await setup('logout');
   mod.configureSessionScope(old);
+  await confirmProtocol(mod,old);
   mod.configureSessionScope(null);
   assert.equal(await mod.queuePendingWrite('same',pending('late')),null);
   let sends=0;
@@ -99,6 +113,7 @@ test('logout blocks writes and queue capture until explicit new scope configurat
 test('old token 401 cannot retry against restored instance of same source', async () => {
   const {mod}=await setup('recovery');
   mod.configureSessionScope(old);
+  await confirmProtocol(mod,old);
   let writes=0; let sessions=0;
   globalThis.fetch=async url=>{
     if (String(url).endsWith('/session')) { sessions++;return new Response(JSON.stringify(fresh)); }
@@ -118,6 +133,7 @@ test('old token 401 cannot retry against restored instance of same source', asyn
 test('successful old ack cannot clean either queue after scope changes', async () => {
   const {mod,storage}=await setup('ack');
   mod.configureSessionScope(old);
+  await confirmProtocol(mod,old);
   await mod.queuePendingWrite('same',pending('old'));
   const original=storage.getItem('living-memory.pending-writes.v1.same');
   let release!:(response:Response)=>void; let started!:()=>void;
@@ -126,6 +142,7 @@ test('successful old ack cannot clean either queue after scope changes', async (
   const flushing=mod.flushPendingWrites('old','same');
   await ready;
   mod.configureSessionScope(fresh);
+  await confirmProtocol(mod,fresh);
   await mod.queuePendingWrite('same',pending('new'));
   const restored=storage.getItem('living-memory.pending-writes.v1.same:instance:restored');
   release(ok());
@@ -139,6 +156,7 @@ test('same instance rotation updates credentials once without interrupting batch
   const first={...fresh,writeToken:'first'};
   const rotated={...fresh,writeToken:'second'};
   mod.configureSessionScope(first);
+  await confirmProtocol(mod,first);
   await mod.queuePendingWrite('same',pending('rotate'));
   const tokens:string[]=[];
   globalThis.fetch=async(url,init)=>{
@@ -156,6 +174,7 @@ test('same instance rotation updates credentials once without interrupting batch
 test('a token cannot be rebound to another instance by a late GET', async () => {
   const {mod}=await setup('binding');
   mod.configureSessionScope(old);
+  await confirmProtocol(mod,old);
   globalThis.fetch=async()=>new Response(JSON.stringify({...fresh,writeToken:'old'}));
   await assert.rejects(mod.api.getSession(),{code:'INSTANCE_MISMATCH'});
 });
@@ -163,6 +182,7 @@ test('a token cannot be rebound to another instance by a late GET', async () => 
 test('late same-instance recovery cannot notify after leaving and returning to scope', async () => {
   const {mod}=await setup('late-generation');
   mod.configureSessionScope(fresh);
+  await confirmProtocol(mod,fresh);
   let release!:(response:Response)=>void; let started!:()=>void;
   const ready=new Promise<void>(resolve=>{started=resolve;});
   let writes=0;
@@ -177,6 +197,7 @@ test('late same-instance recovery cannot notify after leaving and returning to s
   await ready;
   mod.configureSessionScope(null);
   mod.configureSessionScope(fresh);
+  await confirmProtocol(mod,fresh);
   release(new Response(JSON.stringify({...fresh,writeToken:'rotated'})));
   await rejection;
   assert.equal(writes,1);

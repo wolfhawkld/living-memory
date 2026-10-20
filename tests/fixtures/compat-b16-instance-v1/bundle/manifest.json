@@ -1,0 +1,149 @@
+{
+  "format": "living-memory-instance",
+  "version": 1,
+  "applicationVersion": "0.0.1-preview.1",
+  "createdAt": "2026-10-16T08:00:00.000Z",
+  "instanceId": "legacy",
+  "files": [
+    {
+      "path": "cli/activity-pending.json",
+      "size": 43,
+      "sha256": "5a6c7d26de5779ee41c1681d02907788e70623c5570ee5cc432e0a2c904b3786"
+    },
+    {
+      "path": "cli/hook-marker.json",
+      "size": 33,
+      "sha256": "1de1c3620252e01f302e0bee1e40940586f32ae5c4ea04ee1653d787cf03685b"
+    },
+    {
+      "path": "cli/learning-receipts.json",
+      "size": 31,
+      "sha256": "2bebbd7c834f31640bd1224dab29b5d92012b56e5e60cbb53eb4cc4f5b12356c"
+    },
+    {
+      "path": "config/cli-session-metadata.json",
+      "size": 40,
+      "sha256": "1f8f139c8105ef33cf097391c993dad1ade2e397940570565fa209391877e980"
+    },
+    {
+      "path": "config/environment.env",
+      "size": 65,
+      "sha256": "670fd49876ebe635863d1f6501b6129061eb8643d4677d890304754fcd15323d"
+    },
+    {
+      "path": "data/accounts.sqlite",
+      "size": 131072,
+      "sha256": "ea258d7cafcc7cc19fe4a865d4d65afb3aef5177c6412be0d607bf653682bbc9"
+    },
+    {
+      "path": "data/living-memory.sqlite",
+      "size": 258048,
+      "sha256": "f33a08c72cc7915dca6e659b02ea601eac609b4f5999ec364450687c1071db37"
+    },
+    {
+      "path": "data/users/47d676d7-cff9-4aa7-99d1-4fb06c431a6e/knowledge/Math/Alpha.md",
+      "size": 90,
+      "sha256": "3d5b7db03177950c92662cfd590e456c726ec01f1a5a5541413bb5d7f8d5c305"
+    },
+    {
+      "path": "data/users/47d676d7-cff9-4aa7-99d1-4fb06c431a6e/knowledge/Root.md",
+      "size": 70,
+      "sha256": "0de876735118e812936b561bd59c9f673bb778223c11b471037f229c79520d70"
+    },
+    {
+      "path": "data/users/47d676d7-cff9-4aa7-99d1-4fb06c431a6e/knowledge/image.bin",
+      "size": 6,
+      "sha256": "0d4bbfa5359703098c5485590d735c89dcfc6c41b2b6f1a5fc5c12ee3f6d0f81"
+    },
+    {
+      "path": "knowledge/owner/Math/Alpha.md",
+      "size": 89,
+      "sha256": "4c2dc352d00db913fbd443ae8d61f920bf1a14b9a555cba6ba58a3b739c6576e"
+    },
+    {
+      "path": "knowledge/owner/Root.md",
+      "size": 70,
+      "sha256": "0de876735118e812936b561bd59c9f673bb778223c11b471037f229c79520d70"
+    },
+    {
+      "path": "knowledge/owner/image.bin",
+      "size": 6,
+      "sha256": "eff390407e717f0188201b3e3f5cdcd4048bcb3bb70d0f78723493d8d1adc96f"
+    }
+  ],
+  "databases": [
+    {
+      "path": "data/living-memory.sqlite",
+      "userVersion": 0,
+      "schemaHash": "7f0dd5f5e12b37b16c3f1094f76ec628a813f81744bb14449700ba1ef81b83ee",
+      "tables": {
+        "activity_deletions": 2,
+        "activity_deliveries": 2,
+        "activity_events": 2,
+        "activity_settings": 2,
+        "anchors": 2,
+        "applications": 0,
+        "config_history": 2,
+        "corrections": 0,
+        "identity_bindings": 2,
+        "identity_catalog": 4,
+        "import_receipts": 0,
+        "imported_concepts": 0,
+        "layouts": 2,
+        "namespaces": 2,
+        "observations": 2,
+        "practice_attempts": 0,
+        "practice_card_sources": 0,
+        "practice_cards": 0,
+        "relation_reviews": 0,
+        "retentions": 2,
+        "review_plans": 2
+      }
+    },
+    {
+      "path": "data/accounts.sqlite",
+      "userVersion": 0,
+      "schemaHash": "5e32a59c53f472567b57525b895e7d116f342160e337beea819fe34c45d6b3b9",
+      "tables": {
+        "accounts": 2,
+        "feishu_binding_requests": 2,
+        "feishu_bindings": 1,
+        "feishu_card_views": 2,
+        "feishu_read_receipts": 5,
+        "feishu_review_operations": 2,
+        "feishu_review_sessions": 1,
+        "meta": 1,
+        "sessions": 2
+      }
+    }
+  ],
+  "sources": [
+    {
+      "role": "owner",
+      "userId": "7076a1fb-8bdb-4026-9d7f-8fb19c435167",
+      "identityHash": "198f3f0a9171e0df52279fc197e64915ed54ecfa06021edcb46f6a50cab3171d",
+      "namespace": "kg_198f3f0a9171e0df52279fc197e64915ed54ecfa06021edc",
+      "directory": "knowledge/owner",
+      "displayName": "external-owner-kg"
+    },
+    {
+      "role": "member",
+      "userId": "47d676d7-cff9-4aa7-99d1-4fb06c431a6e",
+      "identityHash": "7307d0aff7e6a43139ee2e372d3a4152d56cc6bb160abd94b32203185d3d9230",
+      "namespace": "kg_7307d0aff7e6a43139ee2e372d3a4152d56cc6bb160abd94",
+      "directory": "data/users/47d676d7-cff9-4aa7-99d1-4fb06c431a6e/knowledge",
+      "displayName": "knowledge"
+    }
+  ],
+  "configuration": [
+    "config/environment.env",
+    "config/cli-session-metadata.json"
+  ],
+  "excluded": [
+    "browser pending writes and drafts",
+    "runtime leases",
+    "old CLI session secrets",
+    "data/unknown-private.bin"
+  ],
+  "browserState": "not-included"
+}

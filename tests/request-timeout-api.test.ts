@@ -17,10 +17,14 @@ class StorageStub implements Storage {
   setItem(key: string, value: string) { this.items.set(key, value); }
 }
 let host: EventTarget;
-beforeEach(() => {
+beforeEach(async () => {
   host = new EventTarget();
   Object.defineProperties(host, { localStorage: { value: new StorageStub() }, navigator: { value: { locks: new MemoryLockManager() } } });
   Object.defineProperty(globalThis, 'window', { configurable: true, value: host });
+  // Timeout cases start after the v2 handshake, as an authenticated view does.
+  globalThis.fetch = async () => json({ writeToken: 'protocol-fixture-token', sourceId: 'space', learningProtocolVersion: 2 });
+  await first.api.getSession();
+  await other.api.getSession();
 });
 afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -144,7 +148,7 @@ test('a stalled session renewal times out without replaying a late response', as
     await sessionStarted.promise;
     t.mock.timers.tick(REQUEST_TIMEOUT_MS);
     await rejected;
-    lateSession.resolve(json({ writeToken: 'new-token', sourceId: 'renewal-space' }));
+    lateSession.resolve(json({ writeToken: 'new-token', sourceId: 'renewal-space', learningProtocolVersion: 2 }));
     await settle();
     assert.equal(writes, 1);
     assert.equal(recovered, 0);

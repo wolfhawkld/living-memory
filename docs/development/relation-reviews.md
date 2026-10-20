@@ -1,5 +1,7 @@
 # 关系建议的人工复核
 
+当前开发版的学习 JSON 已升为 v2（仍接收旧 v1），学习结构与协议也已增加升级门禁；本页此前标注 v1 / 加列的段落为对应功能的历史实现记录。使用当前 develop 前按[版本兼容](../releases/versioning-and-compatibility.md)与[新目录迁移](instance-migration.md)处理已有库。
+
 更新：2026-10-12。LM-014B 在原应用 / 总结下面，独立记录关系建议的处理决定，并核对当前完整知识源。它接续[结构化关系建议](relation-suggestions.md)，与文字修正分别处理。
 
 ## 使用流程

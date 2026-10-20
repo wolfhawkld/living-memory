@@ -117,7 +117,7 @@ async function running(): Promise<RunningApp> {
       port,
       path,
       method: 'GET',
-      headers: {
+      headers: { 'X-LM-Learning-Protocol': '2',
         host: '127.0.0.1:4317',
         ...(options.headers ?? {}),
       },

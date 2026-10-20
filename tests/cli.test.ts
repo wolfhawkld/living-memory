@@ -147,7 +147,7 @@ test('show resolves full concepts and reports ambiguity with candidate IDs', asy
 test('CLI query, show and confirmed review reach concepts outside the default display cap', async () => {
   const client = await runningApp(1);
   try {
-    const legacy = await fetch(`${client.url}/api/snapshot`).then((response) => response.json()) as { concepts: { title: string }[] };
+    const legacy = await fetch(`${client.url}/api/snapshot`, { headers: { 'X-LM-Learning-Protocol': '2' } }).then((response) => response.json()) as { concepts: { title: string }[] };
     assert.deepEqual(legacy.concepts.map((concept) => concept.title), ['Alpha']);
     const query = await runCli(['query', 'Beta'], options(client)) as Record<string, any>;
     assert.equal(query.scope.kind, 'all');
@@ -308,7 +308,7 @@ test('request timeout covers a response body that never finishes', async () => {
   let calls = 0;
   const hangingFetch: typeof fetch = async () => {
     calls += 1;
-    if (calls === 1) return new Response(JSON.stringify({ writeToken: 'secret', sourceId: 'kg_test' }), { status: 200 });
+    if (calls === 1) return new Response(JSON.stringify({ learningProtocolVersion: 2, writeToken: 'secret', sourceId: 'kg_test' }), { status: 200 });
     return new Response(new ReadableStream({ start() { /* deliberately pending */ } }), { status: 200 });
   };
   await expectCliError(() => runCli(['status'], {

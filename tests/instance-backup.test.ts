@@ -115,7 +115,7 @@ test('bundle verification rejects tampering, unsafe paths, duplicate manifests a
     const original=readFileSync(path);
     const cases:[string,(value:typeof manifest)=>void][]=[
       ['unknown format',value=>{value.format='unknown' as typeof value.format;}],
-      ['unknown version',value=>{value.version=2 as 1;}],
+      ['unknown version',value=>{value.version=3 as 2;}],
       ['traversal',value=>{value.files[0].path='../outside';}],
       ['absolute path',value=>{value.files[0].path='/outside';}],
       ['duplicate file path',value=>{value.files.push({...value.files[0]});}],
@@ -203,31 +203,6 @@ test('source symlink and concurrent source modification fail before bundle publi
     const afterOwnEdit=treeHashes(f.options.kgRoot);
     assert.equal(existsSync(f.options.output),false);
     assert.deepEqual(treeHashes(f.options.kgRoot),afterOwnEdit);
-  } finally {f.cleanup();}
-});
-
-test('legacy database with no activity schema migrates only in restored target; partially missing schema is rejected',async()=>{
-  const f=await instanceFixture();
-  try {
-    const {DatabaseSync}=await import('node:sqlite');
-    const path=join(f.options.dataDir,'living-memory.sqlite');
-    const db=new DatabaseSync(path);
-    try {db.exec('DROP TABLE activity_deliveries; DROP TABLE activity_events; DROP TABLE activity_deletions; DROP TABLE activity_settings;');}
-    finally {db.close();}
-    const sourceHash=digest(readFileSync(path));
-    const learning=tableRows(path);
-    const manifest=await backupInstance(f.options);
-    assert.ok(!('activity_events' in manifest.databases.find(entry=>entry.path==='data/living-memory.sqlite')!.tables));
-    const report=await restoreInstance({bundle:f.options.output,target:join(f.base,'legacy-restored'),now});
-    assert.deepEqual(report.schemaMigrations,['activity-tables-v1']);
-    const restored=tableRows(join(report.startup.dataDir,'living-memory.sqlite'));
-    for(const table of ['activity_events','activity_settings','activity_deliveries','activity_deletions'])assert.deepEqual(restored[table],[]);
-    for(const [table,rows] of Object.entries(learning))assert.deepEqual(restored[table],rows);
-    assert.equal(digest(readFileSync(path)),sourceHash);
-    assert.ok(!('activity_events' in tableRows(path)));
-    const partial=new DatabaseSync(path);
-    try {partial.exec('CREATE TABLE activity_events(synthetic TEXT)');}finally{partial.close();}
-    await assert.rejects(backupInstance({...f.options,output:join(f.base,'partial-schema-bundle')}),{code:'INSTANCE_DATABASE_INVALID'});
   } finally {f.cleanup();}
 });
 

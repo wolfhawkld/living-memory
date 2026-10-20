@@ -1,3 +1,4 @@
+import { LEARNING_PROTOCOL_VERSION, LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, supportsLearningProtocol } from '../shared/learning-protocol.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -81,6 +82,7 @@ interface ParsedCommand {
 }
 
 interface SessionResponse {
+  learningProtocolVersion: typeof LEARNING_PROTOCOL_VERSION;
   writeToken: string;
   sourceId: string;
   sourceRootFingerprint?: string;
@@ -338,7 +340,7 @@ class ApiClient {
   }
 
   async json<T>(path: string, init: { method?: string; body?: unknown; write?: boolean; timeoutMs?: number } = {}): Promise<T> {
-    const headers: Record<string, string> = { Accept: 'application/json' };
+    const headers: Record<string, string> = { Accept: 'application/json', [LEARNING_PROTOCOL_HEADER]: String(LEARNING_PROTOCOL_VERSION) };
     if (this.deviceSession) headers.Authorization = `Bearer ${this.deviceSession}`;
     if (init.body !== undefined) headers['Content-Type'] = 'application/json';
     if (init.write) {
@@ -401,6 +403,7 @@ class ApiClient {
 
   async session(): Promise<SessionResponse> {
     const result = await this.json<Partial<SessionResponse>>('/session');
+    if (!supportsLearningProtocol(result?.learningProtocolVersion)) throw new CliError(LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, { status: 426 });
     if (typeof result.writeToken !== 'string' || !result.writeToken.trim() || typeof result.sourceId !== 'string' || !result.sourceId.trim()) {
       throw new CliError('SESSION_INVALID', '本地服务会话不完整，缺少 writeToken 或 sourceId。');
     }
@@ -410,7 +413,7 @@ class ApiClient {
     if (result.user !== undefined && (!result.user || typeof result.user.id !== 'string' || !result.user.id.trim())) throw new CliError('SESSION_INVALID', '本地服务账号主体无效。');
     if (result.instanceId !== undefined && (typeof result.instanceId !== 'string' || !result.instanceId.trim() || result.instanceId.length > 200 || /[\u0000-\u001f\u007f]/.test(result.instanceId))) throw new CliError('SESSION_INVALID', '本地服务实例标识无效。');
     this.instanceId = result.instanceId;
-    return { writeToken: result.writeToken, sourceId: result.sourceId,
+    return { learningProtocolVersion: LEARNING_PROTOCOL_VERSION, writeToken: result.writeToken, sourceId: result.sourceId,
       ...(result.user ? { user: { id: result.user.id } } : {}),
       ...(result.instanceId !== undefined ? { instanceId: result.instanceId } : {}),
       ...(result.sourceRootFingerprint !== undefined ? { sourceRootFingerprint: result.sourceRootFingerprint } : {}) };

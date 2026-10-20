@@ -1,0 +1,153 @@
+{
+  "purpose": "Exact declarations from b16 for old parsing/restore entry early-rejection tests only; not a complete old executable.",
+  "sourceCommit": "b16f0b226c3983573b1eee070618b12075b6edcc",
+  "applicationVersion": "0.0.1-preview.1",
+  "generator": {
+    "parser": "rolldown/utils.parseSync",
+    "version": "1.2.8",
+    "selection": "ExportNamedDeclaration.declaration spans; body bytes unchanged; no imports or complete old binary."
+  },
+  "entries": [
+    {
+      "sourcePath": "src/server/import-plan.ts",
+      "sourceSha256": "a19b2276b22612b3a462bb539277a21ff4998094014ecf2a9d10875ed45ff368",
+      "fixture": "import-plan.source.txt",
+      "fixtureSha256": "4ace44842f01ed8fdafb2d7b48e3de690256bc86be0ba7a66b1e8bf2c6644d7c",
+      "declarations": [
+        {
+          "name": "isRecord",
+          "startOffset": 3849,
+          "endOffset": 3999,
+          "startLine": 125,
+          "endLine": 127,
+          "sha256": "ebf101aa93b06991a45a57308602d07f76c494af9585637967a642acd455470b"
+        },
+        {
+          "name": "invalid",
+          "startOffset": 4001,
+          "endOffset": 4114,
+          "startLine": 129,
+          "endLine": 131,
+          "sha256": "9bff2cbdb7b87a77c960073199511e3249b704259e92036e0c6fc0ff11c36126"
+        },
+        {
+          "name": "requireRecord",
+          "startOffset": 4116,
+          "endOffset": 4272,
+          "startLine": 133,
+          "endLine": 136,
+          "sha256": "20f0933b929a6990783678e94188c3f56584de685c4f06638ce2af5397db41c4"
+        },
+        {
+          "name": "validateExportEnvelope",
+          "startOffset": 8022,
+          "endOffset": 9757,
+          "startLine": 248,
+          "endLine": 275,
+          "sha256": "5ad7d23699e878e80212f0055a3e863e580e7d31686cdba32b0f10feded9fa7a"
+        }
+      ]
+    },
+    {
+      "sourcePath": "src/server/store.ts",
+      "sourceSha256": "fa22206742bed7cff5f0468cde9dea60010e485bd93cfd1a7cb2bc96319d485c",
+      "fixture": "store-error.source.txt",
+      "fixtureSha256": "226170ed78495c412a6500ebfbd543edadb1a93a1e13ea3e725af5fa2b840a48",
+      "declarations": [
+        {
+          "name": "StoreError",
+          "startOffset": 3163,
+          "endOffset": 3413,
+          "startLine": 107,
+          "endLine": 117,
+          "sha256": "4301fb519f21d40c08cb67063b08e0f371ba27fba93cbcb6f6a5019c989bd310"
+        }
+      ]
+    },
+    {
+      "sourcePath": "src/server/instance-backup.ts",
+      "sourceSha256": "b5f88d968e824d5dcf5b1d8b71082253d43d76e6873154e840af1eb192ae0561",
+      "fixture": "instance-backup.source.txt",
+      "fixtureSha256": "fd49906fdf6b7b66715b3437fc1c43659295561f4bb26948b2e6d9b5ad8e67eb",
+      "declarations": [
+        {
+          "name": "MAX_FILES",
+          "startOffset": 927,
+          "endOffset": 1031,
+          "startLine": 13,
+          "endLine": 13,
+          "sha256": "64ac43cd6ff9bdda5ee5aa935550e342257435f0763cb3921a1a0f437f531882"
+        },
+        {
+          "name": "InstanceBackupError",
+          "startOffset": 1280,
+          "endOffset": 1445,
+          "startLine": 16,
+          "endLine": 18,
+          "sha256": "44026814d45a92b1abd3da18ff0d8da210341807e63a3a4a3eb96abd2858125d"
+        },
+        {
+          "name": "canonical",
+          "startOffset": 2787,
+          "endOffset": 3055,
+          "startLine": 40,
+          "endLine": 45,
+          "sha256": "92a0e4516561a107a3a949cfc4d22c6b1715330806e583fcdcbbc5e692020a18"
+        },
+        {
+          "name": "contains",
+          "startOffset": 3056,
+          "endOffset": 3286,
+          "startLine": 46,
+          "endLine": 49,
+          "sha256": "8a5ae302051bd7ccbf35a4072a7254263b94e6a570dab91f01a5556fa23f8b87"
+        },
+        {
+          "name": "ensureSeparate",
+          "startOffset": 3287,
+          "endOffset": 3635,
+          "startLine": 50,
+          "endLine": 56,
+          "sha256": "63cdeea500925f283360fcfada36f2125ef5955b303f830f2102a64b16a00007"
+        },
+        {
+          "name": "ordinaryDirectory",
+          "startOffset": 3911,
+          "endOffset": 4094,
+          "startLine": 61,
+          "endLine": 64,
+          "sha256": "80dbeeda75dd17847bfe3b2924784d7cecbbfb8c714060fb8057c0ec6ebe09b6"
+        },
+        {
+          "name": "readOrdinary",
+          "startOffset": 4095,
+          "endOffset": 4491,
+          "startLine": 65,
+          "endLine": 71,
+          "sha256": "7ab02ce1e9c169e3ec051433d5c9b8ee74677a34511bd440ec8597a9869ae4fe"
+        },
+        {
+          "name": "verifyInstanceBundle",
+          "startOffset": 18098,
+          "endOffset": 23209,
+          "startLine": 259,
+          "endLine": 308,
+          "sha256": "083c64a1cf4edffe39bd80c87a09fe556d98ee43e44ab56aaf7a96fc5a9043b5"
+        },
+        {
+          "name": "restoreInstance",
+          "startOffset": 23218,
+          "endOffset": 28606,
+          "startLine": 310,
+          "endLine": 373,
+          "sha256": "d023b7f07feb5b43c79c67a8dd72edb3fde60112fff8e2697e28b4d29c67561a"
+        }
+      ]
+    }
+  ],
+  "package": {
+    "sourcePath": "package.json",
+    "fixture": "package.source.txt",
+    "sha256": "a833294998de75f45381d8609f93f3ce77b86a014ee7dfc93afe3ffa1df3391b"
+  }
+}

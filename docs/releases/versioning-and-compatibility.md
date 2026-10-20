@@ -1,15 +1,17 @@
 # 版本与兼容约定
 
-更新：2026-10-12。适用于本地 Web 预览与后续维护；现有实现入口见[开发导览](../development/codebase-guide.md)。本页区分已实现的兼容行为和今后改动应遵守的约定，不把文档约定当成自动迁移功能。
+更新：2026-10-20。适用于本地 Web 预览与后续维护；现有实现入口见[开发导览](../development/codebase-guide.md)。本页区分已实现的兼容行为和今后改动应遵守的约定，不把文档约定当成自动迁移功能。
 
-## 四种版本分别维护
+## 版本分别维护
 
 | 对象 | 当前值 / 实现 | 用途 |
 | --- | --- | --- |
-| 软件版本 | `package.json` 与 lockfile 为 `0.0.1-preview.1` | 首个预览已发布；固定 tag 为 `v0.0.1-preview.1`，精确目标与结果见 [GitHub release](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1) |
-| 学习 JSON 格式 | `schemaVersion: 1` | 导出/导入结构，与软件版本独立 |
+| 软件版本 | 开发版本 `0.0.1-preview.2`，尚未发布 | 首个预览仍为 preview.1；固定 tag 为 `v0.0.1-preview.1`，精确目标与结果见 [GitHub release](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1) |
+| 学习 JSON 格式 | 导出 v2，接收 v1 / v2 | v2 必须有 `observationRevisions`；v1 不能携带该字段 |
 | 记忆模型 | `time-only-v0` | 标识时间投影语义；配置 revision 标识本人修改 H 的历史，不是软件或格式版本 |
-| SQLite 结构 | 没有统一 schema version | 启动时创建缺失表，已知旧观察表补 `learning_json` / `evidence_mode` 列；没有通用升级/降级框架 |
+| SQLite 学习结构 | schema 2 / minimum reader 2 | `user_version` 与单行登记须一致；完整旧结构只在新目录恢复阶段迁移 |
+| 实例 bundle | 新建 v2，接收已知 v1 / v2 | v2 声明实际学习 schema 1 或 2；恢复报告仍为 v1 |
+| 学习 HTTP 协议 | 2 | Web / CLI 握手与请求门禁，和本机存储键版本独立 |
 
 包版本必须在 `package.json`、lockfile 顶层和 `packages[""]` 三处一致。只改项目版本时不重新解析依赖，不改变 JSON schema、模型版本或既有学习事件。`private: true` 用来防止误发 npm，不妨碍源码开源。
 
@@ -23,9 +25,9 @@
 
 首轮分发源码与安装说明；不附带数据库、私人知识、`node_modules` 或 `dist`。未来附带构建包/运行时之前，按[第三方许可检查](third-party-licenses.md)生成实际分发内容的许可材料。
 
-## JSON v1：当前能恢复什么
+## 学习 JSON v1 / v2
 
-定义在 [ExportData](../../src/shared/types.ts)，校验和映射见 [import-plan.ts](../../src/server/import-plan.ts)。仅接受 `schemaVersion: 1`；其他值返回 `UNSUPPORTED_SCHEMA`，不会自动转换为 v1。
+定义在 [ExportData](../../src/shared/types.ts)，校验和映射见 [import-plan.ts](../../src/server/import-plan.ts)。接收 `schemaVersion: 1 / 2`，新导出固定为 2。v2 必须包含修订数组，空链也不能省略；v1 若携带修订字段会拒绝，未知版本返回 `UNSUPPORTED_SCHEMA`。实际旧 b16 解析入口拒绝 v2，不能改版本数字交给旧程序以避免漏掉排除决定。
 
 | 字段/情况 | 当前兼容行为 |
 | --- | --- |
@@ -50,6 +52,14 @@ JSON 不包含知识正文、关系、附件、账号密码或浏览器草稿，
 
 ## SQLite：当前迁移范围
 
+学习库通过[严格结构识别](../../src/server/learning-schema.ts)区分空库、完整已知旧结构、当前 v2、部分损坏与未知版本。空库原子创建 v2；当前库核验 schema/minimum-reader 登记、`user_version`、表、索引与约束。启动遇到旧结构返回 `LEARNING_SCHEMA_UPGRADE_REQUIRED`，在知识源登记、成员默认记录与设备凭据轮换前停止；不原地补表升级。过早期五表库、部分结构与未知版本拒绝，不能据此宣称任意历史版本均可迁移。
+
+支持的旧结构通过完整离线 bundle 恢复到尚不存在的新目录，在暂存库事务中升级到 2，保留原 rowid、请求载荷、原时间和学习记录；失败不发布目标，旧目录和源归档不改。v2 库恢复不重写结构登记时间。bundle v1 仅接受已知 preview.1 与实际旧学习结构；bundle v2 必须是当前软件版本并声明实际 schema 1 或 2，声明与数据库不一致会在创建暂存目录前拒绝。新工具备份尚未迁移的完整旧库会诚实声明 schema 1，恢复时再迁移，不需要先启动新服务。
+
+`restore --preserve-legacy-learning-schema` 仅对实际旧结构生效，也只恢复到新目录，用于配合旧程序核对或回退；不会把 v2 降到 v1。恢复后的新实例标识、失效会话和连接器隔离规则仍保留。旧程序可能忽略新库的登记，因此禁止用旧程序直接打开已升级目录。完整操作见[迁移说明](../development/instance-migration.md)。
+
+以下为此前更新的历史说明，原位加列、补表行为已由上述学习 schema 门禁与新目录迁移取代；账号库仍按各自已知契约管理。
+
 LM-014B 在学习库加法新增 `relation_reviews` 表与索引，不重写旧应用、文字处理或精确原始请求。使用隔离旧库检查重复初始化、原事件幂等与历史数据保持；网页与后台同步更新，更新前保留完整数据库备份。
 
 LM-014A 在学习库 `applications` 增加可空 `relation_suggestion_json` 列；已知旧库仅加列，旧行、原 canonical 请求及各 namespace 数据不重写。关系建议的新读写、混合历史、重启与导入事务用隔离数据库检查；恢复使用匹配版本与升级前备份，不承诺旧程序保留新字段。网页与后台应同步更新，避免旧接口忽略新的请求内容。
@@ -66,13 +76,15 @@ LM-014A 在学习库 `applications` 增加可空 `relation_suggestion_json` 列�
 
 同日的 FEISHU-01C 在 `accounts.sqlite` 以 `CREATE TABLE IF NOT EXISTS` 新增 `feishu_bindings`、`feishu_binding_requests` 和有效绑定的两个唯一索引。原账号 UUID、密码、会话和学习库不重建；绑定码只存哈希，发码 / 确认 / 撤销在账号库事务内处理。学习 JSON 仍为 v1，不包含飞书授权或绑定请求。已有未绑定的账号库由合成旧库测试验证升级及重复初始化；没有通用降级或旧程序管理新授权的保证。回退使用匹配版本的完整备份，见[绑定说明](../development/feishu-account-binding.md)。
 
-目前没有 `PRAGMA user_version`、迁移登记或全表结构核验，也没有自动降级。启动不会为任意旧列结构或模型记录提供统一拒绝/转换；JSON 导入中的版本校验不能替代数据库兼容检查。因此，不承诺任意旧版本数据库或新版数据库可由旧程序直接打开。
+旧预览曾没有统一学习结构登记；本轮已增加结构识别与升级门禁，仍没有通用降级。JSON 版本校验不能代替数据库兼容检查，不承诺任意历史数据库可迁移。
 
 未来涉及表、列、含义、密码格式或模型的改动，须说明起始版本、目标版本、迁移事务与失败行为，使用旧库 fixture 验证记录保留，并提供升级前备份和回退办法。不以“服务能启动”代替旧事件、时间、身份与账号隔离的核对。
 
 ## API 与本机客户端
 
-当前路由是 `/api/...`，没有 API 版本协商、软件版本握手或 `/api/v1/...` 稳定接口。早期设计中的版本化路由是提案；实际契约以 [app.ts](../../src/server/app.ts)和 `src/shared` 为准。Web、CLI 与服务端应来自同一软件版本；这是运行约定，不是已实现的版本隔离检查，当前不承诺任意新旧客户端混用。
+路由保留 `/api/...`，新增学习协议 2 门禁。`GET /api/session` 必须返回 `learningProtocolVersion: 2`；Web / CLI 校验后才访问受保护数据。受保护 JSON 使用 `X-LM-Learning-Protocol: 2`，缺失、重复或不支持返回 426；不会按认证过期自动重放。认证后、成员 Store 懒初始化前执行门禁。新客户端连接缺少握手字段的旧服务也会拒绝。
+
+例外仅为 session、health、认证流程，以及保留原认证 / 来源 / 路径 / 版本检查的 `GET /api/concepts/:id/attachment` 二进制资源。SSE `GET /api/changes` 使用唯一查询参数 `learningProtocol=2`；若另带 header 也必须唯一为 2，其他 JSON 不能用查询参数替代 header。Web、CLI 与服务端应同步更新，仍没有 `/api/v1/...` 通用稳定接口。
 
 - 账号模式下要先取得有效身份和 `/api/session`；写请求携带本机 token，并核对来源。用户、namespace、资料版本和概念 ID 的边界不能由客户端过滤替代。
 - 学习事件重试保留 event ID、发生/观察时间和 payload；首次保存与完全相同重放有不同回执，换内容可能返回 `EVENT_CONFLICT`。观察、长期保持、配置、导入和身份衔接还各有版本/前序校验，不可重建一个新请求来掩盖冲突。

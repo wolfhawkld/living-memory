@@ -25,7 +25,7 @@ async function withTestServer(accountsEnabled: boolean, run: (createClient: Crea
     await run(async (storageState) => {
       const client = await playwrightRequest.newContext({
         baseURL: `http://127.0.0.1:${port}`,
-        extraHTTPHeaders: { host: '127.0.0.1:4318' },
+        extraHTTPHeaders: { host: '127.0.0.1:4318', 'X-LM-Learning-Protocol': '2' },
         storageState,
       });
       clients.push(client);

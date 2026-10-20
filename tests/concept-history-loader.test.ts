@@ -49,8 +49,9 @@ test('history API encodes concept paths and sends a source-bound, uncached read 
   let calls = 0;
   const signal = new AbortController().signal;
   t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
-    calls += 1;
     const url = new URL(String(input), 'http://synthetic.invalid');
+    if (url.pathname === '/api/session') return new Response(JSON.stringify({ writeToken: 'history-fixture-token', sourceId: scope.sourceId, learningProtocolVersion: 2 }));
+    calls += 1;
     assert.equal(decodeURIComponent(url.pathname.slice('/api/concepts/'.length, -'/history'.length)), scope.conceptId);
     assert.equal(url.searchParams.get('cursor'), 'opaque+/?=');
     assert.equal(url.searchParams.get('limit'), '7');
@@ -192,6 +193,7 @@ const focusedPage = (): ConceptHistory => ({ ...page([], 1), entries: [{ type: '
 test('focused history forwards the application ID without a cursor and remains focused through refresh', async (t) => {
   t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
     const url = new URL(String(input), 'http://synthetic.invalid');
+    if (url.pathname === '/api/session') return new Response(JSON.stringify({ writeToken: 'history-fixture-token', sourceId: scope.sourceId, learningProtocolVersion: 2 }));
     assert.equal(url.searchParams.get('applicationEventId'), focusedApplication.eventId);
     assert.equal(url.searchParams.get('cursor'), null);
     return new Response(JSON.stringify(focusedPage()));
@@ -269,4 +271,34 @@ test('a correction arriving during pagination reloads the head before exposing s
   assert.equal(calls, 3);
   assert.equal(loader.getSnapshot().history!.correctionCount, 1);
   assert.deepEqual(loader.getSnapshot().history!.entries.map((item) => item.event.eventId), ['a']);
+});
+
+test('revision watermarks invalidate all loaded pages even when raw totals do not change', async () => {
+  for (const changed of [{ observationRevisionCount: 2 }, { observationAssessmentVersion: 'after-existing-receipt' }]) {
+    const first = { ...page(['a'], 2, 'next'), observationRevisionCount: 1, observationAssessmentVersion: 'before' };
+    let response: ConceptHistory = first;
+    const loader = createConceptHistoryLoader(scope, async () => response);
+    await loader.refresh();
+    response = { ...first, ...page(['b'], 2), observationAssessments: {}, };
+    await loader.loadMore();
+    assert.equal(loader.getSnapshot().history?.entries.length, 2);
+    response = { ...first, ...changed };
+    await loader.refresh();
+    assert.deepEqual(loader.getSnapshot().history?.entries.map(item => item.event.eventId), ['a']);
+    assert.equal(loader.getSnapshot().history?.nextCursor, 'next');
+    assert.equal(loader.getSnapshot().history?.observationAssessmentVersion, response.observationAssessmentVersion);
+  }
+});
+
+test('a changed revision while paging discards that page and starts from the first page', async () => {
+  const calls: Array<string | undefined> = [];
+  const loader = createConceptHistoryLoader(scope, async (_id, _source, options) => {
+    calls.push(options.cursor);
+    return { ...page([options.cursor ? 'old-page' : 'first'], 2, options.cursor ? null : 'next'),
+      observationRevisionCount: calls.length === 1 ? 0 : 1, observationAssessmentVersion: calls.length === 1 ? 'before' : 'after' };
+  });
+  await loader.refresh();
+  await loader.loadMore();
+  assert.deepEqual(calls, [undefined, 'next', undefined]);
+  assert.deepEqual(loader.getSnapshot().history?.entries.map(item => item.event.eventId), ['first']);
 });

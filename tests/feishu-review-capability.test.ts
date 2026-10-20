@@ -41,6 +41,7 @@ async function fixture(extraCandidates = false, mixedDomains = false) {
   const dbPath = join(dir, 'learning.sqlite');
   const openStore = () => new Store({ dbPath, namespace: source.namespace, now });
   let store = openStore();
+  let storeOpen = true; let accountsOpen = true;
   const concept = source.index.concepts.find(item => item.title === 'Synthetic Alpha')!;
   store.addReview({ eventId: 'original-anchor', conceptId: concept.id, sourceRevision: concept.source.revision, kind: 'review', occurredAt: '2026-09-30T01:00:00Z' });
   if (extraCandidates) for (const item of source.index.concepts.filter(item => item.id !== concept.id)) {
@@ -73,8 +74,12 @@ async function fixture(extraCandidates = false, mixedDomains = false) {
     advance(ms: number) { instant += ms; },
     changeSource() { note('NEW_SECRET_BODY'); source = loadKnowledgeGraph({ root }); },
     rebind() { accounts.revokeFeishuBinding(user.id, browser.sessionId, auth.bindingId); auth = bind(); },
-    reopen(beforeOpen?: () => void) { store.close(); accounts.close(); beforeOpen?.(); accounts = new Accounts({ dataDir: dir, now }); store = openStore(); cards = capabilities(); },
-    cleanup() { store.close(); accounts.close(); rmSync(dir, { recursive: true, force: true }); } };
+    reopen(beforeOpen?: () => void) {
+      store.close(); storeOpen = false; accounts.close(); accountsOpen = false;
+      beforeOpen?.(); accounts = new Accounts({ dataDir: dir, now }); accountsOpen = true;
+      store = openStore(); storeOpen = true; cards = capabilities();
+    },
+    cleanup() { if (storeOpen) store.close(); if (accountsOpen) accounts.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 function unchanged(f: Awaited<ReturnType<typeof fixture>>, before: ReturnType<typeof f.export>) {
   const after = f.export();
@@ -176,8 +181,14 @@ test('zero daily budget recovers an immutable pending grade once across restart'
         f.click(revealed, '清楚');
       } else pendingGrade(f);
       const operation = structuredClone(f.operations()[0]);
-      pauseDailyBudget(f); f.reopen();
+      assert.equal(operation.status, 'pending');
+      assert.equal(f.store.countObservations(), settlementFailure ? 1 : 0);
+      pauseDailyBudget(f);
       if (!settlementFailure) f.sql('DROP TRIGGER reject_observation');
+      f.reopen();
+      assert.equal(f.operations()[0].status, 'pending');
+      assert.deepEqual(f.operations()[0].intent, operation.intent);
+      assert.equal(f.store.countObservations(), settlementFailure ? 1 : 0);
       const saved = f.send('知识 继续复习');
       assert.equal(f.operations()[0].status, 'applied');
       assert.deepEqual(f.operations()[0].intent, operation.intent);
@@ -283,7 +294,10 @@ test('reveal freezes H, config and original anchor despite later H and historica
 
 test('real learning SQLite failure retains immutable pending intent across reopen and explicit retry writes once', async () => {
   const f = await fixture(); try {
-    pendingGrade(f); const original = f.operations()[0]; f.reopen(); f.sql('DROP TRIGGER reject_observation');
+    pendingGrade(f); const original = structuredClone(f.operations()[0]);
+    f.sql('DROP TRIGGER reject_observation'); f.reopen();
+    assert.equal(f.operations()[0].status, 'pending');
+    assert.deepEqual(f.operations()[0].intent, original.intent); assert.equal(f.store.countObservations(), 0);
     f.send('知识 继续复习'); assert.equal(f.operations()[0].id, original.id); assert.equal(f.operations()[0].status, 'applied');
     assert.deepEqual(f.operations()[0].intent, original.intent); assert.equal(f.store.countObservations(), 1);
     f.send('知识 继续复习'); assert.equal(f.store.countObservations(), 1);
@@ -584,7 +598,11 @@ test('pending batch recovery saves the original item and requires another explic
     f.sql("CREATE TRIGGER reject_observation BEFORE INSERT ON observations BEGIN SELECT RAISE(ABORT,'synthetic batch unavailable'); END");
     const pending = f.click(revealed, '想不起'); const itemId = f.operations()[0].itemId;
     assert.doesNotMatch(f.payload(pending), /"content":"下一条"|"content":"跳过本条"|"content":"结束复习"/);
-    f.reopen(); f.sql('DROP TRIGGER reject_observation');
+    const original = structuredClone(f.operations()[0]);
+    assert.equal(original.status, 'pending'); assert.equal(f.store.countObservations(), 0);
+    f.sql('DROP TRIGGER reject_observation'); f.reopen();
+    assert.equal(f.operations()[0].status, 'pending');
+    assert.deepEqual(f.operations()[0].intent, original.intent); assert.equal(f.store.countObservations(), 0);
     const recovered = f.send('知识 结束复习');
     assert.equal(f.operations()[0].itemId, itemId); assert.equal(f.operations()[0].status, 'applied');
     assert.equal(f.session().state.batch!.cursor, 0); assert.equal(f.session().state.phase, 'saved');
@@ -725,6 +743,8 @@ test('a failed batch advance transaction consumes neither the old card nor its r
 test('a genuine legacy single-item pending journal upgrades and recovers through the current capability without new event IDs', async () => {
   const f = await fixture(); try {
     pendingGrade(f); const original = structuredClone(f.operations()[0]); const state = structuredClone(f.session().state);
+    assert.equal(original.status, 'pending'); assert.equal(f.store.countObservations(), 0);
+    f.sql('DROP TRIGGER reject_observation');
     const dbPath = f.accounts.dbPath;
     f.reopen(() => {
       const db = new DatabaseSync(dbPath);
@@ -745,10 +765,41 @@ test('a genuine legacy single-item pending journal upgrades and recovers through
     });
     assert.deepEqual(f.session().state, state); assert.deepEqual(f.operations()[0], original);
     assert.equal(f.operations()[0].itemId, f.session().id);
-    f.sql('DROP TRIGGER reject_observation'); f.send('知识 继续复习');
+    assert.equal(f.operations()[0].status, 'pending'); assert.equal(f.store.countObservations(), 0);
+    f.send('知识 继续复习');
     assert.equal(f.operations()[0].id, original.id); assert.deepEqual(f.operations()[0].intent, original.intent);
     assert.equal(f.operations()[0].status, 'applied'); assert.equal(f.store.countObservations(), 1);
     assert.equal(f.store.getObservations()[0].eventId, `feishu-observation:${f.session().id}`);
     assert.equal(f.session().state.batch, undefined);
+  } finally { f.cleanup(); }
+});
+
+test('an original Feishu grade replay remains duplicate after assessment revision without refunding budget or changing its anchor', async () => {
+  const f = await fixture();
+  try {
+    const revealed = f.click(f.send('知识 复习'), '查看资料');
+    const originalAction = f.action(revealed, '清楚');
+    f.accept(f.cards.prepareAction(originalAction)!);
+    const operation = structuredClone(f.operations()[0]);
+    assert.equal(operation.intent.kind, 'observation');
+    const observation = f.store.getObservations()[0];
+    const originalRows = f.export();
+    const originalBudget = f.store.getReviewPlan();
+    const completed = f.store.getCompletedConceptIds(observation.recordedAt, 'UTC');
+    f.advance(1000);
+    f.store.observationRevisions.append({ eventId: 'feishu-assessment-revision', observationEventId: observation.eventId, previousEventId: null,
+      occurredAt: observation.observedAt, action: 'revise', reason: 'input-error',
+      assessment: { rating: 'blank', learning: observation.learning ? { outcome: 'failure', basis: 'self-check' } : null } });
+    const request = operation.intent.request as Parameters<Store['addObservation']>[0];
+    assert.equal(f.store.addObservation(request, 'original-anchor').status, 'duplicate');
+    // Re-delivery of the old click cannot grade the current concept again.
+    f.cards.prepareAction(originalAction);
+    assert.equal(f.store.countObservations(), 1);
+    assert.deepEqual(f.operations()[0], operation);
+    assert.deepEqual(f.store.getReviewPlan(), originalBudget);
+    assert.deepEqual(f.store.getCompletedConceptIds(observation.recordedAt, 'UTC'), completed);
+    assert.deepEqual(f.export().anchors, originalRows.anchors);
+    assert.deepEqual(f.export().observations, originalRows.observations);
+    assert.equal(f.store.observationRevisions.readHistory(observation.eventId).state.currentAssessment.rating, 'blank');
   } finally { f.cleanup(); }
 });

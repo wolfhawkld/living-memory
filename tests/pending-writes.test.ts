@@ -251,8 +251,11 @@ function assertFailure(result: FlushResult, expected: Partial<FlushFailure>): vo
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   installBrowserStubs();
+  // The authenticated view has completed its v2 handshake before queue tests.
+  globalThis.fetch = async () => jsonResponse({ learningProtocolVersion: 2, writeToken: 'protocol-fixture-token', sourceId: 'protocol-fixture-source' });
+  await api.getSession();
 });
 
 afterEach(() => {
@@ -525,7 +528,7 @@ test('renews an expired token for the same source, retries once, and preserves t
   installFetch((call) => {
     if (call.path === '/api/session') {
       assert.equal(call.method, 'GET');
-      return jsonResponse({ writeToken: 'token-renewed', sourceId });
+      return jsonResponse({ learningProtocolVersion: 2, writeToken: 'token-renewed', sourceId });
     }
     assert.equal(call.path, '/api/reviews');
     postCount += 1;

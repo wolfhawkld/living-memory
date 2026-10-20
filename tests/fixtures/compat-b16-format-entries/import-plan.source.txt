@@ -1,0 +1,41 @@
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function invalid(message: string, code = 'INVALID_IMPORT'): never {
+  throw new StoreError(code, message, 400);
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) invalid(`${label} 必须是 JSON 对象。`);
+  return value;
+}
+
+function validateExportEnvelope(data: unknown, now: string): Record<string, unknown> {
+  const record = requireRecord(data, '导入数据');
+  if (record.schemaVersion !== 1) invalid('仅支持 schemaVersion 1 的导出文件。', 'UNSUPPORTED_SCHEMA');
+  const exported = timestamp(record.exportedAt, 'exportedAt');
+  const currentNow = timestamp(now, 'now');
+  if (exported.ms > currentNow.ms) invalid('exportedAt 不能晚于当前时间。', 'FUTURE_EXPORT');
+  const source = requireRecord(record.source, 'source');
+  if (typeof source.name !== 'string' || typeof source.mode !== 'string') invalid('source 元数据无效。');
+  if (source.mode !== 'demo' && source.mode !== 'local') invalid('source.mode 无效。');
+  requireArray(record.concepts, 'concepts');
+  requireRecord(record.config, 'config');
+  requireArray(record.configHistory, 'configHistory');
+  requireArray(record.anchors, 'anchors');
+  requireArray(record.observations, 'observations');
+  if (record.retentions !== undefined) requireArray(record.retentions, 'retentions');
+  if (record.applications !== undefined) requireArray(record.applications, 'applications');
+  if (record.corrections !== undefined) requireArray(record.corrections, 'corrections');
+  if (record.relationReviews !== undefined) requireArray(record.relationReviews, 'relationReviews');
+  if (record.practice !== undefined) {
+    const practice = requireRecord(record.practice, 'practice');
+    requireArray(practice.cards, 'practice.cards');
+    requireArray(practice.attempts, 'practice.attempts');
+  }
+  requireRecord(record.layout, 'layout');
+  if (record.reviewPlan !== undefined) requireRecord(record.reviewPlan, 'reviewPlan');
+  if (record.restoreMetadata !== undefined) requireRecord(record.restoreMetadata, 'restoreMetadata');
+  return record;
+}

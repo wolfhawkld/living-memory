@@ -50,7 +50,7 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
         publish({ ...state, history: null });
         throw new Error('未能定位指定的应用 / 总结记录，请刷新后重试，或查看全部历史。');
       }
-      const decisionsChanged = before && page.correctionCount !== before.correctionCount;
+      const decisionsChanged = before && (page.correctionCount !== before.correctionCount || page.observationRevisionCount !== before.observationRevisionCount || page.observationAssessmentVersion !== before.observationAssessmentVersion);
       if (mode === 'more' && before && (page.total !== before.total || decisionsChanged)) {
         // Backdated insertions can fall on either side of the cursor. Start over
         // instead of silently presenting an incomplete history as complete.
@@ -61,13 +61,15 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
       if (before && mode === 'more') {
         const seen = new Set(before.entries.map((entry) => `${entry.type}:${entry.event.eventId}`));
         history = { ...page, entries: [...before.entries, ...page.entries.filter((entry) => !seen.has(`${entry.type}:${entry.event.eventId}`))],
-          ...(page.corrections ? { corrections: { ...before.corrections, ...page.corrections } } : {}) };
+          ...(page.corrections ? { corrections: { ...before.corrections, ...page.corrections } } : {}),
+          ...(page.observationAssessments ? { observationAssessments: { ...before.observationAssessments, ...page.observationAssessments } } : {}) };
       } else if (before && !decisionsChanged && before.total === page.total && page.entries.length <= before.entries.length
         && page.entries.every((entry, index) => entry.type === before.entries[index].type && entry.event.eventId === before.entries[index].event.eventId)) {
         // Events are immutable. A clock-only refresh keeps loaded pages and open
         // answers while replacing the live anchor projection.
         history = { ...page, entries: before.entries, nextCursor: before.nextCursor,
-          ...(page.corrections ? { corrections: { ...before.corrections, ...page.corrections } } : {}) };
+          ...(page.corrections ? { corrections: { ...before.corrections, ...page.corrections } } : {}),
+          ...(page.observationAssessments ? { observationAssessments: { ...before.observationAssessments, ...page.observationAssessments } } : {}) };
       }
       publish({ history, loading: false, loadingMore: false, error: null });
     } catch (error) {

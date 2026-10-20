@@ -180,6 +180,10 @@ export interface ConceptHistory {
   focusedApplicationEventId?: string;
   /** Append-only decision watermark across all pages of this concept. */
   correctionCount?: number;
+  observationRevisionCount?: number;
+  /** Deterministic effective-state version; also changes when asOf crosses a stored receipt. */
+  observationAssessmentVersion?: string;
+  observationAssessments?: Record<string, Omit<import('../core/observation-revisions.js').ObservationAssessmentState, 'audit'>>;
 }
 
 export interface KnowledgeGraph {
@@ -242,10 +246,9 @@ export interface ChangeNotification {
 export interface LayoutPosition { x: number; y: number; z: number }
 export type Layout = Record<string, LayoutPosition>;
 
-export interface ExportData {
+export interface ExportDataBase {
   /** Audit only; JSON restore maps current paths/versions rather than trusting uploaded bindings. */
   identityBindings?: import('./identity.js').IdentityBinding[];
-  schemaVersion: 1;
   exportedAt: string;
   source: KnowledgeGraph['source'];
   concepts: Array<Pick<Concept, 'id' | 'title' | 'source'>>;
@@ -269,3 +272,13 @@ export interface ExportData {
     configRecordedAt: Record<string, string>;
   };
 }
+
+export interface ExportDataV1 extends ExportDataBase {
+  schemaVersion: 1;
+  observationRevisions?: never;
+}
+export interface ExportDataV2 extends ExportDataBase {
+  schemaVersion: 2;
+  observationRevisions: import('./observation-revisions.js').ObservationRevision[];
+}
+export type ExportData = ExportDataV1 | ExportDataV2;

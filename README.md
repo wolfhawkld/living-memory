@@ -10,6 +10,8 @@
 
 图中概念来自仓库示例笔记，布局与重温日期为固定演示值。这是时间状态示意图；实际 3D/2D 交互请按下面步骤运行。素材数据与复现方法见[示意图说明](docs/assets/README.md)。
 
+开发分支正在准备 `0.0.1-preview.2`：学习 JSON、完整实例 bundle 和学习协议升为 v2。已有学习库需先离线备份并恢复到新目录后升级，不能直接沿用旧目录启动；见[版本兼容](docs/releases/versioning-and-compatibility.md)与[迁移步骤](docs/development/instance-migration.md)。该版本尚未发布。
+
 ## 快速开始
 
 推荐 **Node.js 22.23.1**，与 [`.nvmrc`](.nvmrc) 和 CI 一致；已验证 npm 10.9.8。以下使用固定预览 tag；参与开发使用 `develop`，见[贡献指南](CONTRIBUTING.md)。

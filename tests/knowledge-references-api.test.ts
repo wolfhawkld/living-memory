@@ -23,7 +23,7 @@ test('reference API is private, version-bound, complete beyond the graph cap and
   server.on('request', app);
   const request = (path: string, options: { method?: string; body?: unknown; cookie?: string; headers?: Record<string, string> } = {}) => new Promise<{ status: number; value: any; cookie: string }>((resolve, reject) => {
     const raw = options.body === undefined ? undefined : JSON.stringify(options.body);
-    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: {
+    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: { 'X-LM-Learning-Protocol': '2',
       host: `127.0.0.1:${port}`, ...(raw ? { 'content-type': 'application/json' } : {}),
       ...(options.cookie ? { cookie: options.cookie } : {}), ...options.headers,
     } }, (res) => {

@@ -19,7 +19,7 @@ async function runningApp(): Promise<RunningApp> {
   const port = (server.address() as { port: number }).port;
   const request = (path: string, options: { method?: string; body?: unknown; headers?: Record<string, string> } = {}) => new Promise<ResponseData>((resolve, reject) => {
     const body = options.body === undefined ? undefined : JSON.stringify(options.body);
-    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: { host: '127.0.0.1:4317', ...(body ? { 'content-type': 'application/json' } : {}), ...(options.headers ?? {}) } }, (response) => {
+    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: { 'X-LM-Learning-Protocol': '2', host: '127.0.0.1:4317', ...(body ? { 'content-type': 'application/json' } : {}), ...(options.headers ?? {}) } }, (response) => {
       let text = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { text += chunk; }); response.on('end', () => resolve({ status: response.statusCode ?? 0, body: text, json: <T>() => JSON.parse(text) as T }));
     });
     req.once('error', reject); if (body) req.write(body); req.end();

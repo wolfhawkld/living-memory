@@ -128,7 +128,7 @@ async function running(options: {
       port,
       path,
       method: options.method ?? 'GET',
-      headers: {
+      headers: { 'X-LM-Learning-Protocol': '2',
         host: `127.0.0.1:${port}`,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         ...(options.cookie ? { cookie: options.cookie } : {}),
@@ -298,8 +298,8 @@ function openChanges(client: RunningApp, cookie?: string): Promise<ChangeFeed> {
     const req = httpRequest({
       hostname: '127.0.0.1',
       port: client.port,
-      path: '/api/changes',
-      headers: { host: `127.0.0.1:${client.port}`, ...(cookie ? { cookie } : {}) },
+      path: '/api/changes?learningProtocol=2',
+      headers: { 'X-LM-Learning-Protocol': '2', host: `127.0.0.1:${client.port}`, ...(cookie ? { cookie } : {}) },
     }, (response: IncomingMessage) => {
       if (response.statusCode !== 200) {
         let body = '';

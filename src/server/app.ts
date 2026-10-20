@@ -1,3 +1,7 @@
+import { LEARNING_PROTOCOL_VERSION, LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, isLearningProtocolExempt } from '../shared/learning-protocol.js';
+import { LearningSchemaError } from './learning-schema.js';
+import { ObservationRevisionStoreError } from './observation-revision-store.js';
+import { parseObservationRevisionRequest, ObservationRevisionError } from '../shared/observation-revisions.js';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -9,7 +13,6 @@ import type { IdentityLinkCommit, IdentityLinkRequest } from '../shared/identity
 import { applyIdentityBindings } from './identity-source.js';
 import { reviewDayKey, type ReviewPlanResponse, type ReviewPlanUpdate } from '../shared/review-plan.js';
 import { isValidInstant } from '../core/time-model.js';
-import { buildLearningOverview } from '../core/learning-overview.js';
 import { buildPracticeCards } from '../core/practice.js';
 import { parsePracticeCardRequest, parsePracticeAttemptRequest } from './practice-validation.js';
 import { sendConceptAttachment } from './attachments.js';
@@ -42,6 +45,7 @@ import {
   parseReviewRequest,
   Store,
   StoreError,
+  assertLearningDatabaseReady,
 } from './store.js';
 
 export interface AppOptions {
@@ -163,8 +167,12 @@ function apiError(res: Response, error: unknown): void {
     res.status(413).json({ error: { code: 'BODY_TOO_LARGE', message } });
     return;
   }
-  if (error instanceof StoreError || error instanceof ActivityError) {
+  if (error instanceof StoreError || error instanceof ActivityError || error instanceof ObservationRevisionStoreError) {
     res.status(error.status).json({ error: { code: error.code, message: error.message } });
+    return;
+  }
+  if (error instanceof LearningSchemaError) {
+    res.status(503).json({ error: { code: error.code, message: '学习数据库结构不可用，请核验版本后重新连接。' } });
     return;
   }
   if (error instanceof KnowledgeSourceError) {
@@ -339,6 +347,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   const root = sourceRoot(options);
   const dataDir = options.dataDir ?? process.env.LM_DATA_DIR ?? 'data/local';
   const staticDir = options.staticDir ?? resolve(process.cwd(), 'dist');
+  assertLearningDatabaseReady(options.dbPath ?? join(dataDir, 'living-memory.sqlite'));
   const instanceId = readInstanceId(dataDir);
   validateStoragePaths({ root, dataDir, staticDir, accountsEnabled: Boolean(options.accountsEnabled), dbPath: options.dbPath });
   const loadSource = (physicalRoot: string, includePrefix?: string) => {
@@ -388,9 +397,6 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   const now = options.now ?? (() => new Date());
   const app = express() as LivingMemoryApp;
   const jsonBody = express.json({ limit: JSON_BODY_LIMIT });
-  // Bulk restore is parsed only after account/source/token checks.
-  app.use((req, res, next) => /^\/api\/import\/(preview|commit)\/?$/i.test(req.path)
-    ? next() : jsonBody(req, res, next));
 
   app.use((req, res, next) => {
     if (!localPortAllowed(req.headers.host, port)) {
@@ -408,7 +414,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     }
     if (req.method === 'OPTIONS') {
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID');
+      res.setHeader('Access-Control-Allow-Headers', `Content-Type, X-LM-Token, X-LM-Source-ID, X-LM-Instance-ID, ${LEARNING_PROTOCOL_HEADER}`);
       res.status(204).end();
       return;
     }
@@ -421,7 +427,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   };
   const authStatus = (user: AccountSession['user'] | null = null) => ({ enabled: Boolean(accounts), needsSetup: Boolean(accounts && !accounts.hasAccounts()), user });
   app.get('/api/auth/status', (req, res) => res.set('Cache-Control', 'no-store').json(authStatus(resolveAccount(req)?.user ?? null)));
-  app.post('/api/auth/setup', asyncRoute(async (req, res) => {
+  app.post('/api/auth/setup', jsonBody, asyncRoute(async (req, res) => {
     if (!accounts) throw new StoreError('ACCOUNTS_DISABLED', '当前为本机单用户模式。', 404);
     if (!req.is('application/json')) throw new StoreError('INVALID_BODY', '请提交 JSON。');
     const user = await accounts.setup(req.body?.username, req.body?.password);
@@ -432,7 +438,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     setSessionCookie(res, session);
     res.set('Cache-Control', 'no-store').status(201).json(authStatus(user));
   }));
-  app.post('/api/auth/login', asyncRoute(async (req, res) => {
+  app.post('/api/auth/login', jsonBody, asyncRoute(async (req, res) => {
     if (!accounts) throw new StoreError('ACCOUNTS_DISABLED', '当前为本机单用户模式。', 404);
     if (!req.is('application/json')) throw new StoreError('INVALID_BODY', '请提交 JSON。');
     const session = await accounts.login(req.body?.username, req.body?.password, req.socket.remoteAddress ?? 'local');
@@ -445,7 +451,22 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       const session = resolveAccount(req);
       if (!session) { next(new StoreError('AUTH_REQUIRED', '请登录后访问你的私人知识空间。', 401)); return; }
       (req as AccountRequest).accountSession = session;
-      (req as AccountRequest).knowledgeContext = contextForUser(session.user.id);
+    }
+    // Identity first, protocol before lazy member DB creation/default writes.
+    const attachment = req.method === 'GET' && /^\/concepts\/[^/]+\/attachment\/?$/i.test(req.path);
+    const sse = req.method === 'GET' && /^\/changes\/?$/i.test(req.path);
+    const protocolValues = req.rawHeaders.filter((_, index) => index % 2 === 0)
+      .filter(name => name.toLowerCase() === LEARNING_PROTOCOL_HEADER.toLowerCase());
+    const supported = sse
+      ? new URL(req.originalUrl, 'http://localhost').searchParams.getAll('learningProtocol').length === 1
+        && req.query.learningProtocol === String(LEARNING_PROTOCOL_VERSION)
+        && (protocolValues.length === 0 || (protocolValues.length === 1 && req.header(LEARNING_PROTOCOL_HEADER) === String(LEARNING_PROTOCOL_VERSION)))
+      : protocolValues.length === 1 && req.header(LEARNING_PROTOCOL_HEADER) === String(LEARNING_PROTOCOL_VERSION);
+    if (!attachment && !isLearningProtocolExempt(req.path) && !supported) {
+      next(new StoreError(LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, 426)); return;
+    }
+    if (accounts) {
+      (req as AccountRequest).knowledgeContext = contextForUser(sessionOf(req)!.user.id);
     }
     const expectedSource = req.header('x-lm-source-id');
     if (expectedSource && expectedSource !== contextOf(req).source.namespace) {
@@ -454,6 +475,11 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     res.set('Cache-Control', 'no-store');
     next();
   });
+
+  // Authenticate and negotiate before parsing application bodies or making writes.
+  // Bulk imports retain their separate, later parser and larger bounded limit.
+  app.use('/api', (req, res, next) => /^\/import\/(preview|commit)\/?$/i.test(req.path)
+    ? next() : jsonBody(req, res, next));
 
   const requireWrite = (req: Request, res: Response, next: NextFunction): void => {
     if ((req.header('x-lm-instance-id') ?? 'legacy') !== instanceId) {
@@ -571,8 +597,31 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   app.get('/api/session', (req, res) => res.set('Cache-Control', 'no-store').json({
     writeToken: sessionOf(req)?.csrfToken ?? token, sourceId: contextOf(req).source.namespace,
     sourceRootFingerprint: sourceIdentityHash(contextOf(req).root),
-    instanceId,
+    instanceId, learningProtocolVersion: LEARNING_PROTOCOL_VERSION,
     ...(sessionOf(req) ? { user: sessionOf(req)!.user } : {}),
+  }));
+  app.get('/api/observations/:observationEventId/revisions', asyncRoute((req, res) => {
+    if (Object.keys(req.query).some(key => !['limit', 'cursor'].includes(key))) {
+      throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_HISTORY_QUERY', 400);
+    }
+    let limit: number; let cursor: string | undefined;
+    try { limit = parseHistoryLimit(req.query.limit); cursor = parseHistoryCursor(req.query.cursor); }
+    catch { throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_HISTORY_QUERY', 400); }
+    res.json(contextOf(req).store.observationRevisions.readHistory(String(req.params.observationEventId), { limit, cursor }));
+  }));
+  app.post('/api/observations/:observationEventId/revisions', requireWrite, asyncRoute((req, res) => {
+    if (!req.is('application/json')) throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_REQUEST', 400);
+    let request;
+    try { request = parseObservationRevisionRequest(req.body); }
+    catch (error) {
+      if (error instanceof ObservationRevisionError) throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_REQUEST', 400);
+      throw error;
+    }
+    if (request.observationEventId !== req.params.observationEventId) throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_REQUEST', 400);
+    const { store, changes } = contextOf(req);
+    const receipt = store.observationRevisions.append(req.body);
+    if (receipt.status === 'accepted') changes.publish('observation');
+    res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
   }));
   app.get('/api/changes', (req, res) => {
     contextOf(req).changes.subscribe(res);
@@ -697,14 +746,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     const { source, store } = contextOf(req);
     const asOf = now().toISOString();
     const concepts = source.index.concepts;
-    res.set('Cache-Control', 'no-store').json(buildLearningOverview({
-      sourceId: source.namespace, asOf, concepts,
-      states: store.getStates(concepts, asOf),
-      observations: store.getObservations(), applications: store.getApplications(),
-      corrections: store.getCorrections(),
-      relationData: { links: source.index.links, reviews: store.getRelationReviews() },
-      anchors: store.getAnchors(),
-    }));
+    res.set('Cache-Control', 'no-store').json(store.getLearningOverview(source.namespace, concepts, source.index.links, asOf));
   }));
   app.get('/api/scenario-prompts', asyncRoute((req, res) => {
     const { source, store } = contextOf(req);

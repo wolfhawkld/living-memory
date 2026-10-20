@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { buildImportPlan, type PreparedImport } from '../src/server/import-plan.js';
 import type { CorrectionEvent } from '../src/shared/corrections.js';
-import type { ApplicationRecord, Concept, ExportData } from '../src/shared/types.js';
+import type { ApplicationRecord, Concept, ExportData, ExportDataV1 } from '../src/shared/types.js';
 import { MODEL_VERSION } from '../src/shared/types.js';
 
 const now = '2026-01-10T00:00:00.000Z';
@@ -53,7 +53,7 @@ function correction(overrides: Partial<CorrectionEvent> = {}): CorrectionEvent {
   };
 }
 
-function exportData(overrides: Partial<ExportData> = {}): ExportData {
+function exportData(overrides: Partial<ExportDataV1> = {}): ExportDataV1 {
   return {
     schemaVersion: 1,
     exportedAt: '2026-01-09T00:00:00.000Z',
@@ -71,7 +71,7 @@ function exportData(overrides: Partial<ExportData> = {}): ExportData {
   };
 }
 
-function currentExport(overrides: Partial<ExportData> = {}): ExportData {
+function currentExport(overrides: Partial<ExportDataV1> = {}): ExportDataV1 {
   return exportData({
     exportedAt: '2026-01-09T12:00:00.000Z',
     concepts: [{ id: liveConcept.id, title: liveConcept.title, source: liveConcept.source }],

@@ -5,7 +5,7 @@ import type { InstanceManifest, RestoreReport } from '../src/server/instance-bac
 
 function fixture() {
   const calls: unknown[] = [];
-  const manifest = { files: [{ path: 'private', sha256: 'secret-hash' }], sources: [{ userId: 'private-account' }],
+  const manifest = { version: 2, learningSchemaVersion: 2, files: [{ path: 'private', sha256: 'secret-hash' }], sources: [{ userId: 'private-account' }],
     excluded: ['sensitive-private-name'], configuration: ['secret.env'], databases: [{ tables: { privateTable: 4 } }] } as unknown as InstanceManifest;
   const restored = { files: 4, sources: 2, invalidated: { privateAccount: 2 }, instanceId: 'private-instance',
     startup: { dataDir: '/target/data', kgRoot: '/target/kg', cliStateDir: '/target/cli', envArchive: '/target/config/environment.env' } } as unknown as RestoreReport;
@@ -24,7 +24,7 @@ test('backup passes only explicit approved paths and prints a whitelist summary 
     '--output', '/target/bundle', '--env-file', '/private/environment.env', '--cli-session-file', '/private/device.json'], f.backend);
   assert.deepEqual(f.calls, [['backup', { dataDir: '/private/data', kgRoot: '/private/kg', cliStateDir: '/private/cli', output: '/target/bundle',
     envFile: '/private/environment.env', cliSessionFile: '/private/device.json' }]]);
-  assert.deepEqual(result, { format: 'living-memory-instance', version: 1, status: 'created', files: 1, sources: 1, target: '/target/bundle' });
+  assert.deepEqual(result, { format: 'living-memory-instance', version: 2, learningSchemaVersion: 2, status: 'created', files: 1, sources: 1, target: '/target/bundle' });
   assert.doesNotMatch(JSON.stringify(result), /private-account|secret-hash|sensitive-private-name|privateTable|secret.env/);
 });
 
@@ -42,7 +42,7 @@ test('strict flag parsing rejects duplicates, positional extras, missing values 
 
 test('verify is read-only and restore returns only new startup paths while keeping activation separate', async () => {
   const f = fixture();
-  assert.deepEqual(await runInstanceBackupCli(['verify', '--bundle', '/bundle'], f.backend), { format: 'living-memory-instance', version: 1, status: 'verified', files: 1, sources: 1 });
+  assert.deepEqual(await runInstanceBackupCli(['verify', '--bundle', '/bundle'], f.backend), { format: 'living-memory-instance', version: 2, learningSchemaVersion: 2, status: 'verified', files: 1, sources: 1 });
   const restored = await runInstanceBackupCli(['restore', '--bundle', '/bundle', '--target', '/target'], f.backend) as any;
   assert.equal(restored.status, 'restored-quarantined'); assert.equal(restored.connectorsBlocked, true);
   assert.equal(restored.startup.dataDir, '/target/data'); assert.doesNotMatch(JSON.stringify(restored), /privateAccount|private-instance|invalidated/);
@@ -104,4 +104,22 @@ test('activation awaits asynchronous rejection and scan failures print only appr
     assert.equal(stdout.length, 0);
     assert.equal(stderr.pop(), JSON.stringify({ error: { code } }) + '\n');
   }
+});
+
+
+test('legacy preservation is a restore-only explicit boolean and v1 verification reports its actual schema', async () => {
+  const f=fixture();
+  await runInstanceBackupCli(['restore','--bundle','/bundle','--target','/new','--preserve-legacy-learning-schema'],f.backend);
+  assert.deepEqual(f.calls,[['restore',{bundle:'/bundle',target:'/new',preserveLegacyLearningSchema:true}]]);
+  f.calls.length=0;
+  for(const argv of [
+    ['restore','--bundle','/bundle','--target','/new','--preserve-legacy-learning-schema=true'],
+    ['restore','--bundle','/bundle','--target','/new','--preserve-legacy-learning-schema','false'],
+    ['restore','--bundle','/bundle','--target','/new','--preserve-legacy-learning-schema','--preserve-legacy-learning-schema'],
+    ['backup','--preserve-legacy-learning-schema'],['verify','--bundle','/bundle','--preserve-legacy-learning-schema'],
+    ['activate-connectors','--data-dir','/data','--confirm-bindings','--preserve-legacy-learning-schema'],
+  ])await assert.rejects(runInstanceBackupCli(argv,f.backend),{code:'INVALID_INSTANCE_ARGUMENT'});
+  assert.deepEqual(f.calls,[]);
+  f.backend.verifyInstanceBundle=()=>({version:1,applicationVersion:'0.0.1-preview.1',files:[],sources:[]} as unknown as InstanceManifest);
+  assert.deepEqual(await runInstanceBackupCli(['verify','--bundle','/bundle'],f.backend),{format:'living-memory-instance',version:1,learningSchemaVersion:1,status:'verified',files:0,sources:0});
 });

@@ -34,6 +34,9 @@ export interface LearningOverview {
   sourceId: string;
   asOf: string;
   items: LearningOverviewItem[];
+  /** Namespace-scoped counts; raw consumption and effective evidence remain distinct. */
+  observationAssessments?: { raw: number; effective: number; withdrawn: number; unresolved: number;
+    notYetRecorded: number; revisionCount: number };
   /** Absent on older services; absence must not be displayed as zero suggestions. */
   corrections?: import('./correction-overview.js').CorrectionOverview;
   /** Relation maintenance is independent of text corrections; absent on older services. */

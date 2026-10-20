@@ -142,7 +142,7 @@ test('matching the current H is insufficient when the requested transition confl
     assert.equal(client.store.getConfigHistory().length, 3);
     await assert.rejects(api.putConfig({ halfLifeDays: 14, revision: 1 }, session.writeToken, 'other-space'), { code: 'SOURCE_MISMATCH' });
     const unauthorized = await fetch('/api/config', { method: 'PUT',
-      headers: { 'content-type': 'application/json', 'x-lm-token': 'wrong-token', 'x-lm-source-id': session.sourceId },
+      headers: { 'X-LM-Learning-Protocol': '2', 'content-type': 'application/json', 'x-lm-token': 'wrong-token', 'x-lm-source-id': session.sourceId },
       body: JSON.stringify({ halfLifeDays: 14, revision: 1 }) });
     assert.equal(unauthorized.status, 401);
   } finally { await client.stop(); }

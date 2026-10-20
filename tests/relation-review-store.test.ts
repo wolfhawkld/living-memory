@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -66,16 +66,32 @@ test('relation decisions append CAS history, duplicate exact original after late
   } finally { store.close(); f.cleanup(); }
 });
 
-test('relation review table migrates old store without rewriting legacy payload or changing memory', () => {
-  const f = fixture(); let store = f.open();
-  store.addApplication({ ...app, relationSuggestion: undefined }); store.close();
+test('a missing relation review table in a marked database is rejected without rewriting legacy payload or memory', () => {
+  const f = fixture(); const store = f.open();
+  store.addApplication({ ...app, relationSuggestion: undefined });
+  store.addReview({ eventId: 'anchor', conceptId: 'alpha', sourceRevision: 'alpha-1', kind: 'review', occurredAt: '2026-01-01T00:00:00.000Z' });
+  store.addRetention({ eventId: 'pin', conceptId: 'alpha', sourceRevision: 'alpha-1', active: true, occurredAt: '2026-01-02T00:00:00.000Z', previousEventId: null }, null);
+  store.close();
   const db = new DatabaseSync(f.dbPath); db.exec('DROP TABLE relation_reviews');
-  const oldPayload = db.prepare('SELECT request_payload FROM applications').get(); db.close();
+  const tables = ['applications', 'anchors', 'observations', 'retentions', 'config_history'];
+  const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all()); db.close();
+  const bytes = readFileSync(f.dbPath);
   try {
-    store = f.open();
-    assert.equal(store.addApplication({ ...app, relationSuggestion: undefined }).status, 'duplicate');
+    assert.throws(() => f.open(), { code: 'LEARNING_SCHEMA_INVALID' });
+    assert.deepEqual(readFileSync(f.dbPath), bytes);
+    const unchanged = new DatabaseSync(f.dbPath, { readOnly: true });
+    try { assert.deepEqual(tables.map(table => unchanged.prepare(`SELECT * FROM ${table}`).all()), before); }
+    finally { unchanged.close(); }
+  } finally { f.cleanup(); }
+});
+
+test('relation reviews preserve application payload and leave memory evidence unchanged', () => {
+  const f = fixture(); const store = f.open();
+  try {
+    const legacy = { ...app, relationSuggestion: undefined };
+    store.addApplication(legacy);
+    assert.equal(store.addApplication(legacy).status, 'duplicate');
     assert.throws(() => store.addRelationReview(request()), code('INVALID_BODY'));
-    const migrated = new DatabaseSync(f.dbPath); try { assert.deepEqual(migrated.prepare('SELECT request_payload FROM applications').get(), oldPayload); } finally { migrated.close(); }
     const exportSource = { name: 'synthetic', mode: 'local' as const, conceptCount: 2, limit: 10, diagnostics: [] };
     assert.equal(Object.hasOwn(store.exportData(exportSource, concepts), 'relationReviews'), false);
     store.addApplication({ ...app, eventId: 'relation-app' });

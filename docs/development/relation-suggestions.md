@@ -1,5 +1,7 @@
 # 结构化关系建议与知识整理交接
 
+当前开发版的学习 JSON 已升为 v2（仍接收旧 v1），学习结构与协议也已增加升级门禁；本页此前标注 v1 / 加列的段落为对应功能的历史实现记录。使用当前 develop 前按[版本兼容](../releases/versioning-and-compatibility.md)与[新目录迁移](instance-migration.md)处理已有库。
+
 更新：2026-10-12。LM-014A 在应用 / 总结中保存一个有方向的关系建议，保留提出建议时的两个概念和关系快照，再生成交给 progressive-kg 核对的材料。后续 LM-014B 已接入[当前来源与人工处理复核](relation-reviews.md)。
 
 ## 使用

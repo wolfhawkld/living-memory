@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { archivePendingCorrection, canArchiveCorrectionWrite, flushPendingWrites, getPendingWrites, queuePendingWrite } from '../src/web/api.js';
+import { api, archivePendingCorrection, canArchiveCorrectionWrite, flushPendingWrites, getPendingWrites, queuePendingWrite } from '../src/web/api.js';
 import type { RelationReviewRequest } from '../src/shared/relation-reviews.js';
 import { createMemoryLockManager } from './helpers/memory-lock-manager.js';
 
@@ -22,7 +22,10 @@ async function browserTest(run: (values: Map<string, string>, failArchive: () =>
   Object.defineProperty(globalThis, 'window', { configurable: true, value: browser });
   if (typeof globalThis.CustomEvent !== 'function') Object.defineProperty(globalThis, 'CustomEvent', { configurable: true,
     value: class extends Event { detail: unknown; constructor(type: string, init?: CustomEventInit) { super(type); this.detail = init?.detail; } } });
-  try { await run(values, () => { archiveFailed = !archiveFailed; }); }
+  try {
+    globalThis.fetch = async () => Response.json({ learningProtocolVersion: 2, writeToken: 'token', sourceId: 'relation-review-space' });
+    await api.getSession();
+    await run(values, () => { archiveFailed = !archiveFailed; }); }
   finally {
     globalThis.fetch = oldFetch;
     if (oldWindow) Object.defineProperty(globalThis, 'window', oldWindow); else Reflect.deleteProperty(globalThis, 'window');

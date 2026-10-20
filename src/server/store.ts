@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import { ActivityStore } from './activity-store.js';
-import { mkdirSync } from 'node:fs';
+import { inspectLearningSchema, initializeLearningSchemaV2 } from './learning-schema.js';
+import { ObservationRevisionStore, ObservationRevisionStoreError } from './observation-revision-store.js';
+import { projectObservationAssessments } from '../core/observation-revisions.js';
+import { parseObservationRevisionRequest, type ObservationRevision } from '../shared/observation-revisions.js';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
@@ -12,6 +16,7 @@ import type {
   ConceptHistoryEntry,
   ConfigWriteReceipt,
   ExportData,
+  ExportDataV2,
   LearningEvidence,
   Layout,
   MemoryState,
@@ -67,6 +72,8 @@ import {
 import { DAY_MS, MODEL_VERSION } from '../shared/types.js';
 import { decayAt, isValidInstant, projectMemory } from '../core/time-model.js';
 import { summarizeLearning } from '../core/learning-evidence.js';
+import { buildLearningOverview } from '../core/learning-overview.js';
+import type { GraphLink } from '../shared/types.js';
 import { buildLearningProgress } from '../core/learning-progress.js';
 import { buildScenarioPromptPage, type ScenarioPromptCursor } from '../core/scenario-prompts.js';
 import { buildImportPlan, type PreparedConfig, type PreparedImport } from './import-plan.js';
@@ -114,6 +121,16 @@ export class StoreError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+
+/** Read-only startup gate; call before source registration or credential rotation. */
+export function assertLearningDatabaseReady(dbPath: string): void {
+  if (!existsSync(dbPath)) return;
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const schema = inspectLearningSchema(db);
+    if (schema.kind === 'legacy-v1') throw new StoreError('LEARNING_SCHEMA_UPGRADE_REQUIRED', '请先离线备份并恢复到新目录，完成学习数据库升级。', 503);
+  } finally { db.close(); }
 }
 
 function canonicalJson(value: unknown): string {
@@ -590,8 +607,10 @@ export class Store {
   readonly namespace: string;
   readonly dbPath: string;
   readonly activity: ActivityStore;
+  readonly observationRevisions: ObservationRevisionStore;
   private readonly now: () => Date;
   private readonly db: DatabaseSync;
+  private readSequence = 0;
 
   constructor(options: StoreOptions) {
     this.namespace = options.namespace;
@@ -600,367 +619,53 @@ export class Store {
     mkdirSync(dirname(this.dbPath), { recursive: true });
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
-    this.initialize();
-    this.activity = new ActivityStore({ db: this.db, namespace: this.namespace, now: this.now });
+    try {
+      const schema = inspectLearningSchema(this.db);
+      if (schema.kind === 'legacy-v1') throw new StoreError('LEARNING_SCHEMA_UPGRADE_REQUIRED', '请先离线备份并恢复到新目录，完成学习数据库升级。', 503);
+      if (schema.kind === 'empty') initializeLearningSchemaV2(this.db, { recordedAt: iso(this.now()) });
+      this.initialize();
+      this.activity = new ActivityStore({ db: this.db, namespace: this.namespace, now: this.now });
+      this.observationRevisions = new ObservationRevisionStore({ db: this.db, namespace: this.namespace, now: this.now,
+        getObservation: (_namespace, eventId) => this.getObservationsStrict().find(event => event.eventId === eventId) ?? null,
+        findOtherEvent: (_namespace, eventId) => {
+          const event = this.findEvent(eventId);
+          return event && event.kind !== 'observation-revision' ? { kind: event.kind, requestPayload: event.payload } : null;
+        } });
+    } catch (error) { this.db.close(); throw error; }
   }
 
   close(): void {
     this.db.close();
   }
 
-  private initialize(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS namespaces (
-        namespace TEXT PRIMARY KEY,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS config_history (
-        namespace TEXT NOT NULL,
-        revision INTEGER NOT NULL,
-        model_version TEXT NOT NULL,
-        half_life_days REAL NOT NULL,
-        recorded_at TEXT NOT NULL,
-        PRIMARY KEY(namespace, revision)
-      );
-      CREATE TABLE IF NOT EXISTS anchors (
-        namespace TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        source_revision TEXT NOT NULL,
-        occurred_at TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('review', 'estimated')),
-        request_payload TEXT NOT NULL,
-        PRIMARY KEY(namespace, event_id)
-      );
-      CREATE TABLE IF NOT EXISTS observations (
-        namespace TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        source_revision TEXT NOT NULL,
-        observed_at TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        config_revision INTEGER NOT NULL,
-        half_life_days REAL NOT NULL,
-        anchor_event_id TEXT,
-        elapsed_days REAL,
-        decay REAL,
-        answer TEXT NOT NULL,
-        rating TEXT NOT NULL CHECK(rating IN ('clear', 'partial', 'blank')),
-        exposure TEXT NOT NULL CHECK(exposure IN ('unexposed', 'exposed', 'unknown')),
-        observed_exposure INTEGER NOT NULL CHECK(observed_exposure IN (0, 1)),
-        learning_json TEXT,
-        evidence_mode TEXT,
-        request_payload TEXT NOT NULL,
-        PRIMARY KEY(namespace, event_id)
-      );
-      CREATE TABLE IF NOT EXISTS retentions (
-        namespace TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        source_revision TEXT NOT NULL,
-        occurred_at TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        active INTEGER NOT NULL CHECK(active IN (0, 1)),
-        previous_event_id TEXT,
-        request_payload TEXT NOT NULL,
-        PRIMARY KEY(namespace, event_id)
-      );
-      CREATE TABLE IF NOT EXISTS applications (
-        namespace TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        source_revision TEXT NOT NULL,
-        occurred_at TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('application', 'summary')),
-        context TEXT NOT NULL,
-        content TEXT NOT NULL,
-        outcome TEXT NOT NULL CHECK(outcome IN ('success', 'partial', 'failure', 'unverified')),
-        assistance TEXT NOT NULL CHECK(assistance IN ('independent', 'resources', 'people-or-ai', 'mixed', 'unknown')),
-        result TEXT NOT NULL,
-        limitations TEXT NOT NULL,
-        insight TEXT NOT NULL,
-        correction TEXT NOT NULL,
-        references_text TEXT NOT NULL,
-        relation_suggestion_json TEXT,
-        request_payload TEXT NOT NULL,
-        PRIMARY KEY(namespace, event_id)
-      );
-      CREATE TABLE IF NOT EXISTS corrections (
-        namespace TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        application_event_id TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        source_revision TEXT NOT NULL,
-        occurred_at TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        previous_event_id TEXT,
-        status TEXT NOT NULL CHECK(status IN ('resolved', 'dismissed', 'open')),
-        note TEXT NOT NULL,
-        request_payload TEXT NOT NULL,
-        PRIMARY KEY(namespace, event_id)
-      );
-      CREATE TABLE IF NOT EXISTS relation_reviews (
-        namespace TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        application_event_id TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        occurred_at TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        previous_event_id TEXT,
-        status TEXT NOT NULL CHECK(status IN ('resolved', 'dismissed', 'open')),
-        note TEXT NOT NULL,
-        basis_json TEXT NOT NULL,
-        request_payload TEXT NOT NULL,
-        PRIMARY KEY(namespace, event_id)
-      );
-      CREATE INDEX IF NOT EXISTS relation_reviews_by_application
-        ON relation_reviews(namespace, application_event_id, occurred_at, recorded_at, event_id);
-      CREATE TABLE IF NOT EXISTS practice_cards (
-        namespace TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        card_id TEXT NOT NULL,
-        previous_event_id TEXT,
-        occurred_at TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('detail', 'comparison', 'scenario')),
-        title TEXT NOT NULL,
-        prompt TEXT NOT NULL,
-        reference_answer TEXT NOT NULL,
-        reference_notes TEXT NOT NULL,
-        sources_json TEXT NOT NULL,
-        source_checked INTEGER NOT NULL CHECK(source_checked = 1),
-        scenario_json TEXT,
-        paused INTEGER NOT NULL CHECK(paused IN (0, 1)),
-        request_payload TEXT NOT NULL,
-        PRIMARY KEY(namespace, event_id)
-      );
-      CREATE TABLE IF NOT EXISTS practice_attempts (
-        namespace TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        card_id TEXT NOT NULL,
-        card_event_id TEXT NOT NULL,
-        answered_at TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        answer TEXT NOT NULL,
-        confidence INTEGER,
-        confidence_at TEXT,
-        exposure TEXT NOT NULL CHECK(exposure IN ('unexposed', 'exposed', 'unknown')),
-        observed_exposure INTEGER NOT NULL CHECK(observed_exposure IN (0, 1)),
-        cue TEXT NOT NULL CHECK(cue IN ('independent', 'hinted', 'lookup', 'unknown')),
-        outcome TEXT NOT NULL CHECK(outcome IN ('success', 'partial', 'failure', 'unverified')),
-        check_notes TEXT NOT NULL,
-        scenario_json TEXT,
-        request_payload TEXT NOT NULL,
-        PRIMARY KEY(namespace, event_id)
-      );
-      CREATE TABLE IF NOT EXISTS practice_card_sources (
-        namespace TEXT NOT NULL,
-        card_event_id TEXT NOT NULL,
-        card_id TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        source_revision TEXT NOT NULL,
-        PRIMARY KEY(namespace, card_event_id, concept_id),
-        FOREIGN KEY(namespace, card_event_id) REFERENCES practice_cards(namespace, event_id) ON DELETE CASCADE
-      );
-      CREATE TABLE IF NOT EXISTS layouts (
-        namespace TEXT PRIMARY KEY,
-        layout_json TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS review_plans (
-        namespace TEXT PRIMARY KEY,
-        revision INTEGER NOT NULL,
-        daily_budget INTEGER NOT NULL,
-        concepts_json TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS imported_concepts (
-        namespace TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        source_path TEXT NOT NULL,
-        source_revision TEXT NOT NULL,
-        PRIMARY KEY(namespace, concept_id)
-      );
-      CREATE TABLE IF NOT EXISTS identity_catalog (
-        namespace TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        source_path TEXT,
-        source_revision TEXT,
-        PRIMARY KEY(namespace, concept_id)
-      );
-      CREATE TABLE IF NOT EXISTS identity_bindings (
-        namespace TEXT NOT NULL,
-        operation_id TEXT NOT NULL,
-        raw_concept_id TEXT NOT NULL,
-        concept_id TEXT NOT NULL,
-        from_path TEXT,
-        to_path TEXT NOT NULL,
-        source_revision TEXT NOT NULL,
-        confirmed_at TEXT NOT NULL,
-        backup_id TEXT NOT NULL,
-        request_hash TEXT NOT NULL,
-        receipt_json TEXT NOT NULL,
-        PRIMARY KEY(namespace, operation_id),
-        UNIQUE(namespace, raw_concept_id)
-      );
-      CREATE TABLE IF NOT EXISTS import_receipts (
-        namespace TEXT NOT NULL,
-        import_id TEXT NOT NULL,
-        request_hash TEXT NOT NULL,
-        receipt_json TEXT NOT NULL,
-        PRIMARY KEY(namespace, import_id)
-      );
-      CREATE INDEX IF NOT EXISTS anchors_by_concept_time
-        ON anchors(namespace, concept_id, occurred_at, recorded_at);
-      CREATE INDEX IF NOT EXISTS observations_by_concept
-        ON observations(namespace, concept_id, observed_at);
-      CREATE INDEX IF NOT EXISTS anchors_by_concept_history
-        ON anchors(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
-      CREATE INDEX IF NOT EXISTS observations_by_concept_history
-        ON observations(namespace, concept_id, observed_at DESC, recorded_at DESC, event_id DESC);
-      CREATE INDEX IF NOT EXISTS retentions_by_concept_history
-        ON retentions(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
-      CREATE INDEX IF NOT EXISTS applications_by_concept_history
-        ON applications(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
-      CREATE INDEX IF NOT EXISTS corrections_by_application_history
-        ON corrections(namespace, application_event_id, occurred_at DESC, recorded_at DESC, event_id DESC);
-      CREATE INDEX IF NOT EXISTS corrections_by_concept_history
-        ON corrections(namespace, concept_id, occurred_at DESC, recorded_at DESC, event_id DESC);
-      CREATE INDEX IF NOT EXISTS practice_cards_by_card
-        ON practice_cards(namespace, card_id, occurred_at, recorded_at, event_id);
-      CREATE INDEX IF NOT EXISTS practice_attempts_by_card
-        ON practice_attempts(namespace, card_id, answered_at, recorded_at, event_id);
-      CREATE INDEX IF NOT EXISTS practice_sources_by_concept
-        ON practice_card_sources(namespace, concept_id, card_event_id);
-      CREATE INDEX IF NOT EXISTS identity_bindings_by_concept
-        ON identity_bindings(namespace, concept_id, confirmed_at, operation_id);
-    `);
-    this.migratePracticeSchema();
-    const applicationColumns = this.db.prepare('PRAGMA table_info(applications)').all() as Array<{ name: string }>;
-    if (!applicationColumns.some((column) => column.name === 'relation_suggestion_json')) {
-      this.db.exec('ALTER TABLE applications ADD COLUMN relation_suggestion_json TEXT');
-    }
-    // CREATE TABLE IF NOT EXISTS does not update an existing SQLite table.
-    // Keep the evidence column additive so databases created by older builds
-    // remain readable without rewriting historical observations.
-    const observationColumns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
-    if (!observationColumns.some((column) => column.name === 'learning_json')) {
-      this.db.exec('ALTER TABLE observations ADD COLUMN learning_json TEXT');
-    }
-    if (!observationColumns.some((column) => column.name === 'evidence_mode')) {
-      this.db.exec('ALTER TABLE observations ADD COLUMN evidence_mode TEXT');
-    }
-    const createdAt = iso(this.now());
-    this.db.prepare('INSERT OR IGNORE INTO namespaces(namespace, created_at) VALUES (?, ?)').run(this.namespace, createdAt);
-    const existing = this.db.prepare('SELECT revision FROM config_history WHERE namespace = ? ORDER BY revision DESC LIMIT 1').get(this.namespace) as { revision?: number } | undefined;
-    if (!existing) {
-      this.db.prepare('INSERT INTO config_history(namespace, revision, model_version, half_life_days, recorded_at) VALUES (?, 1, ?, ?, ?)').run(this.namespace, MODEL_VERSION, DEFAULT_HALF_LIFE_DAYS, createdAt);
+  private readSnapshot<T>(read: () => T): T {
+    const name = `lm_store_read_${++this.readSequence}`;
+    this.db.exec(`SAVEPOINT ${name}`);
+    try {
+      const result = read();
+      this.db.exec(`RELEASE ${name}`);
+      return result;
+    } catch (error) {
+      try { this.db.exec(`ROLLBACK TO ${name}; RELEASE ${name}`); } catch { /* keep safe original error */ }
+      throw error;
     }
   }
 
-  /**
-   * Upgrade the pre-scenario practice tables without losing the child source
-   * rows that carry the foreign key. SQLite cannot alter a CHECK constraint,
-   * so the old parent and child are copied in one transaction. Parent rows are
-   * inserted with their original rowid and order, preserving the tail lookup
-   * used by append-only card revisions.
-   */
-  private migratePracticeSchema(): void {
-    const schemaSql = (): string => {
-      const table = this.db.prepare(`SELECT sql FROM sqlite_master
-        WHERE type = 'table' AND name = 'practice_cards'`).get() as { sql?: string } | undefined;
-      return table?.sql ?? '';
-    };
-    const initiallyNeedsRebuild = !schemaSql().toLowerCase().includes("'scenario'");
-    let inTransaction = false;
-    if (initiallyNeedsRebuild) this.db.exec('PRAGMA foreign_keys = OFF');
+  private initialize(): void {
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
-      inTransaction = true;
-      // Re-read after taking the write lock. Another Store may have completed
-      // this migration while this connection was waiting for the lock.
-      const needsCardRebuild = !schemaSql().toLowerCase().includes("'scenario'");
-      if (needsCardRebuild) {
-        this.db.exec(`
-          DROP INDEX IF EXISTS practice_cards_by_card;
-          DROP INDEX IF EXISTS practice_attempts_by_card;
-          DROP INDEX IF EXISTS practice_sources_by_concept;
-          ALTER TABLE practice_card_sources RENAME TO practice_card_sources_legacy;
-          ALTER TABLE practice_cards RENAME TO practice_cards_legacy;
-          CREATE TABLE practice_cards (
-            namespace TEXT NOT NULL,
-            event_id TEXT NOT NULL,
-            card_id TEXT NOT NULL,
-            previous_event_id TEXT,
-            occurred_at TEXT NOT NULL,
-            recorded_at TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK(kind IN ('detail', 'comparison', 'scenario')),
-            title TEXT NOT NULL,
-            prompt TEXT NOT NULL,
-            reference_answer TEXT NOT NULL,
-            reference_notes TEXT NOT NULL,
-            sources_json TEXT NOT NULL,
-            source_checked INTEGER NOT NULL CHECK(source_checked = 1),
-            scenario_json TEXT,
-            paused INTEGER NOT NULL CHECK(paused IN (0, 1)),
-            request_payload TEXT NOT NULL,
-            PRIMARY KEY(namespace, event_id)
-          );
-          INSERT INTO practice_cards(
-            rowid, namespace, event_id, card_id, previous_event_id, occurred_at, recorded_at,
-            kind, title, prompt, reference_answer, reference_notes, sources_json,
-            source_checked, scenario_json, paused, request_payload
-          ) SELECT
-            rowid, namespace, event_id, card_id, previous_event_id, occurred_at, recorded_at,
-            kind, title, prompt, reference_answer, reference_notes, sources_json,
-            source_checked, NULL, paused, request_payload
-          FROM practice_cards_legacy ORDER BY rowid;
-          CREATE TABLE practice_card_sources (
-            namespace TEXT NOT NULL,
-            card_event_id TEXT NOT NULL,
-            card_id TEXT NOT NULL,
-            concept_id TEXT NOT NULL,
-            source_revision TEXT NOT NULL,
-            PRIMARY KEY(namespace, card_event_id, concept_id),
-            FOREIGN KEY(namespace, card_event_id) REFERENCES practice_cards(namespace, event_id) ON DELETE CASCADE
-          );
-          INSERT INTO practice_card_sources(rowid, namespace, card_event_id, card_id, concept_id, source_revision)
-            SELECT rowid, namespace, card_event_id, card_id, concept_id, source_revision
-            FROM practice_card_sources_legacy ORDER BY rowid;
-          DROP TABLE practice_card_sources_legacy;
-          DROP TABLE practice_cards_legacy;
-        `);
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      const createdAt = iso(this.now());
+      this.db.prepare('INSERT OR IGNORE INTO namespaces(namespace, created_at) VALUES (?, ?)').run(this.namespace, createdAt);
+      const existing = this.db.prepare('SELECT revision FROM config_history WHERE namespace = ? ORDER BY revision DESC LIMIT 1').get(this.namespace) as { revision?: number } | undefined;
+      if (!existing) {
+        this.db.prepare('INSERT INTO config_history(namespace, revision, model_version, half_life_days, recorded_at) VALUES (?, 1, ?, ?, ?)').run(this.namespace, MODEL_VERSION, DEFAULT_HALF_LIFE_DAYS, createdAt);
       }
-      const cardColumns = this.db.prepare('PRAGMA table_info(practice_cards)').all() as Array<{ name: string }>;
-      const attemptColumns = this.db.prepare('PRAGMA table_info(practice_attempts)').all() as Array<{ name: string }>;
-      if (!cardColumns.some((column) => column.name === 'scenario_json')) {
-        this.db.exec('ALTER TABLE practice_cards ADD COLUMN scenario_json TEXT');
-      }
-      if (!attemptColumns.some((column) => column.name === 'scenario_json')) {
-        this.db.exec('ALTER TABLE practice_attempts ADD COLUMN scenario_json TEXT');
-      }
-      this.db.exec('COMMIT');
-      inTransaction = false;
+      this.db.exec('COMMIT'); ownsTxn = false;
     } catch (error) {
-      if (inTransaction) {
-        try { this.db.exec('ROLLBACK'); } catch { /* preserve migration error */ }
-      }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve cause */ } }
       throw error;
-    } finally {
-      if (initiallyNeedsRebuild) this.db.exec('PRAGMA foreign_keys = ON');
     }
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS practice_cards_by_card
-        ON practice_cards(namespace, card_id, occurred_at, recorded_at, event_id);
-      CREATE INDEX IF NOT EXISTS practice_attempts_by_card
-        ON practice_attempts(namespace, card_id, answered_at, recorded_at, event_id);
-      CREATE INDEX IF NOT EXISTS practice_sources_by_concept
-        ON practice_card_sources(namespace, concept_id, card_event_id);
-    `);
   }
 
   getConfig(): ModelConfig {
@@ -1019,7 +724,9 @@ export class Store {
     }
   }
 
-  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | 'relation-review' | PracticeEventKind; payload: string } | null {
+  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | 'relation-review' | 'observation-revision' | PracticeEventKind; payload: string } | null {
+    const revision = this.db.prepare('SELECT request_payload FROM observation_revisions WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
+    if (revision) return { kind: 'observation-revision', payload: revision.request_payload };
     const anchor = this.db.prepare('SELECT request_payload FROM anchors WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (anchor) return { kind: 'anchor', payload: anchor.request_payload };
     const observation = this.db.prepare('SELECT request_payload FROM observations WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
@@ -1072,13 +779,21 @@ export class Store {
     const occurredAt = providedOccurredAt ?? iso(now);
     if (parseDate(occurredAt) > nowMs) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
     const recordedAt = iso(now);
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      const concurrent = this.findEvent(input.eventId);
+      if (concurrent) {
+        if (concurrent.kind !== 'anchor' || concurrent.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用。', 409);
+        this.db.exec('COMMIT'); ownsTxn = false;
+        return { status: 'duplicate', eventId: input.eventId };
+      }
       this.db.prepare(`INSERT INTO anchors(namespace, event_id, concept_id, source_revision, occurred_at, recorded_at, kind, request_payload)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(this.namespace, input.eventId, input.conceptId, input.sourceRevision, occurredAt, recordedAt, input.kind, requestPayload);
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
+      if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
     return { status: 'accepted', eventId: input.eventId };
@@ -1129,8 +844,15 @@ export class Store {
     }
     const computed = computeDecay(anchor?.occurredAt ?? null, config.halfLifeDays, observedAt);
     const recordedAt = iso(this.now());
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      const concurrent = this.findEvent(input.eventId);
+      if (concurrent) {
+        if (concurrent.kind !== 'observation' || concurrent.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用。', 409);
+        this.db.exec('COMMIT'); ownsTxn = false;
+        return { status: 'duplicate', eventId: input.eventId };
+      }
       this.db.prepare(`INSERT INTO observations(
         namespace, event_id, concept_id, source_revision, observed_at, recorded_at,
         config_revision, half_life_days, anchor_event_id, elapsed_days, decay,
@@ -1155,9 +877,10 @@ export class Store {
         evidenceMode ?? null,
         requestPayload,
       );
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
+      if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
     return { status: 'accepted', eventId: input.eventId };
@@ -1185,8 +908,15 @@ export class Store {
     const now = this.now();
     if (parseDate(occurredAt) > now.getTime()) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
     const recordedAt = iso(now);
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      const concurrent = this.findEvent(input.eventId);
+      if (concurrent) {
+        if (concurrent.kind !== 'retention' || concurrent.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用。', 409);
+        this.db.exec('COMMIT'); ownsTxn = false;
+        return { status: 'duplicate', eventId: input.eventId };
+      }
       const currentPreviousEventId = this.getRetention(input.conceptId)?.eventId ?? null;
       if (expectedPreviousEventId !== currentPreviousEventId || previousEventId !== currentPreviousEventId) {
         throw new StoreError('RETENTION_CONFLICT', '长期保持状态已变化，请刷新节点后重试。', 409);
@@ -1205,9 +935,9 @@ export class Store {
         previousEventId,
         requestPayload,
       );
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
@@ -1235,8 +965,15 @@ export class Store {
       throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
     }
     const recordedAt = iso(now);
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      const concurrent = this.findEvent(request.eventId);
+      if (concurrent) {
+        if (concurrent.kind !== 'application' || concurrent.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用。', 409);
+        this.db.exec('COMMIT'); ownsTxn = false;
+        return { status: 'duplicate', eventId: request.eventId };
+      }
       this.db.prepare(`INSERT INTO applications(
         namespace, event_id, concept_id, source_revision, occurred_at, recorded_at,
         kind, context, content, outcome, assistance, result, limitations,
@@ -1261,9 +998,10 @@ export class Store {
         request.relationSuggestion ? canonicalJson(request.relationSuggestion) : null,
         requestPayload,
       );
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
+      if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
     return { status: 'accepted', eventId: request.eventId };
@@ -1910,7 +1648,7 @@ export class Store {
     return paths;
   }
 
-  getObservations(conceptId?: string, sourceRevision?: string): Observation[] {
+  getObservations(conceptId?: string, sourceRevision?: string, strict = false): Observation[] {
     let query = `SELECT event_id, concept_id, source_revision, observed_at, recorded_at,
       config_revision, half_life_days, anchor_event_id, elapsed_days, decay, answer, rating, exposure, observed_exposure, learning_json, evidence_mode
       FROM observations WHERE namespace = ?`;
@@ -1930,7 +1668,13 @@ export class Store {
         answer: string; rating: RecallRating; exposure: 'unexposed' | 'exposed' | 'unknown'; observed_exposure: number; learning_json: string | null; evidence_mode: Observation['evidenceMode'] | null;
       }>;
     return rows.map((row) => {
-      const learning = parseStoredLearning(row.learning_json);
+      let learning: LearningEvidence | undefined;
+      try {
+        learning = strict && row.learning_json !== null
+          ? normalizeLearningEvidence(JSON.parse(row.learning_json), row.observed_at)
+          : parseStoredLearning(row.learning_json);
+        if (strict && row.evidence_mode !== null) normalizeObservationEvidenceMode(row.evidence_mode, row.answer);
+      } catch { throw new ObservationRevisionStoreError('OBSERVATION_REVISION_DATA_INVALID', 503); }
       return {
         eventId: row.event_id,
         conceptId: row.concept_id,
@@ -1950,6 +1694,47 @@ export class Store {
         ...(row.evidence_mode !== null ? { evidenceMode: normalizeObservationEvidenceMode(row.evidence_mode, row.answer) } : {}),
       };
     });
+  }
+
+  /** Strict rows for revision parents, effective statistics and complete V2 backups. */
+  private getObservationsStrict(conceptId?: string): Observation[] {
+    return this.getObservations(conceptId, undefined, true);
+  }
+
+  getLearningOverview(sourceId: string, concepts: Concept[], links: GraphLink[], asOf: string) {
+    return this.readSnapshot(() => {
+      const raw = this.getObservationsStrict();
+      const projection = projectObservationAssessments(raw, this.observationRevisions.getRevisions(), asOf);
+      const observationAssessments = {
+        raw: raw.length, effective: projection.effective.length,
+        withdrawn: projection.states.filter(item => item.status === 'withdrawn').length,
+        unresolved: projection.states.filter(item => item.status === 'unresolved').length,
+        notYetRecorded: projection.states.filter(item => item.status === 'not-yet-recorded').length,
+        revisionCount: this.observationRevisions.getRevisionCount(),
+      };
+      return { ...buildLearningOverview({ sourceId, asOf, concepts, states: this.getStates(concepts, asOf),
+        observations: projection.effective.map(item => item.observation), applications: this.getApplications(),
+        corrections: this.getCorrections(), relationData: { links, reviews: this.getRelationReviews() }, anchors: this.getAnchors() }),
+        observationAssessments };
+    });
+  }
+
+  getEffectiveObservations(asOf: string, conceptId?: string): Observation[] {
+    return this.readSnapshot(() => this.getObservationProjection(asOf, conceptId).effective.map(item => item.observation));
+  }
+
+  private getObservationProjection(asOf: string, conceptId?: string) {
+    // Ownership comes from the immutable parent. A damaged revision's claimed
+    // concept must never make a bad chain disappear and revive the raw score.
+    const observations = this.getObservationsStrict();
+    const projection = projectObservationAssessments(observations, this.observationRevisions.getRevisions(), asOf);
+    if (conceptId === undefined) return projection;
+    const parents = new Set(observations.filter(event => event.conceptId === conceptId).map(event => event.eventId));
+    return { ...projection,
+      effective: projection.effective.filter(item => parents.has(item.observationEventId)),
+      states: projection.states.filter(item => parents.has(item.observationEventId)),
+      issues: projection.issues.filter(item => item.observationEventId !== null && parents.has(item.observationEventId)) };
+
   }
 
   /**
@@ -2466,6 +2251,16 @@ export class Store {
     rawCursor?: string,
     applicationEventId?: string,
   ): ConceptHistory {
+    return this.readSnapshot(() => this.readConceptHistory(concept, asOf, limit, rawCursor, applicationEventId));
+  }
+
+  private readConceptHistory(
+    concept: Concept,
+    asOf: string,
+    limit: number,
+    rawCursor?: string,
+    applicationEventId?: string,
+  ): ConceptHistory {
     const normalizedAsOf = normalizeDate(asOf, 'INVALID_HISTORY_AS_OF');
     const cursor = rawCursor === undefined ? null : decodeHistoryCursor(rawCursor);
     if (cursor && (cursor.namespace !== this.namespace || cursor.conceptId !== concept.id)) invalidHistoryCursor();
@@ -2718,7 +2513,8 @@ export class Store {
         corrections[entry.event_id] = this.getCorrectionHistory(entry.event_id);
       }
     }
-    const conceptObservations = this.getObservations(concept.id);
+    const assessmentProjection = this.getObservationProjection(normalizedAsOf, concept.id);
+    const conceptObservations = assessmentProjection.effective.map(item => item.observation);
     return {
       sourceId: this.namespace,
       conceptId: concept.id,
@@ -2734,6 +2530,11 @@ export class Store {
         observations: conceptObservations, asOf: normalizedAsOf }),
       corrections,
       correctionCount: correctionCountRow.count,
+      observationRevisionCount: this.observationRevisions.getRevisionCount(),
+      observationAssessmentVersion: createHash('sha256').update(canonicalJson(assessmentProjection.states)).digest('hex'),
+      observationAssessments: Object.fromEntries(assessmentProjection.states
+        .filter(item => entries.some(entry => entry.type === 'observation' && entry.event.eventId === item.observationEventId))
+        .map(({ audit: _audit, ...item }) => [item.observationEventId, item])),
     };
   }
 
@@ -3404,6 +3205,18 @@ export class Store {
     return canonicalJson(request);
   }
 
+  private insertImportedObservationRevision(event: ObservationRevision): void {
+    // Already replanned under this transaction's write lock. Preserve imported receipts.
+    const { conceptId: _concept, sourceRevision: _source, recordedAt: _receipt, ...fields } = event;
+    const request = parseObservationRevisionRequest(fields);
+    if (this.findEvent(event.eventId)) this.importEventConflict(event.eventId);
+    this.db.prepare(`INSERT INTO observation_revisions(namespace,event_id,observation_event_id,previous_event_id,concept_id,source_revision,
+      occurred_at,recorded_at,action,reason,note,assessment_json,request_payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      this.namespace, event.eventId, event.observationEventId, event.previousEventId, event.conceptId, event.sourceRevision,
+      event.occurredAt, event.recordedAt, event.action, event.reason, event.note ?? null,
+      event.action === 'revise' ? JSON.stringify(event.assessment) : null, JSON.stringify(request));
+  }
+
   private insertImportedObservation(event: Observation): void {
     this.ensureEventId(event.eventId);
     const requestPayload = this.observationRequestPayload(event);
@@ -3667,8 +3480,9 @@ export class Store {
     this.ensureEventId(request.importId);
     if (request.confirmed !== true) throw new StoreError('IMPORT_NOT_CONFIRMED', '导入前必须确认预览结果。');
     const requestHash = createHash('sha256').update(canonicalJson(request), 'utf8').digest('hex');
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
       const existing = this.db.prepare(`SELECT request_hash, receipt_json
         FROM import_receipts WHERE namespace = ? AND import_id = ?`).get(this.namespace, request.importId) as {
           request_hash: string; receipt_json: string;
@@ -3681,7 +3495,7 @@ export class Store {
         try { original = JSON.parse(existing.receipt_json) as ImportReceipt; } catch {
           throw new StoreError('IMPORT_RECEIPT_CORRUPT', '导入收据数据无效，请检查本地数据。', 500);
         }
-        this.db.exec('COMMIT');
+        this.db.exec('COMMIT'); ownsTxn = false;
         return { ...original, status: 'duplicate' };
       }
 
@@ -3711,6 +3525,7 @@ export class Store {
         this.insertImportedAnchor(anchor, requestForAnchor);
       }
       for (const observation of prepared.newObservations) this.insertImportedObservation(observation);
+      for (const revision of prepared.newObservationRevisions) this.insertImportedObservationRevision(revision);
       for (const retention of prepared.newRetentions) this.insertImportedRetention(retention);
       for (const application of prepared.newApplications) this.insertImportedApplication(application);
       for (const review of prepared.newRelationReviews) this.insertImportedRelationReview(review);
@@ -3732,16 +3547,20 @@ export class Store {
       };
       this.db.prepare(`INSERT INTO import_receipts(namespace, import_id, request_hash, receipt_json)
         VALUES (?, ?, ?, ?)`).run(this.namespace, request.importId, requestHash, canonicalJson(accepted));
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
       return accepted;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw new StoreError('IMPORT_FAILED', safeSqliteMessage(error), 503);
     }
   }
 
-  exportData(source: ExportData['source'], concepts: Concept[]): ExportData {
+  exportData(source: ExportData['source'], concepts: Concept[]): ExportDataV2 {
+    return this.readSnapshot(() => this.readExportData(source, concepts));
+  }
+
+  private readExportData(source: ExportData['source'], concepts: Concept[]): ExportDataV2 {
     const bindings = this.getIdentityBindings();
     const boundRawIds = new Set(bindings.map((binding) => binding.rawConceptId));
     const liveConcepts = concepts
@@ -3780,7 +3599,8 @@ export class Store {
     }
     const practice = this.getPracticeData();
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      observationRevisions: this.observationRevisions.getRevisions(),
       exportedAt: iso(this.now()),
       source,
       concepts: [...mergedConcepts.values()].sort((left, right) => left.id.localeCompare(right.id)),
@@ -3788,7 +3608,7 @@ export class Store {
       config: this.getConfig(),
       configHistory: this.getConfigHistory(),
       anchors: this.getAnchors(),
-      observations: this.getObservations(),
+      observations: this.getObservationsStrict(),
       retentions: this.getRetentions(),
       applications,
       corrections: this.getCorrections(),

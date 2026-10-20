@@ -1,8 +1,14 @@
+import { LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_VERSION } from '../shared/learning-protocol';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import type { AccountDirectory, AccountStatus, AccountUser } from '../shared/accounts';
 import { api } from './api';
 import { ThemeProvider } from './ThemeProvider';
 import { ThemeSelector } from './ThemeSelector';
+
+/** Bind account writes, including logout, to the authenticated restored instance. */
+export function authSessionHeaders(session: { writeToken: string; sourceId: string; instanceId?: string }): Record<string, string> {
+  return { 'X-LM-Token': session.writeToken, 'X-LM-Source-ID': session.sourceId, 'X-LM-Instance-ID': session.instanceId ?? 'legacy' };
+}
 
 const AUTH_CHANGED_KEY = 'living-memory.auth-changed.v1';
 const AUTH_CHANGED_MESSAGE = 'changed';
@@ -114,6 +120,7 @@ async function authRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
       ...init,
       headers: {
         Accept: 'application/json',
+        [LEARNING_PROTOCOL_HEADER]: String(LEARNING_PROTOCOL_VERSION),
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
         ...init.headers,
       },
@@ -249,8 +256,7 @@ function AdminDialog({ open, user, onClose, onAuthRequired }: {
     return authRequest<T>(path, {
       ...init,
       headers: {
-        'X-LM-Token': session.writeToken,
-        'X-LM-Source-ID': session.sourceId,
+        ...authSessionHeaders(session),
         ...init.headers,
       },
     });
@@ -481,6 +487,7 @@ export function AuthGate(): ReactElement {
     setBusy(true);
     setAdminOpen(false);
     invalidateStatusChecks();
+    api.configureSessionScope(null);
     // Unmount App before waiting for the network, so an old user's graph and
     // draft are never visible while the cookie is being invalidated.
     statusRef.current = null;
@@ -489,11 +496,11 @@ export function AuthGate(): ReactElement {
     setView('checking');
     setError(null);
     try {
-      let session: { writeToken: string; sourceId: string } | null = null;
+      let session: { writeToken: string; sourceId: string; instanceId?: string } | null = null;
       try { session = await api.getSession(); } catch { /* an expired cookie can still be cleared by logout */ }
       await authRequest('/auth/logout', {
         method: 'POST',
-        ...(session ? { headers: { 'X-LM-Token': session.writeToken, 'X-LM-Source-ID': session.sourceId } } : {}),
+        ...(session ? { headers: authSessionHeaders(session) } : {}),
       });
       announceAuthChange();
     } catch (logoutError) {

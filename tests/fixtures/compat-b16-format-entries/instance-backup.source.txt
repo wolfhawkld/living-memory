@@ -1,0 +1,154 @@
+const MAX_FILES = 100_000, MAX_FILE_BYTES = 256 * 1024 * 1024, MAX_TOTAL_BYTES = 8 * 1024 * 1024 * 1024;
+
+class InstanceBackupError extends Error {
+  constructor(readonly code: string) { super(`${code}: 完整实例操作未完成，请核对离线状态、路径及备份清单。`); this.name = 'InstanceBackupError'; }
+}
+
+function canonical(path: string): string {
+  const absolute = resolve(path);
+  if (existsSync(absolute)) return realpathSync(absolute);
+  const parent = dirname(absolute);
+  return parent === absolute ? absolute : join(canonical(parent), relative(parent, absolute));
+}
+
+function contains(parent: string, child: string): boolean {
+  const suffix = relative(parent, child);
+  return suffix === '' || (!isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith('../') && !suffix.startsWith('..\\'));
+}
+
+function ensureSeparate(target: string, sources: readonly string[]) {
+  const destination = canonical(target);
+  for (const path of [...sources, resolve(process.cwd(), 'dist')]) {
+    const source = canonical(path);
+    if (contains(source, destination) || contains(destination, source)) throw new InstanceBackupError('UNSAFE_INSTANCE_PATH');
+  }
+}
+
+function ordinaryDirectory(path: string) {
+  const stat = lstatSync(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new InstanceBackupError('UNSAFE_INSTANCE_FILE');
+}
+
+function readOrdinary(path: string): Buffer {
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) throw new InstanceBackupError('UNSAFE_INSTANCE_FILE');
+  const content = readFileSync(path);
+  if (content.length !== stat.size || content.length > MAX_FILE_BYTES) throw new InstanceBackupError('INSTANCE_SOURCE_CHANGED');
+  return content;
+}
+
+function verifyInstanceBundle(bundle: string): InstanceManifest {
+  ordinaryDirectory(bundle);
+  const raw = readOrdinary(join(bundle, 'manifest.json'));
+  if (raw.length > 32 * 1024 * 1024) throw new InstanceBackupError('INSTANCE_MANIFEST_INVALID');
+  let manifest: InstanceManifest;
+  try { manifest = JSON.parse(raw.toString('utf8')); } catch { throw new InstanceBackupError('INSTANCE_MANIFEST_INVALID'); }
+  if (!manifest || manifest.format !== 'living-memory-instance' || manifest.version !== 1 || manifest.applicationVersion !== applicationVersion
+    || !isValidInstant(manifest.createdAt) || manifest.browserState !== 'not-included' || typeof manifest.instanceId !== 'string'
+    || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length > MAX_FILES || !Array.isArray(manifest.databases)
+    || !Array.isArray(manifest.sources) || !manifest.sources.length || !Array.isArray(manifest.configuration) || !Array.isArray(manifest.excluded)) throw new InstanceBackupError('INSTANCE_MANIFEST_INVALID');
+  // Reject every symlink in the tree before dereferencing any manifest path.
+  const actual = inventory(bundle).filter((entry) => entry.path !== 'manifest.json');
+  const seen = new Set<string>(); let total = 0;
+  for (const file of manifest.files) {
+    if (!file || !safeRelative(file.path) || file.path === 'manifest.json' || seen.has(file.path) || !Number.isSafeInteger(file.size)
+      || file.size < 0 || file.size > MAX_FILE_BYTES || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new InstanceBackupError('INSTANCE_MANIFEST_INVALID');
+    seen.add(file.path); total += file.size;
+    if (total > MAX_TOTAL_BYTES) throw new InstanceBackupError('INSTANCE_LIMIT_EXCEEDED');
+    const content = readOrdinary(join(bundle, file.path));
+    if (content.length !== file.size || hash(content) !== file.sha256) throw new InstanceBackupError('INSTANCE_HASH_MISMATCH');
+  }
+  if (!sameFiles([...manifest.files].sort((a, b) => a.path.localeCompare(b.path)), actual.sort((a, b) => a.path.localeCompare(b.path)))) throw new InstanceBackupError('INSTANCE_MANIFEST_INVALID');
+  const directories = new Set<string>(), identities = new Set<string>(), seeds = new Set<string>();
+  let owners = 0;
+  for (const source of manifest.sources) {
+    if (!source || !safeRelative(source.directory) || !/^[a-f0-9]{64}$/.test(source.identityHash) || source.namespace !== `kg_${source.identityHash.slice(0, 48)}`
+      || typeof source.displayName !== 'string' || !source.displayName.trim() || source.displayName.length > 256 || /[\u0000-\u001f\u007f]/.test(source.displayName)
+      || directories.has(source.directory) || identities.has(source.identityHash.slice(0, 48)) || seeds.has(source.identityHash.slice(0, 24))) throw new InstanceBackupError('INSTANCE_SOURCE_INVALID');
+    if (source.role === 'owner') { owners += 1; if (source.directory !== 'knowledge/owner') throw new InstanceBackupError('INSTANCE_SOURCE_INVALID'); }
+    else if (source.role !== 'member' || typeof source.userId !== 'string' || !/^[a-f0-9-]{36}$/.test(source.userId)
+      || source.directory !== `data/users/${source.userId}/knowledge`) throw new InstanceBackupError('INSTANCE_SOURCE_INVALID');
+    directories.add(source.directory); identities.add(source.identityHash.slice(0, 48)); seeds.add(source.identityHash.slice(0, 24));
+  }
+  if (owners !== 1 || manifest.configuration.some((path) => !['config/environment.env', 'config/cli-session-metadata.json'].includes(path) || !seen.has(path))) throw new InstanceBackupError('INSTANCE_MANIFEST_INVALID');
+  for (const path of ['data/living-memory.sqlite', 'data/accounts.sqlite']) {
+    if (seen.has(path) !== manifest.databases.some((entry) => entry.path === path)) throw new InstanceBackupError('INSTANCE_DATABASE_INVALID');
+  }
+  if (seen.has('data/accounts.sqlite')) {
+    const accounts = new DatabaseSync(join(bundle, 'data/accounts.sqlite'), { readOnly: true });
+    try {
+      const ownerId = String(accounts.prepare("SELECT value FROM meta WHERE key='firstOwnerId'").get()?.value ?? '') || null;
+      const users = new Set(accounts.prepare('SELECT id FROM accounts').all().map((row) => String(row.id)));
+      if ((ownerId !== null && !users.has(ownerId)) || (users.size > 0 && ownerId === null)) throw new InstanceBackupError('INSTANCE_SOURCE_INVALID');
+      if (manifest.sources.find((source) => source.role === 'owner')!.userId !== ownerId) throw new InstanceBackupError('INSTANCE_SOURCE_INVALID');
+      for (const source of manifest.sources) if (source.role === 'member' && (!users.has(source.userId!) || source.userId === ownerId)) throw new InstanceBackupError('INSTANCE_SOURCE_INVALID');
+      for (const userId of users) if (userId !== ownerId && !manifest.sources.some((source) => source.role === 'member' && source.userId === userId)) throw new InstanceBackupError('INSTANCE_SOURCE_INVALID');
+    } finally { accounts.close(); }
+  } else if (manifest.sources.some((source) => source.role !== 'owner' || source.userId !== null)) throw new InstanceBackupError('INSTANCE_SOURCE_INVALID');
+  validateDatabases(bundle, manifest.databases); return manifest;
+}
+
+async function restoreInstance(options: { bundle: string; target: string; now?: () => Date }): Promise<RestoreReport> {
+  const bundle = canonical(options.bundle), target = canonical(options.target);
+  ensureSeparate(target, [bundle]);
+  const manifest = verifyInstanceBundle(bundle);
+  let stage: string | null = newStage(target);
+  let lock: ReturnType<typeof acquireDataDirectoryLock> | null = null;
+  try {
+    lock = acquireDataDirectoryLock(join(stage, 'data'));
+    copyInventory(bundle, stage, manifest.files);
+    for (const source of manifest.sources) mkdirSync(join(stage, source.directory), { recursive: true, mode: 0o700 });
+    mkdirSync(join(stage, 'cli'), { recursive: true, mode: 0o700 });
+    const identities: SourceIdentityRegistry = parseSourceIdentityRegistry({ format: 'living-memory-source-identities', version: 1,
+      entries: manifest.sources.map((source) => ({ physicalRoot: join(target, source.directory), identityHash: source.identityHash, displayName: source.displayName })) });
+    writePrivate(join(stage, 'data/source-identities.json'), JSON.stringify(identities, null, 2));
+    const restoredAt = (options.now?.() ?? new Date()).toISOString(), instanceId = randomUUID();
+    const identity: InstanceIdentity = { format: 'living-memory-instance-identity', version: 1, instanceId };
+    const quarantine: RestoreQuarantine = { format: 'living-memory-restore-quarantine', version: 1, restoredAt, connectorsBlocked: true };
+    writePrivate(join(stage, 'data/instance-identity.json'), JSON.stringify(identity));
+    writePrivate(join(stage, 'data/restore-quarantine.json'), JSON.stringify(quarantine));
+    const invalidated: Record<string, number> = {};
+    const schemaMigrations: string[] = [];
+    if (!Object.hasOwn(manifest.databases.find((entry) => entry.path === 'data/living-memory.sqlite')!.tables, 'activity_events')) {
+      const db = new DatabaseSync(join(stage, 'data/living-memory.sqlite'));
+      try { new ActivityStore({ db, namespace: '_restore_schema_initialization' }); schemaMigrations.push('activity-tables-v1'); } finally { db.close(); }
+    }
+    if (manifest.databases.some((entry) => entry.path === 'data/accounts.sqlite')) {
+      const db = new DatabaseSync(join(stage, 'data/accounts.sqlite'));
+      try {
+        db.exec('BEGIN IMMEDIATE');
+        const change = (key: string, sql: string, ...parameters: string[]) => { invalidated[key] = Number(db.prepare(sql).run(...parameters).changes); };
+        change('sessions', 'DELETE FROM sessions');
+        change('pendingBindingCodes', "UPDATE feishu_binding_requests SET status='invalidated' WHERE status='pending'");
+        change('activeCards', "UPDATE feishu_card_views SET status='consumed',expires_at=? WHERE status IN ('draft','active')", restoredAt);
+        invalidated.activeReviews = 0;
+        for (const row of db.prepare("SELECT id,version,state_json FROM feishu_review_sessions WHERE phase<>'finished'").all()) {
+          const state: unknown = JSON.parse(String(row.state_json));
+          if (!isValidFeishuReviewState(state) || !Number.isSafeInteger(row.version) || Number(row.version) >= Number.MAX_SAFE_INTEGER) throw new InstanceBackupError('INSTANCE_DATABASE_INVALID');
+          state.phase = 'finished';
+          if (state.batch) {
+            const item = state.batch.items[state.batch.cursor];
+            if (item.disposition === 'open') item.disposition = db.prepare("SELECT 1 FROM feishu_review_operations WHERE session_id=? AND status='pending'").get(String(row.id)) ? 'conflict' : 'ended';
+          }
+          if (!isValidFeishuReviewState(state)) throw new InstanceBackupError('INSTANCE_DATABASE_INVALID');
+          invalidated.activeReviews += Number(db.prepare("UPDATE feishu_review_sessions SET phase='finished',version=version+1,expires_at=?,state_json=? WHERE id=?")
+            .run(restoredAt, JSON.stringify(state), String(row.id)).changes);
+        }
+        change('pendingReviewIntents', "UPDATE feishu_review_operations SET status='conflict',error_code='INSTANCE_RESTORED',settled_at=? WHERE status='pending'", restoredAt);
+        change('unknownReadReceipts', "UPDATE feishu_read_receipts SET status='failed-or-unknown' WHERE status='attempted'");
+        db.exec('COMMIT');
+      } catch (error) { try { db.exec('ROLLBACK'); } catch { /* preserve original failure */ } throw error; }
+      finally { db.close(); }
+    }
+    for (const entry of manifest.databases) databaseInfo(join(stage, entry.path), entry.path);
+    const report: RestoreReport = { format: 'living-memory-restore-report', version: 1, restoredAt, instanceId, files: manifest.files.length,
+      sources: manifest.sources.length, invalidated, schemaMigrations, connectorsBlocked: true, browserState: 'not-included', startup: {
+        dataDir: join(target, 'data'), kgRoot: join(target, 'knowledge/owner'), cliStateDir: join(target, 'cli'),
+        envArchive: manifest.configuration.includes('config/environment.env') ? join(target, 'config/environment.env') : null,
+      } };
+    writePrivate(join(stage, 'restore-report.json'), JSON.stringify(report, null, 2));
+    lock.release(); lock = null;
+    // Re-read the bundle to detect modifications during staging as well.
+    verifyInstanceBundle(bundle); publish(stage, target); stage = null; return report;
+  } finally { lock?.release(); if (stage) rmSync(stage, { recursive: true, force: true }); }
+}

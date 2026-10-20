@@ -16,7 +16,7 @@ async function fixture() {
   const send = (path: string, options: { method?: string; body?: unknown; headers?: Record<string, string> } = {}) =>
     new Promise<{ status: number; body: any }>((resolve, reject) => {
       const req = request({ hostname: '127.0.0.1', port: (server.address() as { port: number }).port, path,
-        method: options.method ?? 'GET', headers: { host: '127.0.0.1:4317', 'content-type': 'application/json', ...options.headers } }, res => {
+        method: options.method ?? 'GET', headers: { 'X-LM-Learning-Protocol': '2', host: '127.0.0.1:4317', 'content-type': 'application/json', ...options.headers } }, res => {
         let content = ''; res.setEncoding('utf8'); res.on('data', chunk => content += chunk);
         res.on('end', () => resolve({ status: res.statusCode!, body: JSON.parse(content) }));
       }); req.on('error', reject); if (options.body !== undefined) req.write(JSON.stringify(options.body)); req.end();

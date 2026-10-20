@@ -35,7 +35,7 @@ async function fixture(options: { accountsEnabled?: boolean; configured?: boolea
   const send = (path: string, input: { method?: string; body?: unknown; cookie?: string; headers?: Record<string, string> } = {}) =>
     new Promise<{ status: number; body: any; cookie: string }>((resolve, reject) => {
       const req = request({ hostname: '127.0.0.1', port: (server.address() as { port: number }).port, path,
-        method: input.method ?? 'GET', headers: { host: '127.0.0.1:4317', 'content-type': 'application/json',
+        method: input.method ?? 'GET', headers: { 'X-LM-Learning-Protocol': '2', host: '127.0.0.1:4317', 'content-type': 'application/json',
           ...(input.cookie ? { cookie: input.cookie } : {}), ...input.headers } }, res => {
         let text = ''; res.setEncoding('utf8'); res.on('data', chunk => text += chunk);
         res.on('end', () => resolve({ status: res.statusCode!, body: text ? JSON.parse(text) : null,

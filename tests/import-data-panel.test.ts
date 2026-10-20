@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { ImportPreview, ImportPreviewRequest } from '../src/shared/import-data.js';
 import {
   ImportDataDialog,
+  CountSummary,
   buildImportCommitRequest,
   classifyImportCommitFailure,
   parseImportJsonText,
@@ -113,4 +114,14 @@ test('commit failure policy requires preview again for stale or uncertain file/o
   assert.equal(classifyImportCommitFailure(Object.assign(new Error('options'), { code: 'OPTIONS_INVALID' })), 'unknown-file-options');
   assert.equal(classifyImportCommitFailure(Object.assign(new Error('offline'), { code: 'NETWORK_OFFLINE' })), 'retry');
   assert.equal(classifyImportCommitFailure(new Error('temporary failure')), 'retry');
+});
+
+
+test('revision decision counts render independently while legacy receipts keep the original five event categories', () => {
+  const oldCounts=counts();
+  const legacy=renderToStaticMarkup(createElement(CountSummary,{counts:oldCounts}));
+  assert.doesNotMatch(legacy,/自评更正\/采用决定/);
+  const html=renderToStaticMarkup(createElement(CountSummary,{counts:{...oldCounts,observationRevisions:3}}));
+  assert.match(html,/<span>自评更正\/采用决定<\/span><strong>3<\/strong><small>新增<\/small>/);
+  assert.deepEqual(Object.keys(oldCounts.added),['anchors','observations','retentions','applications','corrections']);
 });

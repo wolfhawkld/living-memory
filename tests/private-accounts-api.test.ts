@@ -25,7 +25,7 @@ test('private account spaces isolate full graph, attachments, history, layouts, 
   const port = (server.address() as { port: number }).port;
   type Reply = { status: number; cookie: string; cookieHeader: string; body: any; text: string };
   const send = (path: string, options: { method?: string; body?: unknown; cookie?: string; headers?: Record<string, string> } = {}) => new Promise<Reply>((resolve, reject) => {
-    const req = request({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: {
+    const req = request({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: { 'X-LM-Learning-Protocol': '2',
       host: '127.0.0.1:4317', 'content-type': 'application/json', ...(options.cookie ? { cookie: options.cookie } : {}), ...options.headers,
     } }, (res) => {
       let text = ''; res.setEncoding('utf8'); res.on('data', (part) => text += part);
@@ -36,7 +36,7 @@ test('private account spaces isolate full graph, attachments, history, layouts, 
   try {
     const status = await send('/api/auth/status');
     assert.deepEqual(status.body, { enabled: true, needsSetup: true, user: null });
-    for (const path of ['/api/session', '/api/snapshot?scope=all', '/api/export', '/api/layout', '/api/health', '/api/changes', `/api/concepts/${originalConcept.id}/history`, '/api/admin/users']) {
+    for (const path of ['/api/session', '/api/snapshot?scope=all', '/api/export', '/api/layout', '/api/health', '/api/changes?learningProtocol=2', `/api/concepts/${originalConcept.id}/history`, '/api/admin/users']) {
       assert.equal((await send(path)).status, 401, path);
     }
     const setup = await send('/api/auth/setup', { method: 'POST', body: { username: 'owner', password: 'owner-password-2026' } });
@@ -115,7 +115,7 @@ test('private account spaces isolate full graph, attachments, history, layouts, 
     const adminList = await send('/api/admin/users', { cookie: ownerCookie });
     assert.doesNotMatch(adminList.text, /password|csrfToken|sessionToken|PRIVATE BODY/);
     const loginAgain = await send('/api/auth/login', { method: 'POST', body: { username: 'member', password: 'member-password-2026' } });
-    const stream = request({ hostname: '127.0.0.1', port, path: '/api/changes', headers: { host: '127.0.0.1:4317', cookie: loginAgain.cookie } });
+    const stream = request({ hostname: '127.0.0.1', port, path: '/api/changes?learningProtocol=2', headers: { 'X-LM-Learning-Protocol': '2', host: '127.0.0.1:4317', cookie: loginAgain.cookie } });
     const streamReady = new Promise<string>((resolve, reject) => { stream.once('response', (res) => {
       res.setEncoding('utf8'); res.once('data', (data) => resolve(String(data)));
     }); stream.once('error', reject); });

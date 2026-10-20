@@ -25,7 +25,7 @@ export async function activityApiClient(options: { instanceId?: string } = {}) {
   server.on('request', app);
   const request = (path: string, options: ActivityApiOptions = {}) => new Promise<ActivityApiResponse>((resolve, reject) => {
     const raw = options.body === undefined ? undefined : JSON.stringify(options.body);
-    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: {
+    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET', headers: { 'X-LM-Learning-Protocol': '2',
       host: `127.0.0.1:${port}`, ...(raw === undefined ? {} : { 'content-type': 'application/json' }),
       ...(options.cookie ? { cookie: options.cookie } : {}), ...options.headers,
     } }, (res) => {

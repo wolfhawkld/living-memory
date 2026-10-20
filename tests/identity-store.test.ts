@@ -329,3 +329,29 @@ test('accepted local paths make old exports portable while namespace data stays 
     fixtureData.cleanup();
   }
 });
+
+test('identity write-ahead backup includes complete V2 assessment history while linking leaves raw events unchanged', () => {
+  const f = fixture();
+  try {
+    const old = concept('stable-a', 'Math/Alpha.md', 'rev-a', 'Alpha');
+    const target = concept('raw-b', 'Moved/Alpha.md', 'rev-a', 'Alpha');
+    prepareLearnedIdentity(f.store, old, target);
+    f.store.observationRevisions.append({ eventId: 'identity-assessment', observationEventId: 'old-observation', previousEventId: null,
+      occurredAt: NOW, action: 'revise', reason: 'input-error', assessment: { rating: 'clear', learning: null } });
+    const expected = f.store.exportData(source, [target]);
+    const link = preview(f.store, old, target);
+    let saved = false;
+    const receipt = commit(f.store, old, target, 'identity-with-revision', link.token, backup => {
+      saved = true;
+      assert.equal(backup.schemaVersion, 2);
+      assert.deepEqual(backup.observationRevisions, expected.observationRevisions);
+      assert.deepEqual(backup.observations, expected.observations);
+      return 'complete-v2-backup';
+    });
+    assert.equal(saved, true);
+    assert.equal(receipt.status, 'accepted');
+    assert.deepEqual(f.store.exportData(source, [target]).observationRevisions, expected.observationRevisions);
+    assert.equal(f.store.getObservations()[0].rating, 'partial');
+    assert.equal(f.store.observationRevisions.readHistory('old-observation').state.currentAssessment.rating, 'clear');
+  } finally { f.cleanup(); }
+});

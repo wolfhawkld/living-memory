@@ -110,7 +110,7 @@ async function running(options: {
       port,
       path,
       method: requestOptions.method ?? 'GET',
-      headers: {
+      headers: { 'X-LM-Learning-Protocol': '2',
         host: `127.0.0.1:${port}`,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         ...(requestOptions.cookie ? { cookie: requestOptions.cookie } : {}),

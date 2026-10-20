@@ -78,7 +78,7 @@ async function running(): Promise<RunningApp> {
       port,
       path,
       method: options.method ?? 'GET',
-      headers: {
+      headers: { 'X-LM-Learning-Protocol': '2',
         host: '127.0.0.1:4317',
         ...(body ? { 'content-type': 'application/json' } : {}),
         ...(options.headers ?? {}),
