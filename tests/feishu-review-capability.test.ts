@@ -803,3 +803,60 @@ test('an original Feishu grade replay remains duplicate after assessment revisio
     assert.equal(f.store.observationRevisions.readHistory(observation.eventId).state.currentAssessment.rating, 'blank');
   } finally { f.cleanup(); }
 });
+
+test('batch assessment revisions and old grade or rewarm replays preserve the frozen queue, receipts and independently saved rewarm', async () => {
+  const f = await fixture(true);
+  try {
+    const front = f.send('知识 复习 3');
+    const initial = f.export();
+    const revealed = f.click(front, '查看资料');
+    const gradeAction = f.action(revealed, '清楚');
+    const saved = f.accept(f.cards.prepareAction(gradeAction)!);
+    const rewarmAction = f.action(saved, '确认已重温，更新时间');
+    f.accept(f.cards.prepareAction(rewarmAction)!);
+    const original = f.export(), session = structuredClone(f.session());
+    const operations = structuredClone(f.operations());
+    const observation = f.store.getObservations()[0];
+    const asOf = original.exportedAt;
+    const states = f.store.getStates(f.source.index.concepts, asOf);
+    const completed = f.store.getCompletedConceptIds(asOf, 'UTC');
+    assert.deepEqual(completed, [observation.conceptId]);
+    const budget = f.store.getReviewPlan();
+    assert.equal(original.anchors.length, initial.anchors.length + 1, 'rewarm is an explicit separate saved event');
+    assert.ok(session.state.batch); assert.equal(session.state.batch.cursor, 0);
+    assert.equal(session.state.batch.items.length, 3);
+    assert.equal(operations.length, 2);
+    const grade = operations.find(operation => operation.intent.kind === 'observation')!;
+    const rewarm = operations.find(operation => operation.intent.kind === 'review')!;
+    assert.ok(grade); assert.ok(rewarm);
+    assert.ok(original.anchors.some(anchor => anchor.eventId === rewarm.intent.request.eventId));
+    let previousEventId: string | null = null;
+    for (const action of ['revise', 'withdraw', 'reinstate'] as const) {
+      f.advance(1000);
+      const eventId = `batch-assessment-${action}`;
+      f.store.observationRevisions.append({ eventId, observationEventId: observation.eventId, previousEventId,
+        occurredAt: observation.observedAt, action, reason: 'rechecked-original',
+        ...(action === 'revise' ? { assessment: { rating: 'blank', learning: { outcome: 'failure', basis: 'self-check' } } } : {}) });
+      previousEventId = eventId;
+      assert.equal(f.store.addObservation(grade.intent.request as Parameters<Store['addObservation']>[0], observation.anchorEventId).status, 'duplicate');
+      assert.equal(f.store.addReview(rewarm.intent.request as Parameters<Store['addReview']>[0]).status, 'duplicate');
+      assert.equal(f.cards.prepareAction(gradeAction), null);
+      assert.equal(f.cards.prepareAction(rewarmAction), null);
+      assert.deepEqual(f.session(), session, 'revisions and consumed clicks do not reopen or advance the batch');
+      assert.deepEqual(f.operations(), operations, 'original operation receipts keep the original self-report');
+      assert.deepEqual(f.export().observations, original.observations);
+      assert.deepEqual(f.export().anchors, original.anchors);
+      assert.deepEqual(f.store.getStates(f.source.index.concepts, asOf), states);
+      assert.deepEqual(f.store.getReviewPlan(), budget);
+      assert.deepEqual(f.store.getCompletedConceptIds(asOf, 'UTC'), completed);
+      assert.deepEqual(f.export().config, original.config);
+      assert.deepEqual(f.export().retentions, original.retentions);
+      assert.equal(f.store.countObservations(), 1);
+      const history = f.store.observationRevisions.readHistory(observation.eventId);
+      assert.equal(history.state.status, action === 'withdraw' ? 'withdrawn' : 'active');
+      assert.equal(history.state.currentAssessment.rating, 'blank');
+      assert.equal(history.observation.halfLifeDays, observation.halfLifeDays);
+    }
+    assert.equal(f.store.observationRevisions.getRevisionCount(), 3);
+  } finally { f.cleanup(); }
+});

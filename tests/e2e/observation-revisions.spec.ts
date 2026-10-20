@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import { test, expect } from './fixtures';
 import { chooseDomain, domainIdOf } from '../../src/core/domain-view';
-import type { Concept, ExportData, ObservationRequest, Snapshot } from '../../src/shared/types';
+import type { Concept, ConceptHistory, ExportData, ObservationRequest, Snapshot } from '../../src/shared/types';
 import type { ObservationRevisionRequest } from '../../src/shared/observation-revisions';
 import type { ObservationRevisionHistory } from '../../src/shared/observation-revision-history';
 import type { ReviewPlanResponse } from '../../src/shared/review-plan';
@@ -225,4 +225,88 @@ test('concurrent predecessor conflict needs fresh inspection, archival and a sep
     expect(history.events.map(event => event.eventId).sort()).toEqual([accepted.payload.eventId, replacement.payload.eventId].sort());
     expect(history.state.currentAssessment.rating).toBe('blank');
   } finally { await other.close(); }
+});
+
+test('real changes stream invalidates loaded later history pages after another tab revises their observation', async ({ page, context, request }) => {
+  const { concept, observation, session } = await seed(request);
+  const seeded = new Map([[observation.eventId, observation]]);
+  // Give this real concept two actual history pages, without replacing any API
+  // or stream responses. Existing synthetic records may remain from earlier cases.
+  for (let index = 1; index < 25; index++) {
+    const observedAt = new Date(Date.parse(observation.observedAt) - index).toISOString();
+    const item: ObservationRequest = { ...observation, eventId: randomUUID(), observedAt,
+      answer: `PRIVATE_ORIGINAL_ANSWER_${randomUUID()}`,
+      learning: { ...observation.learning!, confidenceAt: observedAt, scenario: `PRIVATE_SCENARIO_${randomUUID()}` } };
+    const created = await request.post('/api/observations', { headers: { 'x-lm-token': session.writeToken,
+      'x-lm-source-id': session.sourceId, 'x-lm-instance-id': session.instanceId }, data: item });
+    expect(created.status()).toBe(201); seeded.set(item.eventId, item);
+  }
+  const historyPath = `/api/concepts/${encodeURIComponent(concept.id)}/history`;
+  const before = await getJson<ConceptHistory>(request, `${historyPath}?limit=20`);
+  expect(before.nextCursor).toBeTruthy();
+  const secondPage = await getJson<ConceptHistory>(request, `${historyPath}?limit=20&cursor=${encodeURIComponent(before.nextCursor!)}`);
+  const targetEntry = secondPage.entries.find(item => item.type === 'observation' && seeded.has(item.event.eventId));
+  expect(targetEntry).toBeTruthy();
+  const target = seeded.get(targetEntry!.event.eventId)!;
+  expect(before.entries.some(item => item.event.eventId === target.eventId)).toBe(false);
+
+  const streamConnected = page.waitForResponse(response => new URL(response.url()).pathname === '/api/changes');
+  await openConcept(page, concept);
+  expect((await streamConnected).status()).toBe(200);
+  const history = page.getByRole('region', { name: '概念学习历史', exact: true });
+  const timeline = history.getByRole('list', { name: '按发生时间排列的学习事件', exact: true });
+  await expect(timeline.locator(':scope > li')).toHaveCount(before.entries.length);
+  await history.getByRole('button', { name: '加载更多历史', exact: true }).click();
+  await expect(entry(page, target.eventId)).toBeVisible();
+  await expect(timeline.locator(':scope > li')).toHaveCount(before.entries.length + secondPage.entries.length);
+  const calibration = before.learning!.calibration.scenario;
+  const scenarioSummary = page.getByRole('region', { name: '场景调用与信心校准', exact: true })
+    .locator('.calibration-row').filter({ has: page.getByText(`场景调用 · ${calibration.count} 次可比较记录`, { exact: true }) });
+  await expect(scenarioSummary).toContainText(`核对成功率 ${calibration.successRate!.toFixed(0)}%`);
+
+  const editor = await context.newPage();
+  try {
+    await openConcept(editor, concept);
+    await editor.getByRole('region', { name: '概念学习历史', exact: true })
+      .getByRole('button', { name: '加载更多历史', exact: true }).click();
+    const dialog = await openRevision(editor, target.eventId);
+    await dialog.getByLabel('自评', { exact: true }).selectOption('blank');
+    await dialog.getByLabel('核对结果', { exact: true }).selectOption('failure');
+    await dialog.getByLabel('决定原因', { exact: true }).selectOption('rechecked-original');
+
+    // Only a fresh head carrying the new watermark can satisfy this wait. The
+    // observer is never reloaded and receives no synthetic SSE notification.
+    const refreshedHead = page.waitForResponse(async response => {
+      const url = new URL(response.url());
+      if (response.request().method() !== 'GET' || url.pathname !== historyPath || url.searchParams.has('cursor') || !response.ok()) return false;
+      const body = await response.json() as ConceptHistory;
+      return body.observationRevisionCount === (before.observationRevisionCount ?? 0) + 1;
+    });
+    const accepted = await submit(editor, dialog, target.eventId);
+    expect(accepted.response.status()).toBe(201);
+    await expect(dialog).toContainText('已保存，当前采用状态已刷新。');
+    await close(editor);
+    // A hidden observer legitimately defers invalidation until visible again.
+    await page.bringToFront();
+    const fresh = await (await refreshedHead).json() as ConceptHistory;
+    expect(fresh.total).toBe(before.total);
+    expect(fresh.observationAssessmentVersion).not.toBe(before.observationAssessmentVersion);
+    await expect(history.locator('.concept-history-total')).toHaveText(`已保存 ${before.total} 条`);
+    await expect(timeline.locator(':scope > li')).toHaveCount(fresh.entries.length);
+    await expect(entry(page, target.eventId)).toHaveCount(0);
+    const updatedCalibration = fresh.learning!.calibration.scenario;
+    expect(updatedCalibration.count).toBe(calibration.count);
+    expect(updatedCalibration.successRate).toBeCloseTo(calibration.successRate! - 100 / calibration.count);
+    expect(updatedCalibration.brier).toBeCloseTo(calibration.brier! + 0.6 / calibration.count);
+    await expect(scenarioSummary).toContainText(`核对成功率 ${updatedCalibration.successRate!.toFixed(0)}%`);
+
+    await history.getByRole('button', { name: '加载更多历史', exact: true }).click();
+    await expect(entry(page, target.eventId).locator('.concept-history-current-assessment')).toContainText('想不起');
+    await expect(entry(page, target.eventId)).toContainText('最初自评');
+    await expect(history.locator('.concept-history-total')).toHaveText(`已保存 ${before.total} 条`);
+    for (const tab of [page, editor]) {
+      await expect(tab.getByText(target.answer, { exact: true })).toHaveCount(0);
+      await expect(tab.getByText(target.learning!.scenario!, { exact: true })).toHaveCount(0);
+    }
+  } finally { await editor.close(); }
 });

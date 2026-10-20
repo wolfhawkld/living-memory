@@ -175,3 +175,63 @@ test('schema2 backup and restore preserve nonempty revision chains, original rec
     assert.equal(digest(readFileSync(f.path)), sourceBytes);
   } finally { f.cleanup(); }
 });
+
+test('legacy restoration preserves legal independent rating and outcome pairs, exact original retries and JSON2 evidence', async () => {
+  // Match the actual legacy writer's byte-canonical request payload, without
+  // changing the fixed historical artifact or the independent DDL fixture.
+  const canonical = (value: unknown): string => {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonical(record[key])}`).join(',')}}`;
+  };
+  const f = legacy();
+  const expected = new Map<string, Parameters<Store['addObservation']>[0]>();
+  try {
+    const db = new DatabaseSync(f.path);
+    try {
+      for (const [namespace, rating, outcome] of [
+        ['legacy-a', 'clear', 'unverified'], ['legacy-b', 'blank', 'success'],
+      ] as const) {
+        const row = db.prepare('SELECT request_payload FROM observations WHERE namespace=? AND event_id=?')
+          .get(namespace, 'observation-original')!;
+        const original = JSON.parse(String(row.request_payload)) as Parameters<Store['addObservation']>[0];
+        assert.ok(original.learning);
+        const request = { ...original, rating, learning: { ...original.learning, outcome } };
+        const payload = canonical(request);
+        assert.deepEqual(JSON.parse(payload), request);
+        db.prepare('UPDATE observations SET rating=?,learning_json=?,request_payload=? WHERE namespace=? AND event_id=?')
+          .run(rating, JSON.stringify(request.learning), payload, namespace, request.eventId);
+        expected.set(namespace, request);
+      }
+    } finally { db.close(); }
+    assert.equal(inspect(f.path).kind, 'legacy-v1');
+    const before = tableRows(f.path), sourceHash = digest(readFileSync(f.path));
+    const manifest = await backupInstance(f.options);
+    assert.equal(manifest.version, 2); assert.equal(manifest.learningSchemaVersion, 1);
+    const report = await restoreInstance({ bundle: f.options.output, target: join(f.base, 'independent-pairs'), now });
+    const restoredPath = join(report.startup.dataDir, 'living-memory.sqlite');
+    assert.equal(inspect(restoredPath).kind, 'current-v2');
+    assert.deepEqual(tableRows(restoredPath).observations, before.observations);
+    assert.notEqual(report.instanceId, manifest.instanceId);
+    assert.equal(isRestoreQuarantined(report.startup.dataDir), true);
+    for (const [namespace, request] of expected) {
+      const store = new Store({ dbPath: restoredPath, namespace, now });
+      try {
+        const raw = store.getObservations();
+        assert.equal(raw.length, 1);
+        assert.equal(raw[0].rating, request.rating);
+        assert.deepEqual(raw[0].learning, request.learning);
+        assert.deepEqual(store.observationRevisions.readHistory(request.eventId).state.currentAssessment,
+          { rating: request.rating, learning: { outcome: request.learning!.outcome, basis: request.learning!.basis } });
+        assert.equal(store.addObservation(request, request.anchorEventId).status, 'duplicate');
+        const exported = store.exportData({ name: 'synthetic', mode: 'local', conceptCount: 0, limit: 10, diagnostics: [] }, []);
+        assert.equal(exported.schemaVersion, 2);
+        assert.deepEqual(exported.observations, raw);
+        assert.deepEqual(exported.observationRevisions, []);
+      } finally { store.close(); }
+    }
+    assert.deepEqual(tableRows(restoredPath).observations, before.observations);
+    assert.equal(digest(readFileSync(f.path)), sourceHash);
+  } finally { f.cleanup(); }
+});
