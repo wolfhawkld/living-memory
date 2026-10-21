@@ -115,7 +115,8 @@ test('reconnect preview preserves cross-root concept IDs and member identities w
     const newSource = loadKnowledgeGraph({ root: f.after, identityHash: result.source.identityHash });
     assert.deepEqual(newSource.index.concepts.map(concept => concept.id), oldSource.index.concepts.map(concept => concept.id));
     assert.equal(result.hook.status, 'planned');
-    assert.equal(result.hook.runtimeDirectoriesSupported, false);
+    assert.equal(result.hook.runtimeDirectoriesSupported, true);
+    assert.equal(result.hook.runtimeConfiguration, 'planned');
     assert.ok(result.hook.files.some(file => file.path === '_system/living-memory.local.json' && file.localOnly));
     assert.deepEqual(result.runtime, { LM_DATA_DIR: f.data, LM_CLI_STATE_DIR: join(f.instanceRoot, 'cli'),
       LM_CLI_SESSION_FILE: join(f.data, 'cli-session.json'), LM_SERVER_URL: url, LM_KG_ROOT: f.after, LM_FEISHU_ENABLED: '0' });
@@ -237,6 +238,7 @@ test('modified hook scripts, managed markers and redirected hook paths produce r
       assert.equal(result.status, 'blocked');
       assert.equal(result.hook.status, 'conflict');
       assert.equal(result.hook.code, 'HOOK_PLAN_CONFLICT');
+      assert.equal(result.hook.runtimeConfiguration, 'unavailable');
       safeOutput(JSON.stringify(result));
       assert.deepEqual(inventory(f.base), initial);
     } finally { f.close(); }

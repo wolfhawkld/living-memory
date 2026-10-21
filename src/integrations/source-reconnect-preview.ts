@@ -36,7 +36,8 @@ export interface SourceReconnectPreview {
   };
   hook: {
     status: 'planned' | 'conflict'; files: Array<{ path: string; localOnly: boolean }>;
-    code?: 'HOOK_PLAN_CONFLICT'; runtimeDirectoriesSupported: false;
+    code?: 'HOOK_PLAN_CONFLICT'; runtimeDirectoriesSupported: true;
+    runtimeConfiguration: 'planned' | 'unavailable';
   };
   runtime: {
     LM_DATA_DIR: string; LM_CLI_STATE_DIR: string; LM_CLI_SESSION_FILE: string;
@@ -142,9 +143,11 @@ export function previewSourceReconnect(options: SourceReconnectPreviewOptions): 
   let hook: SourceReconnectPreview['hook'];
   try {
     const projectRoot = options.projectRoot ?? fileURLToPath(new URL('../../', import.meta.url));
-    const plan = planHookInstall(target, serverUrl, projectRoot);
-    hook = { status: 'planned', files: plan.files.map(file => ({ path: file.relativePath, localOnly: file.private })), runtimeDirectoriesSupported: false };
-  } catch { hook = { status: 'conflict', code: 'HOOK_PLAN_CONFLICT', files: [], runtimeDirectoriesSupported: false }; }
+    const plan = planHookInstall(target, serverUrl, projectRoot, { dataDir: context.dataDir, cliStateDir: context.cliStateDir });
+    hook = { status: 'planned', files: plan.files.map(file => ({ path: file.relativePath, localOnly: file.private })),
+      runtimeDirectoriesSupported: true, runtimeConfiguration: 'planned' };
+  } catch { hook = { status: 'conflict', code: 'HOOK_PLAN_CONFLICT', files: [],
+    runtimeDirectoriesSupported: true, runtimeConfiguration: 'unavailable' }; }
   return {
     format: 'living-memory-source-reconnect-preview', version: 1, status: hook.status === 'conflict' ? 'blocked' : 'reviewable',
     source: { namespace: before.namespace, identityHash: owner.identityHash, displayName: owner.displayName,
@@ -158,7 +161,7 @@ export function previewSourceReconnect(options: SourceReconnectPreviewOptions): 
     runtime: { LM_DATA_DIR: context.dataDir, LM_CLI_STATE_DIR: context.cliStateDir,
       LM_CLI_SESSION_FILE: join(context.dataDir, 'cli-session.json'), LM_SERVER_URL: serverUrl, LM_KG_ROOT: target, LM_FEISHU_ENABLED: '0' },
     limitations: ['PREVIEW_ONLY_RERUN_BEFORE_APPLY', 'SAME_PATH_RAW_IDS_ONLY', 'BINDINGS_AND_HISTORY_NOT_INSPECTED',
-      'CONTENT_DIFFERENCES_REQUIRE_REVIEW', 'HOOK_RUNTIME_DIRECTORIES_REQUIRE_EXPLICIT_CONFIGURATION',
+      'CONTENT_DIFFERENCES_REQUIRE_REVIEW', 'HOOK_RUNTIME_CONFIGURATION_NOT_APPLIED',
       'SERVICE_AND_HOOK_NOT_RECONFIGURED', 'CONNECTORS_REMAIN_QUARANTINED', 'OLD_QUEUES_MUST_NOT_BE_REPLAYED'],
   };
 }

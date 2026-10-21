@@ -8,7 +8,7 @@ node --import tsx scripts/source-reconnect-preview.ts --instance-root <恢复实
 
 只读取恢复元数据、知识源与钩子文件；不打开数据库，不读取设备令牌或环境归档，不发送请求。
 输出拟议身份登记、内容差异数量、钩子文件计划与新实例运行路径。
-可审阅不等于已接通；现有钩子尚不能持久配置这些运行目录。
+可审阅不等于已接通；钩子运行目录仅已规划，尚未安装或生效。
 没有 --apply，不会修改知识源、登记表、钩子、服务、待发队列或飞书隔离状态；实际切换前重新核对。
 `;
 export function runSourceReconnectPreviewCli(argv: readonly string[]) {

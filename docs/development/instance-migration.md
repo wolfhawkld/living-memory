@@ -95,7 +95,9 @@ node --import tsx scripts/source-reconnect-preview.ts \
 
 状态 `reviewable` 只表示可以审阅这份当时快照；`blocked` 表示钩子文件或安装前提存在冲突，命令返回非零。缺少或损坏的恢复上下文、登记冲突、未隔离实例及无效目录会直接拒绝。两种状态都不表示已经接通，更不表示知识含义相同。实际切换前仍需重新预览、停止服务并核对具体修改，不能将输出直接覆盖到运行中的登记表。
 
-`runtime` 列出新实例应使用的 `LM_DATA_DIR`、`LM_CLI_STATE_DIR`、`LM_CLI_SESSION_FILE`、`LM_SERVER_URL`、`LM_KG_ROOT`，并保持 `LM_FEISHU_ENABLED=0`。这些是所需配置，不是已生效配置，也不会验证令牌是否有效。现有钩子的本机配置只能持久保存项目位置和 URL，运行目录仍来自调用环境；只改 URL 不足以完成迁移，后续需单独适配并核对全部调用方。旧实例队列不会由本入口搬运或重放。
+`runtime` 列出新实例应使用的 `LM_DATA_DIR`、`LM_CLI_STATE_DIR`、`LM_CLI_SESSION_FILE`、`LM_SERVER_URL`、`LM_KG_ROOT`，并保持 `LM_FEISHU_ENABLED=0`。这些是所需配置，不是已生效配置，也不会验证令牌是否有效。`hook.runtimeDirectoriesSupported=true` 仅表示拟安装模板支持运行目录；成功计划标为 `runtimeConfiguration: "planned"`，冲突时为 `"unavailable"`，均未应用。预览把恢复实例的数据与 CLI 目录传给安装规划器，升级原样 managed v1 模板并提出 v2 本机配置，凭据路径固定派生为 `dataDir/cli-session.json`；不打印配置内容或脚本原文。
+
+实际安装方式及旧配置兼容见[指定实例的运行目录](cli-and-kg-triggers.md#指定实例的运行目录)。只改 URL 不足以完成迁移；实际接回知识源仍须核对身份登记、服务运行参数和全部调用方。安装前暂停 KG 调用；本机文件逐个原子替换，不是跨文件事务。预览不替代这些步骤，也不会搬运或重放旧实例队列。
 
 ## 明确恢复连接器
 
