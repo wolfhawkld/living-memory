@@ -184,7 +184,13 @@ test('relation overview filters directed endpoints and locates the exact older r
   expect((await request.post('/api/applications', { headers, data: { ...application,
     eventId: randomUUID(), occurredAt: new Date().toISOString(), content: 'Newer unrelated summary', relationSuggestion: undefined } })).ok()).toBe(true);
   const beforeBrowsing = await exported(request);
-  await page.goto('/'); await realMode(page);
+  await page.goto('/');
+  // Real 3D views legitimately persist initial and cross-domain layouts. Keep
+  // this browsing-only workflow in text mode so the full export stays stable.
+  await expect(page.getByRole('button', { name: '查看真实记录', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '文字列表', exact: true }).click();
+  await expect(page.locator('.graph-canvas')).toHaveCount(0);
+  await realMode(page);
   await selectExactConcept(page, secondary!);
   await page.getByRole('button', { name: '知识薄弱点总览', exact: true }).click();
   const dialog = page.getByRole('dialog');
@@ -259,7 +265,8 @@ test('relation overview filters directed endpoints and locates the exact older r
   await history.getByRole('button', { name: '展开应用 / 总结内容', exact: true }).click();
   await expect(history).toContainText(application.content);
   await expect(history.getByRole('region', { name: '关系建议复核', exact: true })).toBeVisible();
-  // Export timestamps describe each download; all persisted content must remain unchanged.
+  await expect(page.locator('.graph-canvas')).toHaveCount(0);
+  // In text mode no layout is generated; all persisted export content stays unchanged.
   const { exportedAt: _afterExportedAt, ...afterBrowsingRecords } = await exported(request);
   const { exportedAt: _beforeExportedAt, ...beforeBrowsingRecords } = beforeBrowsing;
   expect(afterBrowsingRecords).toEqual(beforeBrowsingRecords);
