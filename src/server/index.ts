@@ -10,14 +10,15 @@ import { validateStoragePaths } from './storage-paths.js';
 
 const port = Number(process.env.LM_PORT ?? 4317);
 const dataDir = process.env.LM_DATA_DIR ?? 'data/local';
+const staticDir = process.env.LM_STATIC_DIR ?? resolve(process.cwd(), 'dist');
 validateStoragePaths({ root: process.env.LM_KG_ROOT ?? resolve(process.cwd(), 'fixtures/demo-kg'), dataDir,
-  staticDir: resolve(process.cwd(), 'dist'), accountsEnabled: process.env.LM_AUTH_MODE !== 'local' });
+  staticDir, accountsEnabled: process.env.LM_AUTH_MODE !== 'local' });
 const lease = acquireDataDirectoryLock(dataDir);
 const connectorEnv = isRestoreQuarantined(dataDir) ? { ...process.env, LM_FEISHU_ENABLED: '0' } : process.env;
 const feishuConfiguration = parseFeishuConfig(connectorEnv);
 let connector: FeishuConnector | undefined;
 const app = (() => { try { return createApp({
-  port, accountsEnabled: process.env.LM_AUTH_MODE !== 'local',
+  port, staticDir, accountsEnabled: process.env.LM_AUTH_MODE !== 'local',
   feishuScope: feishuConfiguration.ok && feishuConfiguration.value.enabled
     ? { appId: feishuConfiguration.value.appId, tenantKey: feishuConfiguration.value.tenantKey } : null,
   getFeishuChannelState: () => connector?.getStatus().state ?? 'disabled',

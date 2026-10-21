@@ -12,6 +12,8 @@
 
 开发分支正在准备 `0.0.1-preview.2`：学习 JSON、完整实例 bundle 和学习协议升为 v2。已有学习库需先离线备份并恢复到新目录后升级，不能直接沿用旧目录启动；见[版本兼容](docs/releases/versioning-and-compatibility.md)与[迁移步骤](docs/development/instance-migration.md)。该版本尚未发布。
 
+`develop` 的[已有实例启动入口](docs/development/instance-runtime.md)可复用私有配置检查路径与身份、以前台方式启动；默认关闭飞书，显式启用仍遵守恢复隔离。下方固定预览 tag 的首次运行步骤继续使用 `npm start`。
+
 ## 快速开始
 
 推荐 **Node.js 22.23.1**，与 [`.nvmrc`](.nvmrc) 和 CI 一致；已验证 npm 10.9.8。以下使用固定预览 tag；参与开发使用 `develop`，见[贡献指南](CONTRIBUTING.md)。
