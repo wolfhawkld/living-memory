@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+新增原答清除的 ACLEAR-02A SQLite 内核：独立完整 schema 3 只在空库显式初始化，事务内同时清除原答与整份请求副本，保留首次清除时间及原事件占位；支持 namespace 隔离读取和要求调用方事务的重放 guard。现行 v2 Store、协议、导入导出、统计和页面未接入，旧入口继续拒绝 v3，私人实例不升级。见[实现范围及后续接线](docs/design/answer-clearing.md#aclear-02a独立-sqlite-内核)。
+
 完成指定回忆原答清除的 ACLEAR-01 设计与纯契约基础：以 `answer: null` 和无正文首次标记区分主动清除与原本空答，保留原评分／时间条件，重复规划不改首次事实。新模块尚未接入存储、API、界面或现行统计，当前数据格式和启动行为不变；用户清除入口尚未开放。后续兼容与可控副本边界见[设计及阶段门槛](docs/design/answer-clearing.md)。
 
 新增已有账号实例的日常启动入口 `npm run instance -- check|start --profile ...`：严格私有配置固定目录、身份、端口和显示范围，预检只读且不打开数据库或读取凭据；前台启动丢弃继承的 `LM_*`，复用原有租约、兼容检查与退出清理。飞书默认关闭，只有显式 `--feishu` 读取指定四项配置，恢复隔离优先拒绝。支持独立持久静态构建目录，原 `npm start` 默认行为不变，无数据库／学习协议变化。见[使用与边界](docs/development/instance-runtime.md)。
