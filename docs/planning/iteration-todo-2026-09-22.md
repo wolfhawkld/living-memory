@@ -6,7 +6,9 @@
 
 ## 2026-10-21 当前状态：运行已接通，学习写回待实际使用
 
-2026-10-22 接续 FR-11／LM-006 的[指定回忆原答清除](../design/answer-clearing.md)：ACLEAR-02A 增加独立完整 schema 3 和 SQLite 清除内核，在事务内同时将原答与整个请求副本置 NULL，以原行主键及首次时间保留占位；支持同命名空间读取与要求调用方事务的防重放 guard。当前产品 Store／API／导入／统计尚未接入，v2 入口继续拒绝 v3，私人数据及启动候选不变。后续 ACLEAR-02B 先做离线迁移和 JSON／bundle 导入兼容，再接产品统计、协议及页面；暂不能在页面清除原答，不将 FR-11 或完整 LM-006 标为完成。
+2026-10-22 接续 FR-11／LM-006 的[指定回忆原答清除](../design/answer-clearing.md)：ACLEAR-02B1 已把完整实例工具接到离线新目录迁移，显式 `restore --learning-schema 3` 生成规范 v3 隔离候选；完整备份／核验／显式恢复保留清除标记、原行号和请求字节，失败不发布 stage。默认旧归档仍恢复到 v2，v3 候选报告明确 `runtimeReady: false` 且不能解除连接器隔离。当前产品 Store／API／JSON／统计尚未接入，私人数据及启动配置不变。下一项 ACLEAR-02B2 处理学习 JSON v3 与导入合并，再接产品统计、协议及页面；暂不能在页面清除原答，不将 FR-11 或完整 LM-006 标为完成。
+
+此前 ACLEAR-02A 的独立 schema 3 与 SQLite 清除内核已交付：`4aae504`／[CI 39723972726](https://github.com/wolfhawkld/living-memory/actions/runs/39723972726) 的 1497 项 Node／HTTP、构建、8 项主题及 33 项远端浏览器全部通过。该阶段产品与离线完整备份当时均拒绝 v3；本轮只扩展离线工具的候选通道，产品运行仍拒绝 v3。
 
 此前 ACLEAR-01 的设计、独立严格契约及纯清除规划已交付：`ba3eb29`／[CI 39575795852](https://github.com/wolfhawkld/living-memory/actions/runs/39575795852) 的 1475 项 Node／HTTP、构建、8 项主题及 33 项远端浏览器全部通过。纯逻辑和本轮 SQLite 内核分别记录验证范围，不把临时库清除等同于已上线的删除入口。
 

@@ -9,6 +9,8 @@ import { isRestoreQuarantined, readInstanceId, type InstanceIdentity, type Resto
 import { isValidInstant } from '../core/time-model.js';
 import { isValidFeishuReviewState } from './accounts.js';
 import { inspectLearningSchema, migrateLearningSchemaV1ToV2 } from './learning-schema.js';
+import { inspectAnswerClearingSchemaV3 } from './answer-clearing-schema.js';
+import { copyLearningSchemaV2ToV3 } from './answer-clearing-migration.js';
 
 const MAX_FILES = 100_000, MAX_FILE_BYTES = 256 * 1024 * 1024, MAX_TOTAL_BYTES = 8 * 1024 * 1024 * 1024;
 const applicationVersion = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version;
@@ -30,7 +32,7 @@ export interface InstanceManifestV1 extends InstanceManifestBase {
   version: 1; applicationVersion: typeof LEGACY_APPLICATION_VERSION; learningSchemaVersion?: never;
 }
 export interface InstanceManifestV2 extends InstanceManifestBase {
-  version: 2; applicationVersion: typeof CURRENT_APPLICATION_VERSION; learningSchemaVersion: 1 | 2;
+  version: 2; applicationVersion: typeof CURRENT_APPLICATION_VERSION; learningSchemaVersion: 1 | 2 | 3;
 }
 export type InstanceManifest = InstanceManifestV1 | InstanceManifestV2;
 export interface BackupInstanceOptions {
@@ -44,6 +46,12 @@ export interface RestoreReport {
   files: number; sources: number; invalidated: Record<string, number>; connectorsBlocked: true;
   browserState: 'not-included'; startup: { dataDir: string; kgRoot: string; cliStateDir: string; envArchive: string | null };
   schemaMigrations: string[];
+  /** Offline candidate only: current product Store and HTTP protocol still reject schema 3. */
+  learningSchemaCandidate?: { schemaVersion: 3; runtimeReady: false };
+}
+export interface RestoreInstanceOptions {
+  bundle: string; target: string; now?: () => Date; preserveLegacyLearningSchema?: boolean;
+  targetLearningSchemaVersion?: 2 | 3;
 }
 
 function canonical(path: string): string {
@@ -123,10 +131,14 @@ function databaseInfo(path: string, relativePath: string): DatabaseEntry {
     return { path: relativePath, userVersion: Number(db.prepare('PRAGMA user_version').get()!.user_version), schemaHash: hash(JSON.stringify(schema)), tables };
   } finally { db.close(); }
 }
-function learningSchemaVersion(path: string): 1 | 2 {
+function learningSchemaVersion(path: string): 1 | 2 | 3 {
   let db: DatabaseSync | undefined;
   try {
     db = new DatabaseSync(path, { readOnly: true });
+    if (db.prepare('PRAGMA main.user_version').get()!.user_version === 3) {
+      if (inspectAnswerClearingSchemaV3(db).kind !== 'current-v3') throw new Error();
+      return 3;
+    }
     const schema = inspectLearningSchema(db);
     if (schema.kind !== 'legacy-v1' && schema.kind !== 'current-v2') throw new Error();
     return schema.schemaVersion;
@@ -287,7 +299,7 @@ export function verifyInstanceBundle(bundle: string): InstanceManifest {
   try { manifest = JSON.parse(raw.toString('utf8')); } catch { throw new InstanceBackupError('INSTANCE_MANIFEST_INVALID'); }
   if (!manifest || manifest.format !== 'living-memory-instance'
     || !((manifest.version === 1 && manifest.applicationVersion === LEGACY_APPLICATION_VERSION && !Object.hasOwn(manifest, 'learningSchemaVersion'))
-      || (manifest.version === 2 && manifest.applicationVersion === CURRENT_APPLICATION_VERSION && [1, 2].includes(manifest.learningSchemaVersion)))
+      || (manifest.version === 2 && manifest.applicationVersion === CURRENT_APPLICATION_VERSION && [1, 2, 3].includes(manifest.learningSchemaVersion)))
     || !isValidInstant(manifest.createdAt) || manifest.browserState !== 'not-included' || typeof manifest.instanceId !== 'string'
     || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length > MAX_FILES || !Array.isArray(manifest.databases)
     || !Array.isArray(manifest.sources) || !manifest.sources.length || !Array.isArray(manifest.configuration) || !Array.isArray(manifest.excluded)) throw new InstanceBackupError('INSTANCE_MANIFEST_INVALID');
@@ -335,13 +347,17 @@ export function verifyInstanceBundle(bundle: string): InstanceManifest {
   return manifest;
 }
 
-export async function restoreInstance(options: { bundle: string; target: string; now?: () => Date; preserveLegacyLearningSchema?: boolean }): Promise<RestoreReport> {
+export async function restoreInstance(options: RestoreInstanceOptions): Promise<RestoreReport> {
   const bundle = canonical(options.bundle), target = canonical(options.target);
   ensureSeparate(target, [bundle]);
   const manifest = verifyInstanceBundle(bundle);
   if (options.preserveLegacyLearningSchema !== undefined && typeof options.preserveLegacyLearningSchema !== 'boolean') throw new InstanceBackupError('INVALID_INSTANCE_ARGUMENT');
+  if (options.targetLearningSchemaVersion !== undefined && options.targetLearningSchemaVersion !== 2 && options.targetLearningSchemaVersion !== 3) throw new InstanceBackupError('INVALID_INSTANCE_ARGUMENT');
+  if (options.preserveLegacyLearningSchema !== undefined && options.targetLearningSchemaVersion !== undefined) throw new InstanceBackupError('INVALID_INSTANCE_ARGUMENT');
   const sourceSchemaVersion = manifest.version === 1 ? 1 : manifest.learningSchemaVersion;
   if (options.preserveLegacyLearningSchema && sourceSchemaVersion !== 1) throw new InstanceBackupError('INVALID_INSTANCE_ARGUMENT');
+  if (sourceSchemaVersion === 3 && options.targetLearningSchemaVersion !== 3) throw new InstanceBackupError('INSTANCE_SCHEMA_TARGET_REQUIRED');
+  const targetSchemaVersion = options.preserveLegacyLearningSchema ? 1 : options.targetLearningSchemaVersion ?? 2;
   let stage: string | null = newStage(target);
   let lock: ReturnType<typeof acquireDataDirectoryLock> | null = null;
   try {
@@ -367,6 +383,23 @@ export async function restoreInstance(options: { bundle: string; target: string;
         schemaMigrations.push('learning-schema-v2');
       } catch { throw new InstanceBackupError('INSTANCE_DATABASE_INVALID'); }
       finally { db.close(); }
+    }
+    if (targetSchemaVersion === 3 && sourceSchemaVersion !== 3) {
+      const learningPath = join(stage, 'data/living-memory.sqlite');
+      const candidatePath = `${learningPath}.schema3-${randomUUID()}.tmp`;
+      let source: DatabaseSync | undefined, destination: DatabaseSync | undefined;
+      try {
+        source = new DatabaseSync(learningPath, { readOnly: true });
+        destination = new DatabaseSync(candidatePath);
+        chmodSync(candidatePath, 0o600);
+        source.exec('PRAGMA foreign_keys=ON'); destination.exec('PRAGMA foreign_keys=ON');
+        copyLearningSchemaV2ToV3(source, destination, { recordedAt: restoredAt });
+      } catch { throw new InstanceBackupError('INSTANCE_DATABASE_INVALID'); }
+      finally { try { destination?.close(); } finally { source?.close(); } }
+      // These are owned staging copies. Never attach old WAL/journal state to the new main file.
+      for (const suffix of ['-wal', '-shm', '-journal']) rmSync(learningPath + suffix, { force: true });
+      renameSync(candidatePath, learningPath);
+      schemaMigrations.push('learning-schema-v3');
     }
     if (manifest.databases.some((entry) => entry.path === 'data/accounts.sqlite')) {
       const db = new DatabaseSync(join(stage, 'data/accounts.sqlite'));
@@ -396,12 +429,13 @@ export async function restoreInstance(options: { bundle: string; target: string;
       finally { db.close(); }
     }
     for (const entry of manifest.databases) databaseInfo(join(stage, entry.path), entry.path);
-    if (learningSchemaVersion(join(stage, 'data/living-memory.sqlite')) !== (options.preserveLegacyLearningSchema ? 1 : 2)) throw new InstanceBackupError('INSTANCE_DATABASE_INVALID');
+    if (learningSchemaVersion(join(stage, 'data/living-memory.sqlite')) !== targetSchemaVersion) throw new InstanceBackupError('INSTANCE_DATABASE_INVALID');
     const report: RestoreReport = { format: 'living-memory-restore-report', version: 1, restoredAt, instanceId, files: manifest.files.length,
       sources: manifest.sources.length, invalidated, schemaMigrations, connectorsBlocked: true, browserState: 'not-included', startup: {
         dataDir: join(target, 'data'), kgRoot: join(target, 'knowledge/owner'), cliStateDir: join(target, 'cli'),
         envArchive: manifest.configuration.includes('config/environment.env') ? join(target, 'config/environment.env') : null,
       } };
+    if (targetSchemaVersion === 3) report.learningSchemaCandidate = { schemaVersion: 3, runtimeReady: false };
     writePrivate(join(stage, 'restore-report.json'), JSON.stringify(report, null, 2));
     lock.release(); lock = null;
     // Re-read the bundle to detect modifications during staging as well.
@@ -417,6 +451,7 @@ export async function activateRestoredConnectors(dataDir: string, confirmed: boo
     const mainIdentities = mainDatabaseIdentities(dataDir);
     scanner = await createOfflineScanner({ mode: options.offlineCheck, dataDir, procRoot: options.procRoot });
     await scanner.scan(databasePaths(dataDir));
+    if (learningSchemaVersion(join(dataDir, 'living-memory.sqlite')) === 3) throw new InstanceBackupError('INSTANCE_RUNTIME_UNSUPPORTED');
     if (!isRestoreQuarantined(dataDir)) throw new InstanceBackupError('RESTORE_QUARANTINE_NOT_PRESENT');
     const path = join(dataDir, 'restore-quarantine.json');
     const state = JSON.parse(readOrdinary(path).toString('utf8')) as RestoreQuarantine;

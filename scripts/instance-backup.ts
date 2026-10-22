@@ -1,13 +1,13 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { backupInstance, verifyInstanceBundle, restoreInstance, activateRestoredConnectors,
-  type BackupInstanceOptions, type InstanceManifest, type RestoreReport } from '../src/server/instance-backup.js';
+  type BackupInstanceOptions, type InstanceManifest, type RestoreReport, type RestoreInstanceOptions } from '../src/server/instance-backup.js';
 
 type BackupOptions = Pick<BackupInstanceOptions, 'dataDir' | 'kgRoot' | 'cliStateDir' | 'output' | 'envFile' | 'cliSessionFile' | 'offlineCheck'>;
 export interface InstanceBackupCliBackend {
   backupInstance: (options: BackupOptions) => Promise<InstanceManifest>;
   verifyInstanceBundle: (bundle: string) => InstanceManifest;
-  restoreInstance: (options: { bundle: string; target: string; preserveLegacyLearningSchema?: boolean }) => Promise<RestoreReport>;
+  restoreInstance: (options: Omit<RestoreInstanceOptions, 'now'>) => Promise<RestoreReport>;
   activateRestoredConnectors: (dataDir: string, confirmed: boolean, options?: { offlineCheck?: 'native' | 'sudo' }) => Promise<void>;
 }
 const backend: InstanceBackupCliBackend = { backupInstance, verifyInstanceBundle, restoreInstance, activateRestoredConnectors };
@@ -15,7 +15,7 @@ const HELP = `Living Memory 完整实例离线迁移
 
 node --import tsx scripts/instance-backup.ts backup --data-dir <目录> --kg-root <目录> --cli-state-dir <目录> --output <新目录> [--env-file <文件>] [--cli-session-file <文件>] [--sudo-offline-scan]
 node --import tsx scripts/instance-backup.ts verify --bundle <备份目录>
-node --import tsx scripts/instance-backup.ts restore --bundle <备份目录> --target <新目录> [--preserve-legacy-learning-schema]
+node --import tsx scripts/instance-backup.ts restore --bundle <备份目录> --target <新目录> [--preserve-legacy-learning-schema | --learning-schema 2|3]
 node --import tsx scripts/instance-backup.ts activate-connectors --data-dir <恢复后的data目录> --confirm-bindings [--sudo-offline-scan]
 
 备份和激活前必须停止本地服务、飞书连接及其他数据库使用进程；不会自动终止进程。
@@ -23,6 +23,8 @@ node --import tsx scripts/instance-backup.ts activate-connectors --data-dir <恢
 浏览器待同步请求和未提交草稿不在备份中，迁移前请自行核对。
 恢复保持连接器隔离；不会自动激活飞书，需停服后显式确认绑定。
 默认将已知旧学习库迁移到 v2；仅隔离回退时显式保留 legacy 结构，不能用于 v2 数据降级。
+显式 --learning-schema 3 仅生成隔离的 v3 候选，当前服务尚不能启动它，也不能激活连接器；不会切换现有实例。
+v3 备份恢复必须显式选择 --learning-schema 3；不支持降级为 v2 或 legacy。
 仅当前 Linux/WSL 离线检查流程；Windows 完整迁移待验证。
 遇到 systemd/PAM 的受限文件描述符，可显式选择 --sudo-offline-scan，仅给只读扫描辅助器提权。
 请在可信源码目录以原账号运行命令；sudo 密码只在本机终端输入，备份与服务不以 root 运行。
@@ -32,6 +34,7 @@ const CODES = new Set(['INVALID_INSTANCE_ARGUMENT', 'INVALID_INSTANCE_COMMAND', 
   'UNSAFE_INSTANCE_PATH', 'UNSAFE_INSTANCE_FILE', 'INSTANCE_SOURCE_CHANGED', 'INSTANCE_LIMIT_EXCEEDED', 'INSTANCE_DATABASE_INVALID',
   'INSTANCE_DATABASE_MISSING', 'INSTANCE_TARGET_EXISTS', 'INSTANCE_MANIFEST_INVALID', 'INSTANCE_HASH_MISMATCH', 'INSTANCE_SOURCE_INVALID',
   'RESTORE_QUARANTINE_NOT_PRESENT', 'RESTORE_QUARANTINE_INVALID', 'DATA_DIRECTORY_BUSY', 'DATA_DIRECTORY_LOCK_UNKNOWN',
+  'INSTANCE_SCHEMA_TARGET_REQUIRED', 'INSTANCE_RUNTIME_UNSUPPORTED',
   'OFFLINE_CHECK_UNAVAILABLE', 'OFFLINE_SCAN_AUTH_REQUIRED', 'OFFLINE_SCAN_UNAVAILABLE', 'DATABASE_OPEN', 'ENOENT', 'EACCES', 'EPERM', 'ENOSPC']);
 export function instanceBackupErrorCode(error: unknown): string {
   const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined;
@@ -43,7 +46,7 @@ function parse(argv: readonly string[]): { command: string; flags: Map<string, s
   const command = argv[0];
   const allowed: Record<string, readonly string[]> = {
     backup: ['data-dir', 'kg-root', 'cli-state-dir', 'output', 'env-file', 'cli-session-file', 'sudo-offline-scan'],
-    verify: ['bundle'], restore: ['bundle', 'target', 'preserve-legacy-learning-schema'], 'activate-connectors': ['data-dir', 'confirm-bindings', 'sudo-offline-scan'],
+    verify: ['bundle'], restore: ['bundle', 'target', 'preserve-legacy-learning-schema', 'learning-schema'], 'activate-connectors': ['data-dir', 'confirm-bindings', 'sudo-offline-scan'],
   };
   if (!Object.hasOwn(allowed, command)) throw new CliArgumentError('INVALID_INSTANCE_COMMAND');
   const flags = new Map<string, string | true>();
@@ -83,10 +86,16 @@ export async function runInstanceBackupCli(argv: readonly string[], implementati
       status: 'verified', files: manifest.files.length, sources: manifest.sources.length };
   }
   if (parsed.command === 'restore') {
+    const schema = optional('learning-schema');
+    if (schema !== undefined && (!['2', '3'].includes(schema) || parsed.flags.has('preserve-legacy-learning-schema'))) {
+      throw new CliArgumentError('INVALID_INSTANCE_ARGUMENT');
+    }
     const target = required('target'); const restored = await implementation.restoreInstance({ bundle: required('bundle'), target,
+      ...(schema === undefined ? {} : { targetLearningSchemaVersion: Number(schema) as 2 | 3 }),
       ...(parsed.flags.has('preserve-legacy-learning-schema') ? { preserveLegacyLearningSchema: true } : {}) });
     return { format: 'living-memory-restore-report', version: 1, status: 'restored-quarantined', target, files: restored.files, sources: restored.sources,
-      connectorsBlocked: true, startup: { dataDir: restored.startup.dataDir, kgRoot: restored.startup.kgRoot, cliStateDir: restored.startup.cliStateDir, envArchive: restored.startup.envArchive } };
+      connectorsBlocked: true, startup: { dataDir: restored.startup.dataDir, kgRoot: restored.startup.kgRoot, cliStateDir: restored.startup.cliStateDir, envArchive: restored.startup.envArchive },
+      ...(restored.learningSchemaCandidate ? { learningSchemaCandidate: { schemaVersion: restored.learningSchemaCandidate.schemaVersion, runtimeReady: restored.learningSchemaCandidate.runtimeReady } } : {}) };
   }
   const dataDir = required('data-dir');
   if (parsed.flags.get('confirm-bindings') !== true) throw new CliArgumentError('CONNECTOR_CONFIRMATION_REQUIRED');

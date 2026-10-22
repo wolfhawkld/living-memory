@@ -97,7 +97,9 @@ P0-1～P0-3 的软件实现已完成；P0-4 的回忆观察流程已实现，但
 
 ### LM-006 — 可靠学习记录
 
-- **2026-10-22 原答清除存储内核**：[ACLEAR-02A](../design/answer-clearing.md#aclear-02a独立-sqlite-内核)增加独立 schema 3、同 namespace 的实际 SQLite 双副本原子清除和首次事实保留，调用方事务内 guard 为未来写入提供 `ANSWER_CLEARED` 拒绝。现行 Store／API／JSON／备份／统计未接入，新目录迁移及兼容仍待 ACLEAR-02B；v2 私人实例和启动行为保持原样，不标记完整清除功能或 LM-006 完成。
+- **2026-10-22 完整实例迁移与候选**：[ACLEAR-02B1](../design/answer-clearing.md#aclear-02b1完整实例离线迁移与备份往返)已接通已知旧归档到新目录 v3 的显式迁移，以及清除后的完整 bundle 往返；原行号、字段、请求字节及修订保留，失败丢弃未发布 stage。默认仍到 v2，v3 仅为隔离候选、当前服务不能启动或激活连接器。学习 JSON／合并兼容待 ACLEAR-02B2，产品存储、协议、统计及界面仍待后续；本轮未迁移私人实例。
+
+- **2026-10-22 原答清除存储内核**：[ACLEAR-02A](../design/answer-clearing.md#aclear-02a独立-sqlite-内核)增加独立 schema 3、同 namespace 的实际 SQLite 双副本原子清除和首次事实保留，调用方事务内 guard 为未来写入提供 `ANSWER_CLEARED` 拒绝。该阶段现行 Store／API／JSON／备份／统计当时未接入；上述 02B1 后只扩展了离线工具。v2 私人实例和启动行为保持原样，不标记完整清除功能或 LM-006 完成。
 
 - **2026-10-21 原答清除基础**：[指定回忆原答清除](../design/answer-clearing.md)的 ACLEAR-01 已定义严格请求、首次清除标记、`answer: null` 的独立类型及纯规划／隐私投影。尚未接通持久化、接口、界面或统计；schema／协议／JSON v2 不变。后续须处理事务副本、旧队列／导入防恢复与版本升级，不能用评分撤销代替文本清除，也不将 LM-006 整体标为完成。
 

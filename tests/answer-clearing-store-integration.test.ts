@@ -28,7 +28,7 @@ test('unconnected v3 store refuses empty/v2 connections without initializing or 
   }
 });
 
-test('current v2 inspection, startup, Store and full backup refuse v3 and leave its database bytes intact', async () => {
+test('current v2 inspection, startup and Store refuse v3 while offline full backup preserves its database bytes', async () => {
   const f=await instanceFixture();
   try {
     const path=join(f.options.dataDir,'living-memory.sqlite');
@@ -49,7 +49,8 @@ test('current v2 inspection, startup, Store and full backup refuse v3 and leave 
     assert.throws(()=>assertLearningDatabaseReady(path),{code:'LEARNING_SCHEMA_UNSUPPORTED_VERSION'});
     assert.throws(()=>new Store({dbPath:path,namespace:'synthetic'}),{code:'LEARNING_SCHEMA_UNSUPPORTED_VERSION'});
     assert.deepEqual(readFileSync(path),before);
-    await assert.rejects(backupInstance(f.options),{code:'INSTANCE_DATABASE_INVALID'});
+    const manifest=await backupInstance(f.options);
+    assert.equal(manifest.learningSchemaVersion,3);
     assert.deepEqual(readFileSync(path),before);
     const verify=new DatabaseSync(path,{readOnly:true});
     try {

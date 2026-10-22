@@ -1,6 +1,6 @@
 # 清除指定回忆的原回答
 
-更新：2026-10-22。对应 FR-11／LM-006：主动保存的回答片段应能查看与清除。**ACLEAR-01 的纯契约与规划基础，以及 ACLEAR-02A 的独立 SQLite 清除内核已实现；删除 API 和界面尚未开放。** 当前产品仍使用学习 schema 2、HTTP 协议 2、学习 JSON v2；独立 schema 3 仅用于合成库及未来离线恢复阶段，不升级或操作运行中的私人实例。
+更新：2026-10-22。对应 FR-11／LM-006：主动保存的回答片段应能查看与清除。**ACLEAR-01 的纯契约、ACLEAR-02A 的 SQLite 清除内核，以及 ACLEAR-02B1 的完整实例离线迁移与备份往返已实现；删除 API 和界面尚未开放。** 当前产品仍使用学习 schema 2、HTTP 协议 2、学习 JSON v2；显式生成的 schema 3 只是隔离候选，当前服务不能启动它。本轮不升级或操作运行中的私人实例。
 
 本项只处理一条已保存概念解释或场景调用 `Observation` 的 `answer`，包括数据库原字段、请求载荷中的机械副本以及当前可控的同条浏览器副本。它与[自评更正、暂不采用和恢复采用](observation-revisions.md)分开；清除原答不等于把当时的回答改成空白、不等于脑中回忆，也不撤销练习发生的事实。
 
@@ -97,9 +97,21 @@ type PrivacyObservation = Observation | ClearedObservation;
 
 清除失败只回滚本方法成功开始的事务；嵌套调用或竞争锁使 BEGIN 失败时，不提交或回滚外层调用方事务。错误消息仅为固定码，不包含 SQL、原答或底层异常。清除不修改原评分、说明、修订链、anchor、配置及其他行；原事件仍占位。空答或脑中回忆没有已存原文，拒绝为它创建标记。
 
-`assertReplayAllowed` 仅是未来写入方必须在同事务使用的门槛，不负责未清除请求的全文精确重试、跨表事件 ID 冲突或导入合并。**现有 Store、HTTP、JSON、备份、统计和客户端均未调用本模块，因此本阶段不能声称现有 API 或旧导入已经具备防恢复能力。** 现行 v2 schema 检查、Store 和完整备份入口继续拒绝 v3；禁止把清除对象改成 `answer: ''` 塞回 v2，它会丢失标记。
+`assertReplayAllowed` 仅是未来写入方必须在同事务使用的门槛，不负责未清除请求的全文精确重试、跨表事件 ID 冲突或导入合并。**现有产品 Store、HTTP、JSON、统计和客户端尚未接通清除语义，不能声称现有 API 或旧 JSON 导入已经具备防恢复能力。** 现行 v2 schema 检查和产品 Store 继续拒绝 v3；完整实例离线工具在下述 ACLEAR-02B1 中显式支持 v3 备份与候选。禁止把清除对象改成 `answer: ''` 塞回 v2，它会丢失标记。
 
-下一阶段 ACLEAR-02B 才处理离线新目录迁移、学习 JSON v3、导入预览与合并及 bundle 内层版本兼容。随后接通产品 Store 的读取与统计隐私门槛、排除计数和协议 v3；这些启用条件齐备后再开放 API／Web。当前 v2 私人实例与已有启动候选不变，本轮不建立可运行的 v3 私人候选。
+### ACLEAR-02B1：完整实例离线迁移与备份往返
+
+[迁移模块](../../src/server/answer-clearing-migration.ts)把严格验证的 v2 连接复制到全新的规范 v3 库，不在原库重建表。按已知表白名单逐行复制 rowid 和命名列，以 BigInt 保留 SQLite 整数和原请求字节；列顺序不同的已知 v2 也能保持原值。observations 只增加 `answer_cleared_at: NULL`，schema metadata 是明确例外：改为版本 3／最低读取 3 及本次规范时间。修订链的父观察和前驱外键在同一目标事务中延迟核对。
+
+模块要求不同连接、初始均不在事务内且启用外键；源为已知完整 v2、目标真正为空。源只读快照保持到目标提交，源和目标均核对完整性与外键。提交前失败回滚目标 DDL 和已复制行；目标已经提交后的源事务收尾若失败，目标可能已是完整 v3，但函数仍报固定错误。**调用方在任意错误后都必须丢弃未发布目标**，不能将其当作成功候选。模块不打开／关闭连接，也不自行备份。
+
+[完整实例工具](../../src/server/instance-backup.ts)已经接入此模块。只有 `restore --learning-schema 3` 才迁移候选；v1 先在未发布暂存副本完成既有 v1→v2，再复制到规范 v3。复制成功并关闭连接后，清理暂存旧库的 sidecar 并替换主文件；任一步失败删除整个 stage、不发布目标，源库和归档不变。
+
+bundle 外层继续为 `version: 2`，内部 `learningSchemaVersion` 可为 1、2 或 3，并与真实 schema 严格匹配。schema 3 的完整备份／核验／显式恢复保留首次标记和两个 NULL，不降格为空答；从 v3 归档恢复必须再次显式选 3，默认或要求 2 均返回 `INSTANCE_SCHEMA_TARGET_REQUIRED`。未知版本、伪造声明、legacy 与显式目标并用均拒绝。默认 v1／v2 恢复仍输出 v2，不自动升级现有实例。
+
+新目录仍生成新实例身份、撤销旧会话并隔离连接器。v3 报告和 CLI 仅额外标注 `learningSchemaCandidate: { schemaVersion: 3, runtimeReady: false }`，不暗示可启动；当前 `activate-connectors` 对 v3 返回 `INSTANCE_RUNTIME_UNSUPPORTED` 并保留隔离。[操作说明](../development/instance-migration.md#学习结构-v3-的隔离候选)包含明确命令与边界。本轮只在合成目录验证，未给私人实例生成或启用 v3 候选。
+
+下一阶段 ACLEAR-02B2 处理学习 JSON v3、导入预览与合并，包含旧原文不得覆盖清除标记、外部清除标记不能代替本机确认。随后接通产品 Store 的读取与统计隐私门槛、排除计数和协议 v3；这些启用条件齐备后再开放 API／Web。当前 v2 私人实例与已有启动候选不变。
 
 ## ACLEAR-03：界面与可控副本
 
@@ -115,7 +127,8 @@ type PrivacyObservation = Observation | ClearedObservation;
 | --- | --- |
 | ACLEAR-01 设计、纯契约与投影 | 已实现；由独立 SQLite 内核及合成测试使用，尚未接通产品运行链 |
 | ACLEAR-02A SQLite 内核 | 已实现：完整独立 schema 3、双副本原子清除、首次标记、跨 namespace、竞争／回滚及要求事务的重放 guard；现产品未接入 |
-| ACLEAR-02B 迁移与导入兼容 | 待开发：v2 到 v3 离线新目录升级、JSON v3、导入预览／合并、bundle 内层版本及完整往返 |
+| ACLEAR-02B1 完整实例迁移 | 已实现：显式离线 v1／v2 到新目录 v3 候选，bundle 内层版本、清除后完整往返及失败 stage 清理；当前服务仍不支持候选启动 |
+| ACLEAR-02B2 JSON 与合并兼容 | 待开发：学习 JSON v3、导入预览／快照／事务合并，既有清除阻断旧原文，导入清除需本机确认 |
 | ACLEAR-02C 产品存储与协议 | 待开发：现有 Store 的所有读取／写入／全局占位检查、统计隐私门槛与排除计数、HTTP 协议 3 及客户端握手 |
 | ACLEAR-03 API／Web 与缓存 | 待开发：权限、明确确认、结果未知恢复、水位、迟到响应、跨页队列与 checkpoint |
 | ACLEAR-04 集成与交付 | 待开发：非空 JSON／bundle 往返、跨页／多标签、已有修订链与飞书计数、远端浏览器回归；私人升级和真实删除单独安排 |
@@ -123,5 +136,7 @@ type PrivacyObservation = Observation | ClearedObservation;
 ACLEAR-01 的[合成测试](../../tests/answer-clearing.test.ts)覆盖严格解析、不泄露原答／哈希、原字段保留、深拷贝、首次与重复清除、错误父目标／时间／状态、空答与脑中回忆，以及隐私门槛。测试中的序列化往返只证明纯对象语义，不等于已实现学习 JSON 导入、API 历史时间查询或旧队列防恢复。本轮未调用真实清除接口、修改私人数据、重启服务或执行本机浏览器。
 
 ACLEAR-02A 的 [schema 验证](../../tests/answer-clearing-schema.test.ts)与 [SQLite 清除测试](../../tests/answer-clearing-store.test.ts)使用临时合成库，核对真实持久化、首次事实、失败回滚、事务所有权、namespace 隔离与版本拒绝；并发和重开连接的证据不等于真人已确认删除或私人实例已迁移。完整集成与个人数据操作仍按后续阶段分别验收。
+
+ACLEAR-02B1 的[迁移测试](../../tests/answer-clearing-migration.test.ts)核对命名列、历史列顺序、原 rowid／整数／请求字节、外键、失败回滚及提交收尾边界；[完整往返测试](../../tests/answer-clearing-bundle.test.ts)核对非空多用户修订链、真实旧 fixture、显式候选清除后的完整备份恢复、身份与会话隔离。它们不证明当前 JSON 导入已经阻断原文恢复，也不表示软件已经可以作为 v3 私人服务运行。
 
 完整逻辑清除只保证当前应用记录及之后的受控导出；SQLite WAL、释放页、系统快照、旧归档和外部副本不是本功能已擦除的对象。软件正确性与记忆收益分别验收。

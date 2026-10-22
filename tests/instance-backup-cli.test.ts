@@ -57,6 +57,32 @@ test('connector activation requires explicit confirmation and never receives tes
   assert.deepEqual(f.calls, [['activate', '/target/data', true]]);
 });
 
+test('schema selection is restore-only, exact and mutually exclusive with legacy preservation before any backend call', async () => {
+  const f = fixture(), restore = ['restore', '--bundle', '/bundle', '--target', '/target'];
+  for (const value of ['1', '4', '03', '3.0', ' 3', 'true']) {
+    await assert.rejects(runInstanceBackupCli([...restore, '--learning-schema', value], f.backend), { code: 'INVALID_INSTANCE_ARGUMENT' });
+  }
+  for (const argv of [
+    [...restore, '--learning-schema'], [...restore, '--learning-schema', '3', '--learning-schema', '2'],
+    [...restore, '--learning-schema', '3', '--preserve-legacy-learning-schema'],
+    ['verify', '--bundle', '/bundle', '--learning-schema', '3'], ['backup', '--learning-schema', '3'],
+  ]) await assert.rejects(runInstanceBackupCli(argv, f.backend), { code: 'INVALID_INSTANCE_ARGUMENT' });
+  assert.deepEqual(f.calls, []);
+  await runInstanceBackupCli([...restore, '--learning-schema=2'], f.backend);
+  assert.deepEqual(f.calls, [['restore', { bundle: '/bundle', target: '/target', targetLearningSchemaVersion: 2 }]]);
+});
+
+test('explicit v3 restore identifies an offline candidate without exposing private report fields or implying runtime support', async () => {
+  const f = fixture(), original = f.backend.restoreInstance;
+  f.backend.restoreInstance = async options => ({ ...await original(options),
+    learningSchemaCandidate: { schemaVersion: 3, runtimeReady: false, secret: 'private-candidate-secret' } } as RestoreReport);
+  const result = await runInstanceBackupCli(['restore', '--bundle', '/bundle', '--target', '/candidate', '--learning-schema', '3'], f.backend);
+  assert.deepEqual(f.calls, [['restore', { bundle: '/bundle', target: '/candidate', targetLearningSchemaVersion: 3 }]]);
+  assert.deepEqual((result as Record<string, unknown>).learningSchemaCandidate, { schemaVersion: 3, runtimeReady: false });
+  assert.doesNotMatch(JSON.stringify(result), /private-candidate-secret|privateAccount|private-instance|invalidated/);
+  assert.match(String(await runInstanceBackupCli(['restore', '--help'], f.backend)), /当前服务尚不能启动/);
+});
+
 test('terminal errors contain only a fixed code and help explains stop/quarantine/browser boundaries without running a backend', async () => {
   const f = fixture(); const stdout: string[] = []; const stderr: string[] = [];
   f.backend.verifyInstanceBundle = () => { throw Object.assign(new Error('/private/user/secret.env contains PASSWORD=private'), { code: 'INSTANCE_HASH_MISMATCH' }); };
@@ -94,7 +120,7 @@ test('sudo scan is an explicit boolean available only to backup and connector ac
 test('activation awaits asynchronous rejection and scan failures print only approved fixed codes', async () => {
   const f = fixture();
   const stdout: string[] = [], stderr: string[] = [];
-  for (const code of ['OFFLINE_SCAN_AUTH_REQUIRED', 'OFFLINE_SCAN_UNAVAILABLE', 'DATABASE_OPEN']) {
+  for (const code of ['OFFLINE_SCAN_AUTH_REQUIRED', 'OFFLINE_SCAN_UNAVAILABLE', 'DATABASE_OPEN', 'INSTANCE_SCHEMA_TARGET_REQUIRED', 'INSTANCE_RUNTIME_UNSUPPORTED']) {
     f.backend.activateRestoredConnectors = async () => {
       await Promise.resolve();
       throw Object.assign(new Error('/private/account PASSWORD=private helper diagnostic'), { code });

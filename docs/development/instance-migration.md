@@ -66,11 +66,30 @@ FD 扫描只代表检查点的观察，不能原子阻止任意旧程序随后�
 
 ## 学习结构 v2 的升级边界
 
-新建 bundle 为 v2，包含 `learningSchemaVersion: 1 | 2`。离线备份已知旧库时声明 1，备份不会升级源库；v1 归档仅接受已知 preview.1 的实际旧结构。未知、部分损坏、声明不符的结构会拒绝，不能通过编辑 manifest 的版本数字转换。
+新建 bundle 外层为 v2，包含 `learningSchemaVersion: 1 | 2 | 3`。离线备份如实声明源学习结构，备份不会升级源库；v1 归档仅接受已知 preview.1 的实际旧结构。默认恢复仍使用 v2，v3 仅支持下述显式候选流程。未知、部分损坏、声明不符的结构会拒绝，不能通过编辑 manifest 的版本数字转换。
 
 新服务对旧学习库返回 `LEARNING_SCHEMA_UPGRADE_REQUIRED`，启动不原地升级。按本页先完成离线备份与 `verify`，再执行下面的恢复：旧结构只在新目标的暂存库内事务迁移为 schema 2，失败不发布目标；当前 v2 保留原登记。保存旧目录与源归档，回退时不要用旧程序打开升级后的目录。
 
 仅当确实需要旧程序读取旧结构的新目录副本时，才在 `restore` 另加 `--preserve-legacy-learning-schema`。该标志只接受实际 schema 1，不提供 v2→v1 降级；新实例标识、原会话失效与飞书隔离仍生效。
+
+## 学习结构 v3 的隔离候选
+
+2026-10-22 的 ACLEAR-02B1 支持为原答清除准备离线候选。**当前产品服务、学习 JSON 与统计仍使用 v2，不能启动 v3 候选。** 日常迁移继续使用下节默认命令，不需要选择 v3。
+
+```bash
+node --import tsx scripts/instance-backup.ts restore \
+  --bundle /private/backups/living-memory-new \
+  --target /private/restored/living-memory-v3-candidate \
+  --learning-schema 3
+```
+
+仅在全新目录暂存升级，原库和归档不变。已知 v1 先在 stage 副本正规化到 v2，再把已知完整 v2 按命名列复制到规范 v3；保留原行号、整数、原字段、请求字节及修订链，observations 的清除时间初始化为 NULL，版本 metadata 更新为 3。两个连接的复制不等于跨库原子提交：任意失败均丢弃整个未发布 stage，不能拿失败操作残留的临时文件作为成功候选。
+
+完整备份和 `verify` 支持 v3，并在 manifest 的 `learningSchemaVersion` 如实声明 3；v3→v3 显式恢复保留已有清除标记和缺失原答，不转成普通空答。v3 归档若没有显式选 3，或要求 2，返回 `INSTANCE_SCHEMA_TARGET_REQUIRED`，创建目标之前拒绝；不提供 v3→v2／legacy 降级。`--learning-schema` 只接受 2 或 3，不能与 `--preserve-legacy-learning-schema` 并用。
+
+报告额外包含 `learningSchemaCandidate: { schemaVersion: 3, runtimeReady: false }`。新实例身份、旧会话撤销和连接器隔离沿用正常恢复规则；当前 `activate-connectors` 对 v3 返回 `INSTANCE_RUNTIME_UNSUPPORTED`，保留隔离。不要依据只读 profile 检查或报告中的路径判断候选已可运行。先保留 v2 的源码／构建和旧备份，后续产品协议、统计与 JSON 兼容完成后再单独安排私人升级。
+
+本轮的完整往返、清除标记和失败阶段清理仅在合成目录验证，未迁移或切换当前私人实例。学习 JSON v3 及导入合并仍待后续，不把完整数据库备份往返当成 JSON 防恢复证据。
 
 ## 恢复与核对
 
@@ -80,7 +99,7 @@ node --import tsx scripts/instance-backup.ts restore \
   --target /private/restored/living-memory
 ```
 
-目标必须是尚不存在的新目录。工具先校验和暂存，成功后发布新目录，不覆盖原实例。恢复结果中的 `startup` 给出新的 data、所有者知识源、CLI 收据和可选配置归档位置。按这些实际路径配置 `LM_DATA_DIR`、`LM_KG_ROOT`、`LM_CLI_STATE_DIR` 后再启动应用；配置归档不会自动作为环境加载。
+目标必须是尚不存在的新目录。工具先校验和暂存，成功后发布新目录，不覆盖原实例。恢复结果中的 `startup` 给出新的 data、所有者知识源、CLI 收据和可选配置归档位置。默认 v2 恢复可按这些实际路径配置 `LM_DATA_DIR`、`LM_KG_ROOT`、`LM_CLI_STATE_DIR` 后启动应用；配置归档不会自动作为环境加载。显式 v3 候选当前不能启动，见上节边界。
 
 源身份登记保留原 namespace 与概念 ID 的生成身份，所以物理根目录改变不会把个人历史变成新的知识库。当前物理根指纹仍单独校验。学习记录、长期保持状态和活动原始引用按原事实保留，不借迁移伪造新的学习表现。
 
@@ -122,5 +141,7 @@ node --import tsx scripts/instance-backup.ts activate-connectors \
 ```
 
 该命令只解除恢复隔离标记，不连接飞书、不发送消息，也不修改学习表现。之后仍需由服务启动过程读取有效的飞书启用配置。恢复或激活失败时，CLI 仅输出固定错误码；原始异常、密钥和个人内容不会打印到终端。
+
+本节适用于当前可运行的 v2 恢复实例；v3 候选的激活请求会固定拒绝并保持隔离。
 
 若激活时也遇到同样的 `/proc` 权限限制，可在原账号执行的命令中另加 `--sudo-offline-scan`，使用新一轮只读扫描；它不会沿用备份时的授权结果。`verify` 和 `restore` 不接受此选项，也不会触发提权。
