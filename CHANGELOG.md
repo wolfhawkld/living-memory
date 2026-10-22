@@ -4,11 +4,13 @@
 
 ## Unreleased
 
-ACLEAR-02C2A 将现行 v2 导入 SQL 与练习导入提取为共用仓库，`Store.commitImport` 实际复用同一实现；事件占位、必要前置查询、规范 codec 和错误类身份保持兼容。仓库要求调用方持有事务，仅支持已初始化 v2，不接管备份、token 或回执；v3 SQL 导入仍待 02C2B。主读取、统计、schema／协议／JSON 及私人实例、服务和启动候选不变。见[责任边界](docs/design/answer-clearing.md#aclear-02c2a现行-v2-导入-sql-共用仓库)。
+ACLEAR-02C2B 新增显式 v3 完整快照与事务导入：现行 Store 复用同一读取和 SQL 实现，已清除原答在导入／重试时保持 NULL 与首次标记。新版导入回执不保存原答或其摘要，重试核对现有事件和非正文描述；首次导入清除标记时原子退休遗留凭证。产品仍使用 v2，清除 API／界面和私人实例升级尚未开放。见[事务与重试边界](docs/design/answer-clearing.md#aclear-02c2bv3-事务导入与安全重试)。
 
-新增 ACLEAR-02C1 重放隐私准备：独立 v3 内核在首次及重复清除时，原子退休同 namespace 的导入／身份绑定请求摘要，保留操作占位、绑定、收据及学习事实；新增只读状态、遗留准备与要求调用方事务的操作 guard。退休使用固定非哈希哨兵，不保存原答摘要；`ready` 仅指两类凭证准备完成。产品仍使用 schema／协议／JSON 2，私人实例与启动候选不变；v3 SQL 导入和无原答凭证契约留待后续。见[边界及后续](docs/design/answer-clearing.md#aclear-02c1已有凭证退休与事务内-guard)。
+ACLEAR-02C2A 将现行 v2 导入 SQL 与练习导入提取为共用仓库，`Store.commitImport` 实际复用同一实现；事件占位、必要前置查询、规范 codec 和错误类身份保持兼容。仓库要求调用方持有事务，不接管备份、token 或回执；C2A 交付时仅支持已初始化 v2，后续 C2B 已扩展显式 v3。当时主读取、统计、schema／协议／JSON 及私人实例、服务和启动候选不变。见[责任边界](docs/design/answer-clearing.md#aclear-02c2a现行-v2-导入-sql-共用仓库)。
 
-新增 ACLEAR-02B2 独立学习 JSON v3 解析／序列化、隐私导入预览，以及重算 token 后生成完整 JSON 的纯合并：旧原文不能覆盖已清除状态，外部标记不能代替本机确认，首次标记、原始事件及本地审计信息保留。此模块未接 SQL／产品 Store／协议／统计／UI；Web 仍使用 JSON v2，私人实例和启动候选不变。临时 token 不代表数据库幂等，事务导入仍待后续。见[范围与门槛](docs/design/answer-clearing.md#aclear-02b2独立学习-json-v3-与纯合并)。
+新增 ACLEAR-02C1 重放隐私准备：独立 v3 内核在首次及重复清除时，原子退休同 namespace 的导入／身份绑定请求摘要，保留操作占位、绑定、收据及学习事实；新增只读状态、遗留准备与要求调用方事务的操作 guard。退休使用固定非哈希哨兵，不保存原答摘要；`ready` 仅指两类凭证准备完成。产品仍使用 schema／协议／JSON 2，私人实例与启动候选不变；v3 SQL 导入和无原答凭证契约已由后续 C2B 接续实现。见[边界及后续](docs/design/answer-clearing.md#aclear-02c1已有凭证退休与事务内-guard)。
+
+新增 ACLEAR-02B2 独立学习 JSON v3 解析／序列化、隐私导入预览，以及重算 token 后生成完整 JSON 的纯合并：旧原文不能覆盖已清除状态，外部标记不能代替本机确认，首次标记、原始事件及本地审计信息保留。此模块未接 SQL／产品 Store／协议／统计／UI；Web 仍使用 JSON v2，私人实例和启动候选不变。临时 token 不代表数据库幂等，事务导入已由后续 C2B 接续实现。见[范围与门槛](docs/design/answer-clearing.md#aclear-02b2独立学习-json-v3-与纯合并)。
 
 完整实例离线工具接通 ACLEAR-02B1：显式 `restore --learning-schema 3` 可将已知旧归档迁移到新的规范 v3 隔离候选，保留原行号、字段、整数、请求字节及修订链；完整备份／核验／显式 v3 恢复保持清除标记和两个 NULL。默认恢复仍到 v2，v3 候选不能启动当前服务或激活连接器，失败不发布目录；私人实例未升级。详见[候选说明](docs/development/instance-migration.md#学习结构-v3-的隔离候选)。
 

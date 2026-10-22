@@ -1,7 +1,8 @@
 import { isValidInstant } from '../core/time-model.js';
 import { StoreError } from './store-error.js';
-import type { Observation } from '../shared/types.js';
-import type { PracticeAttemptRequest, PracticeCardEvent, PracticeScenarioCard, PracticeScenarioAttempt, PracticeSource } from '../shared/practice.js';
+import { MIN_DAILY_REVIEW_BUDGET, MAX_DAILY_REVIEW_BUDGET, type ConceptReviewPreference, type ReviewPlan } from '../shared/review-plan.js';
+import type { LearningEvidence, Observation } from '../shared/types.js';
+import type { PracticeAttempt, PracticeAttemptRequest, PracticeCardEvent, PracticeScenarioCard, PracticeScenarioAttempt, PracticeSource } from '../shared/practice.js';
 import type { CorrectionRequest, CorrectionEvent, CorrectionStatus } from '../shared/corrections.js';
 import { parseRelationReviewBasis, type RelationReviewRequest, type RelationReviewEvent, type RelationReviewStatus } from '../shared/relation-reviews.js';
 
@@ -216,4 +217,183 @@ export function relationReviewFromRow(row: {
     status: row.status,
     note: row.note,
   };
+}
+
+
+export function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StoreError('INVALID_BODY', '请求体必须是 JSON 对象。');
+  return value as Record<string, unknown>;
+}
+
+export function isOneOf<T extends readonly string[]>(values: T, value: unknown): value is T[number] {
+  return typeof value === 'string' && values.includes(value);
+}
+
+export function normalizeLearningEvidence(value: unknown, observedAt?: string): LearningEvidence | undefined {
+  if (value === undefined) return undefined;
+  const record = asRecord(value);
+  if (!isOneOf(LEARNING_TASKS, record.task)) {
+    throw new StoreError('INVALID_LEARNING', 'learning.task 必须是 concept 或 scenario。');
+  }
+  if (!isOneOf(LEARNING_CUES, record.cue)) {
+    throw new StoreError('INVALID_LEARNING', 'learning.cue 必须是 independent、hinted、lookup 或 unknown。');
+  }
+  if (!isOneOf(LEARNING_OUTCOMES, record.outcome)) {
+    throw new StoreError('INVALID_LEARNING', 'learning.outcome 必须是 success、partial、failure 或 unverified。');
+  }
+  if (!isOneOf(LEARNING_BASES, record.basis)) {
+    throw new StoreError('INVALID_LEARNING', 'learning.basis 必须是 self-check、application 或 unknown。');
+  }
+
+  const confidence = record.confidence;
+  if (confidence !== null && (!finiteNumber(confidence) || !Number.isInteger(confidence) || confidence < 0 || confidence > 100)) {
+    throw new StoreError('INVALID_LEARNING', 'learning.confidence 必须是 0 到 100 的整数或 null。');
+  }
+  const rawConfidenceAt = record.confidenceAt;
+  if (confidence === null) {
+    if (rawConfidenceAt !== null) throw new StoreError('INVALID_LEARNING', 'confidenceAt 必须在 confidence 有值时提供，否则必须为 null。');
+  } else if (typeof rawConfidenceAt !== 'string' || !rawConfidenceAt.trim()) {
+    throw new StoreError('INVALID_LEARNING', 'confidenceAt 必须在 confidence 有值时提供。');
+  }
+
+  const confidenceAt = rawConfidenceAt === null
+    ? null
+    : normalizeDate(rawConfidenceAt as string, 'INVALID_CONFIDENCE_AT');
+  if (confidenceAt && observedAt && parseDate(confidenceAt) > parseDate(observedAt, 'INVALID_OBSERVED_AT')) {
+    throw new StoreError('INVALID_LEARNING', 'confidenceAt 不能晚于 observedAt。');
+  }
+
+  let scenario: string | undefined;
+  if (record.task === 'scenario') {
+    if (typeof record.scenario !== 'string' || !record.scenario.trim() || record.scenario.trim().length > 4000) {
+      throw new StoreError('INVALID_LEARNING', 'scenario 任务必须包含不超过 4000 个字符的场景描述。');
+    }
+    scenario = record.scenario.trim();
+    if (record.scenarioRevisit !== undefined && record.scenarioRevisit !== true) {
+      throw new StoreError('INVALID_LEARNING', 'scenarioRevisit 只能是 scenario 任务中的 true。');
+    }
+  } else if (record.scenario !== undefined) {
+    throw new StoreError('INVALID_LEARNING', 'concept 任务不能携带 scenario。');
+  } else if (record.scenarioRevisit !== undefined) {
+    throw new StoreError('INVALID_LEARNING', 'scenarioRevisit 只能用于 scenario 任务，并且必须为 true。');
+  }
+
+  let applicability: string | undefined;
+  if (record.applicability !== undefined) {
+    if (typeof record.applicability !== 'string' || !record.applicability.trim() || record.applicability.trim().length > 4000) {
+      throw new StoreError('INVALID_LEARNING', 'applicability 必须是不超过 4000 个字符的非空说明。');
+    }
+    applicability = record.applicability.trim();
+  }
+
+  if (record.outcome !== 'unverified' && record.basis === 'unknown') {
+    throw new StoreError('INVALID_LEARNING', '已验证的 learning.outcome 必须提供非 unknown 的 basis。');
+  }
+
+  return {
+    task: record.task,
+    ...(scenario !== undefined ? { scenario } : {}),
+    ...(record.scenarioRevisit === true ? { scenarioRevisit: true as const } : {}),
+    ...(applicability !== undefined ? { applicability } : {}),
+    confidence: confidence as number | null,
+    confidenceAt,
+    cue: record.cue,
+    outcome: record.outcome,
+    basis: record.basis,
+  };
+}
+
+export function parseStoredLearning(value: string | null): LearningEvidence | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return normalizeLearningEvidence(parsed);
+  } catch {
+    // A corrupt optional evidence blob must not make the complete history
+    // unreadable. The original observation remains available without it.
+    return undefined;
+  }
+}
+
+const LEARNING_TASKS = ['concept', 'scenario'] as const;
+
+const LEARNING_CUES = ['independent', 'hinted', 'lookup', 'unknown'] as const;
+
+const LEARNING_OUTCOMES = ['success', 'partial', 'failure', 'unverified'] as const;
+
+const LEARNING_BASES = ['self-check', 'application', 'unknown'] as const;
+
+export function practiceAttemptFromRow(row: {
+  event_id: string;
+  card_id: string;
+  card_event_id: string;
+  answered_at: string;
+  recorded_at: string;
+  answer: string;
+  confidence: number | null;
+  confidence_at: string | null;
+  exposure: 'unexposed' | 'exposed' | 'unknown';
+  observed_exposure: number;
+  cue: 'independent' | 'hinted' | 'lookup' | 'unknown';
+  outcome: 'success' | 'partial' | 'failure' | 'unverified';
+  check_notes: string;
+  scenario_json: string | null;
+}): PracticeAttempt {
+  const scenario = row.scenario_json
+    ? parseStoredPracticeScenario<PracticeScenarioAttempt>(row.scenario_json)
+    : undefined;
+  return {
+    eventId: row.event_id,
+    cardId: row.card_id,
+    cardEventId: row.card_event_id,
+    answeredAt: row.answered_at,
+    recordedAt: row.recorded_at,
+    answer: row.answer,
+    confidence: row.confidence,
+    confidenceAt: row.confidence_at,
+    exposure: row.exposure,
+    observedExposure: row.observed_exposure === 1,
+    cue: row.cue,
+    outcome: row.outcome,
+    checkNotes: row.check_notes,
+    ...(scenario ? { scenario } : {}),
+  };
+}
+
+export function parseReviewPlanRow(row: { revision: number; daily_budget: number; concepts_json: string }): ReviewPlan {
+  if (!Number.isSafeInteger(row.revision) || row.revision < 0
+      || !Number.isSafeInteger(row.daily_budget) || row.daily_budget < MIN_DAILY_REVIEW_BUDGET || row.daily_budget > MAX_DAILY_REVIEW_BUDGET) {
+    throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(row.concepts_json); } catch {
+    throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+  }
+  const concepts: Record<string, ConceptReviewPreference> = {};
+  for (const [conceptId, raw] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!conceptId.trim() || !raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+    }
+    const preference = raw as Record<string, unknown>;
+    if (typeof preference.focus !== 'boolean') {
+      throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+    }
+    const deferUntil = preference.deferUntil;
+    if (deferUntil !== null && (typeof deferUntil !== 'string' || !isValidInstant(deferUntil))) {
+      throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
+    }
+    Object.defineProperty(concepts, conceptId, {
+      value: {
+        focus: preference.focus,
+        deferUntil: deferUntil === null ? null : new Date(parseDate(deferUntil)).toISOString(),
+      },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return { revision: row.revision, dailyBudget: row.daily_budget, concepts };
 }

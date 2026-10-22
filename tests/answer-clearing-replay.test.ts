@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { AnswerClearingStore, ANSWER_CLEARING_RETIRED_CREDENTIAL } from '../src/server/answer-clearing-store.js';
+import { SAFE_IMPORT_CREDENTIAL } from '../src/server/answer-clearing-replay-contract.js';
 import { initializeAnswerClearingSchemaV3 } from '../src/server/answer-clearing-schema.js';
 import { fullExport } from './helpers/answer-clearing-json-fixture.js';
 
@@ -135,18 +136,18 @@ test('readiness snapshot and explicit preparation repair old cleared instances w
   const {db}=fixture();
   try {
     const store=new AnswerClearingStore({db,namespace,now:()=>{throw new Error('privacy preparation clock forbidden');}});
-    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:0,activeImportCredentials:2,activeIdentityCredentials:2,retiredImportCredentials:0,retiredIdentityCredentials:0});
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:0,safeImportCredentials:0,activeImportCredentials:2,activeIdentityCredentials:2,retiredImportCredentials:0,retiredIdentityCredentials:0});
     const before=snapshot(db);
     assert.deepEqual(store.prepareReplayPrivacy(),{status:'already-ready',retiredImportCredentials:0,retiredIdentityCredentials:0});
     assert.deepEqual(snapshot(db),before);
     db.prepare('UPDATE observations SET answer=NULL,request_payload=NULL,answer_cleared_at=? WHERE namespace=? AND event_id=?').run(clearedAt,namespace,'observation-1');
-    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'repair-required',clearedObservations:1,activeImportCredentials:2,activeIdentityCredentials:2,retiredImportCredentials:0,retiredIdentityCredentials:0});
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'repair-required',clearedObservations:1,safeImportCredentials:0,activeImportCredentials:2,activeIdentityCredentials:2,retiredImportCredentials:0,retiredIdentityCredentials:0});
     assert.deepEqual(store.prepareReplayPrivacy(),{status:'prepared',retiredImportCredentials:2,retiredIdentityCredentials:2});
     assertOnlyClearingAndRetirement(before,snapshot(db));
-    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:1,activeImportCredentials:0,activeIdentityCredentials:0,retiredImportCredentials:2,retiredIdentityCredentials:2});
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:1,safeImportCredentials:0,activeImportCredentials:0,activeIdentityCredentials:0,retiredImportCredentials:2,retiredIdentityCredentials:2});
     assert.deepEqual(store.prepareReplayPrivacy(),{status:'already-ready',retiredImportCredentials:0,retiredIdentityCredentials:0});
     db.prepare('UPDATE import_receipts SET request_hash=? WHERE namespace=? AND import_id=?').run(digest({oldWriter:answer}),namespace,'import-0');
-    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'repair-required',clearedObservations:1,activeImportCredentials:1,activeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:2});
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'repair-required',clearedObservations:1,safeImportCredentials:0,activeImportCredentials:1,activeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:2});
     db.exec('BEGIN IMMEDIATE');
     assert.throws(()=>store.assertOperationReplayAllowed('identity','binding-0'),{code:'ANSWER_CLEARING_REPLAY_PREPARATION_REQUIRED'});
     assert.equal(db.isTransaction,true);db.exec('ROLLBACK');
@@ -208,5 +209,79 @@ test('operation guard validates kind and ID without echoing input or finishing c
       assert.equal(db.isTransaction,true);
     }
     db.exec('ROLLBACK');
+  } finally {if(db.isTransaction)db.exec('ROLLBACK');db.close();}
+});
+
+test('safe imports are counted separately, allowed after imported markers, and retired by local clear and duplicate clear',()=>{
+  const {db,store}=fixture();
+  try {
+    db.prepare('UPDATE import_receipts SET request_hash=? WHERE namespace=? AND import_id=?').run(SAFE_IMPORT_CREDENTIAL,namespace,'import-0');
+    db.prepare('UPDATE import_receipts SET request_hash=? WHERE namespace=? AND import_id=?').run(ANSWER_CLEARING_RETIRED_CREDENTIAL,namespace,'import-1');
+    db.prepare('UPDATE identity_bindings SET request_hash=? WHERE namespace=?').run(ANSWER_CLEARING_RETIRED_CREDENTIAL,namespace);
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:0,safeImportCredentials:1,activeImportCredentials:0,activeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:2});
+    // Model importing a new cleared marker: original local answers stay intact.
+    seedObservation(db,namespace,'imported-cleared');
+    db.prepare('UPDATE observations SET answer=NULL,request_payload=NULL,answer_cleared_at=? WHERE namespace=? AND event_id=?').run(clearedAt,namespace,'imported-cleared');
+    assert.equal(store.getReplayPrivacyStatus().status,'ready');
+    assert.deepEqual(store.prepareReplayPrivacy(),{status:'already-ready',retiredImportCredentials:0,retiredIdentityCredentials:0});
+    db.exec('BEGIN IMMEDIATE');
+    store.assertOperationReplayAllowed('import','import-0');
+    assert.throws(()=>store.assertOperationReplayAllowed('import','import-1'),{code:'ANSWER_CLEARING_OPERATION_RETIRED'});
+    db.exec('COMMIT');
+    store.clear({observationEventId:'observation-1'});
+    assert.equal(store.getReplayPrivacyStatus().safeImportCredentials,0);
+    assert.equal(store.getReplayPrivacyStatus().retiredImportCredentials,2);
+    db.prepare('UPDATE import_receipts SET request_hash=? WHERE namespace=? AND import_id=?').run(SAFE_IMPORT_CREDENTIAL,namespace,'import-0');
+    store.clear({observationEventId:'observation-1'});
+    assert.equal(store.getReplayPrivacyStatus().safeImportCredentials,0);
+  } finally {if(db.isTransaction)db.exec('ROLLBACK');db.close();}
+});
+
+test('legacy retirement requires caller transaction, preserves safe imports and rolls back with caller work',()=>{
+  const {db}=fixture();
+  try {
+    const store=new AnswerClearingStore({db,namespace,now:()=>{throw new Error('clock forbidden');}});
+    db.prepare('UPDATE import_receipts SET request_hash=? WHERE namespace=? AND import_id=?').run(SAFE_IMPORT_CREDENTIAL,namespace,'import-0');
+    const before=snapshot(db);
+    assert.throws(()=>store.retireLegacyReplayCredentials(),{code:'ANSWER_CLEARING_TRANSACTION_REQUIRED'});
+    assert.deepEqual(snapshot(db),before);
+    db.exec('BEGIN IMMEDIATE');
+    assert.deepEqual(store.retireLegacyReplayCredentials(),{retiredImportCredentials:1,retiredIdentityCredentials:2});
+    assert.equal(db.isTransaction,true);
+    const status=store.getReplayPrivacyStatus();
+    assert.equal(status.safeImportCredentials,1);assert.equal(status.activeImportCredentials,0);assert.equal(status.activeIdentityCredentials,0);
+    assert.equal(store.readObservation('observation-1')!.answer,answer);
+    assert.deepEqual(store.retireLegacyReplayCredentials(),{retiredImportCredentials:0,retiredIdentityCredentials:0});
+    db.exec('ROLLBACK');assert.deepEqual(snapshot(db),before);
+    db.exec('BEGIN IMMEDIATE');store.retireLegacyReplayCredentials();db.exec('COMMIT');
+    const other=new AnswerClearingStore({db,namespace:otherNamespace});
+    assert.equal(other.getReplayPrivacyStatus().activeImportCredentials,2);
+    assert.equal(other.getReplayPrivacyStatus().activeIdentityCredentials,2);
+  } finally {if(db.isTransaction)db.exec('ROLLBACK');db.close();}
+});
+
+test('legacy retirement failure leaves transaction ownership and rollback to the caller with fixed errors',()=>{
+  const {db,store}=fixture();
+  try {
+    const before=snapshot(db);
+    db.exec("CREATE TEMP TRIGGER stop_legacy_retirement BEFORE UPDATE OF request_hash ON identity_bindings BEGIN SELECT RAISE(ABORT,'PRIVATE_SQL_ERROR'); END");
+    db.exec('BEGIN IMMEDIATE');
+    assert.throws(()=>store.retireLegacyReplayCredentials(),{code:'ANSWER_CLEARING_WRITE_FAILED',message:'ANSWER_CLEARING_WRITE_FAILED'});
+    assert.equal(db.isTransaction,true);
+    db.exec('ROLLBACK');assert.deepEqual(snapshot(db),before);
+  } finally {if(db.isTransaction)db.exec('ROLLBACK');db.close();}
+});
+
+test('repair with unsafe credentials still retires safe operations conservatively',()=>{
+  const {db,store}=fixture();
+  try {
+    db.prepare('UPDATE import_receipts SET request_hash=? WHERE namespace=? AND import_id=?').run(SAFE_IMPORT_CREDENTIAL,namespace,'import-0');
+    db.prepare('UPDATE observations SET answer=NULL,request_payload=NULL,answer_cleared_at=? WHERE namespace=? AND event_id=?').run(clearedAt,namespace,'observation-1');
+    assert.equal(store.getReplayPrivacyStatus().status,'repair-required');
+    db.exec('BEGIN IMMEDIATE');
+    assert.throws(()=>store.assertOperationReplayAllowed('import','import-0'),{code:'ANSWER_CLEARING_REPLAY_PREPARATION_REQUIRED'});
+    db.exec('ROLLBACK');
+    assert.deepEqual(store.prepareReplayPrivacy(),{status:'prepared',retiredImportCredentials:2,retiredIdentityCredentials:2});
+    assert.equal(store.getReplayPrivacyStatus().safeImportCredentials,0);
   } finally {if(db.isTransaction)db.exec('ROLLBACK');db.close();}
 });

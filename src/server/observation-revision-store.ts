@@ -77,6 +77,17 @@ function parseRow(row: Row): ObservationRevision {
     return event;
   } catch { throw invalid(); }
 }
+export function readObservationRevisions(db: DatabaseSync, namespace: string, parentId?: string): ObservationRevision[] {
+  try {
+    const rows = db.prepare(`SELECT * FROM main.observation_revisions WHERE namespace=?${parentId === undefined ? '' : ' AND observation_event_id=?'} ORDER BY recorded_at,event_id`)
+      .all(...(parentId === undefined ? [namespace] : [namespace, parentId])) as unknown as Row[];
+    return rows.map(parseRow);
+  } catch (error) {
+    if (error instanceof ObservationRevisionStoreError) throw error;
+    throw invalid();
+  }
+}
+
 interface Cursor { version: 1; namespace: string; parent: string; tail: string; total: number; beforeEventId: string }
 function decodeCursor(raw: string): Cursor {
   try {
@@ -138,9 +149,7 @@ export class ObservationRevisionStore {
     } catch { throw invalid(); }
   }
   private rows(parentId?: string): ObservationRevision[] {
-    const rows = this.db.prepare(`SELECT * FROM observation_revisions WHERE namespace=?${parentId === undefined ? '' : ' AND observation_event_id=?'} ORDER BY recorded_at,event_id`)
-      .all(...(parentId === undefined ? [this.namespace] : [this.namespace, parentId])) as unknown as Row[];
-    return rows.map(parseRow);
+    return readObservationRevisions(this.db, this.namespace, parentId);
   }
   getRevisions(observationEventId?: string): ObservationRevision[] {
     if (observationEventId !== undefined) id(observationEventId);

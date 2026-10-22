@@ -1,13 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { isAnswerCleared, planAnswerClearing } from '../core/answer-clearing.js';
-import { AnswerClearingError, parseAnswerClearingMarker, parseAnswerClearingRequest,
+import { planAnswerClearing } from '../core/answer-clearing.js';
+import { AnswerClearingError, parseAnswerClearingRequest,
   type AnswerClearingReceipt, type PrivacyObservation } from '../shared/answer-clearing.js';
-import type { LearningEvidence } from '../shared/types.js';
 import { inspectAnswerClearingSchemaV3 } from './answer-clearing-schema.js';
 
-export class AnswerClearingStoreError extends Error {
-  constructor(readonly code: string, readonly status: number) { super(code); this.name = 'AnswerClearingStoreError'; }
-}
+import { AnswerClearingStoreError } from './answer-clearing-store-error.js';
+export { AnswerClearingStoreError } from './answer-clearing-store-error.js';
+import { SAFE_IMPORT_CREDENTIAL } from './answer-clearing-replay-contract.js';
+import { decodeAnswerClearingObservation } from './answer-clearing-observation-codec.js';
 export interface AnswerClearingStoreOptions {
   db: DatabaseSync;
   namespace: string;
@@ -20,6 +20,7 @@ export interface ReplayPrivacyStatus {
   status: 'ready' | 'repair-required';
   clearedObservations: number;
   activeImportCredentials: number;
+  safeImportCredentials: number;
   activeIdentityCredentials: number;
   retiredImportCredentials: number;
   retiredIdentityCredentials: number;
@@ -32,7 +33,6 @@ export interface ReplayPrivacyPreparation {
 }
 const failure = (suffix: string, status = 503) => new AnswerClearingStoreError(`ANSWER_CLEARING_${suffix}`, status);
 const invalid = () => failure('DATA_INVALID');
-const LEARNING_FIELDS = ['task', 'scenario', 'scenarioRevisit', 'applicability', 'confidence', 'confidenceAt', 'cue', 'outcome', 'basis'];
 const SELECT = `SELECT event_id,concept_id,source_revision,observed_at,recorded_at,config_revision,
   half_life_days,anchor_event_id,elapsed_days,decay,answer,rating,exposure,observed_exposure,
   learning_json,evidence_mode,request_payload,answer_cleared_at FROM main.observations WHERE namespace=? AND event_id=?`;
@@ -41,40 +41,9 @@ function target(value: unknown): string {
   try { return parseAnswerClearingRequest({ observationEventId: value }).observationEventId; }
   catch { throw failure('INVALID_REQUEST', 400); }
 }
-function learning(value: unknown): LearningEvidence {
-  if (typeof value !== 'string') throw invalid();
-  const parsed: unknown = JSON.parse(value);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw invalid();
-  // JSON may contain future/SQL helper fields. Only the domain fields leave this boundary.
-  return Object.freeze(Object.fromEntries(LEARNING_FIELDS.filter(key => Object.hasOwn(parsed, key))
-    .map(key => [key, (parsed as Record<string, unknown>)[key]]))) as unknown as LearningEvidence;
-}
-function observation(row: Record<string, unknown>): PrivacyObservation {
-  try {
-    if (row.observed_exposure !== 0 && row.observed_exposure !== 1) throw invalid();
-    const cleared = row.answer_cleared_at !== null;
-    if (cleared ? row.answer !== null || row.request_payload !== null
-      : typeof row.answer !== 'string' || typeof row.request_payload !== 'string') throw invalid();
-    const marker = cleared ? parseAnswerClearingMarker({ observationEventId: row.event_id, clearedAt: row.answer_cleared_at }) : null;
-    if (marker && marker.clearedAt !== row.answer_cleared_at) throw invalid();
-    const value = {
-      eventId: row.event_id, conceptId: row.concept_id, sourceRevision: row.source_revision,
-      observedAt: row.observed_at, recordedAt: row.recorded_at, configRevision: row.config_revision,
-      halfLifeDays: row.half_life_days, anchorEventId: row.anchor_event_id, elapsedDays: row.elapsed_days, decay: row.decay,
-      answer: row.answer, rating: row.rating, exposure: row.exposure, observedExposure: row.observed_exposure === 1,
-      ...(row.evidence_mode !== null ? { evidenceMode: row.evidence_mode } : {}),
-      ...(row.learning_json !== null ? { learning: learning(row.learning_json) } : {}),
-      ...(marker ? { answerClearing: marker } : {}),
-    } as PrivacyObservation;
-    // Validate every domain value, including the null/marker pair, before returning the selected fields.
-    isAnswerCleared(value);
-    return Object.freeze(value);
-  } catch { throw invalid(); }
-}
-
 /**
- * Independent schema 3 kernel, including ACLEAR-02C1 credential retirement.
- * Product runtime/API/import writers do not call it yet. Never opens or closes a database.
+ * Explicit schema 3 kernel, shared by the isolated v3 import coordinator.
+ * Product runtime/API remain v2. Never opens or closes a database.
  */
 export class AnswerClearingStore {
   private readonly db: DatabaseSync;
@@ -93,7 +62,7 @@ export class AnswerClearingStore {
   }
   private read(eventId: string): PrivacyObservation | null {
     const row = this.db.prepare(SELECT).get(this.namespace, eventId);
-    return row ? observation(row) : null;
+    return row ? decodeAnswerClearingObservation(row) : null;
   }
   /** One SQL snapshot for the answer and its marker, without request_payload or historical cutoffs. */
   readObservation(observationEventId: string): PrivacyObservation | null {
@@ -106,11 +75,13 @@ export class AnswerClearingStore {
     try {
       const row = this.db.prepare(`SELECT
         (SELECT COUNT(*) FROM main.observations WHERE namespace=? AND answer_cleared_at IS NOT NULL) AS clearedObservations,
-        (SELECT COUNT(*) FROM main.import_receipts WHERE namespace=? AND request_hash<>?) AS activeImportCredentials,
+        (SELECT COUNT(*) FROM main.import_receipts WHERE namespace=? AND request_hash NOT IN (?,?)) AS activeImportCredentials,
+        (SELECT COUNT(*) FROM main.import_receipts WHERE namespace=? AND request_hash=?) AS safeImportCredentials,
         (SELECT COUNT(*) FROM main.identity_bindings WHERE namespace=? AND request_hash<>?) AS activeIdentityCredentials,
         (SELECT COUNT(*) FROM main.import_receipts WHERE namespace=? AND request_hash=?) AS retiredImportCredentials,
         (SELECT COUNT(*) FROM main.identity_bindings WHERE namespace=? AND request_hash=?) AS retiredIdentityCredentials`).get(
-        this.namespace, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
+        this.namespace, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL, SAFE_IMPORT_CREDENTIAL,
+        this.namespace, SAFE_IMPORT_CREDENTIAL,
         this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
         this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
         this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
@@ -122,6 +93,7 @@ export class AnswerClearingStore {
       };
       const counts = {
         clearedObservations: count('clearedObservations'), activeImportCredentials: count('activeImportCredentials'),
+        safeImportCredentials: count('safeImportCredentials'),
         activeIdentityCredentials: count('activeIdentityCredentials'), retiredImportCredentials: count('retiredImportCredentials'),
         retiredIdentityCredentials: count('retiredIdentityCredentials'),
       };
@@ -137,6 +109,20 @@ export class AnswerClearingStore {
     const identities = this.db.prepare(`UPDATE main.identity_bindings SET request_hash=? WHERE namespace=? AND request_hash<>?`)
       .run(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL);
     return { retiredImportCredentials: Number(imports.changes), retiredIdentityCredentials: Number(identities.changes) };
+  }
+  /** Retire legacy unsafe credentials inside the import caller's transaction, without retiring safe imports. */
+  retireLegacyReplayCredentials(): Pick<ReplayPrivacyPreparation, 'retiredImportCredentials' | 'retiredIdentityCredentials'> {
+    try {
+      if (!this.db.isTransaction) throw failure('TRANSACTION_REQUIRED');
+      const imports = this.db.prepare(`UPDATE main.import_receipts SET request_hash=? WHERE namespace=? AND request_hash NOT IN (?,?)`)
+        .run(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL, SAFE_IMPORT_CREDENTIAL);
+      const identities = this.db.prepare(`UPDATE main.identity_bindings SET request_hash=? WHERE namespace=? AND request_hash<>?`)
+        .run(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL);
+      return { retiredImportCredentials: Number(imports.changes), retiredIdentityCredentials: Number(identities.changes) };
+    } catch (error) {
+      if (error instanceof AnswerClearingStoreError) throw error;
+      throw failure('WRITE_FAILED');
+    }
   }
   /** Explicit repair for a candidate cleared by an older kernel. No clock or source-data changes. */
   prepareReplayPrivacy(): ReplayPrivacyPreparation {

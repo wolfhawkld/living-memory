@@ -86,7 +86,7 @@ test('offline v2 to v3 candidate, clear, v3 backup and explicit v3 restore prese
       const clearing=new AnswerClearingStore({db,namespace:f.sources[0].source.namespace,now:()=>new Date(clearedAt)});
       assert.deepEqual(clearing.prepareReplayPrivacy(),{status:'already-ready',retiredImportCredentials:0,retiredIdentityCredentials:0});
       assert.deepEqual(clearing.clear({observationEventId:'observation-0'}),{status:'accepted',observationEventId:'observation-0',clearedAt});
-      assert.deepEqual(clearing.getReplayPrivacyStatus(),{status:'ready',clearedObservations:1,activeImportCredentials:0,
+      assert.deepEqual(clearing.getReplayPrivacyStatus(),{status:'ready',clearedObservations:1,activeImportCredentials:0,safeImportCredentials:0,
         activeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:1});
     } finally {db.close();}
     const clearedRows=tableRows(path);

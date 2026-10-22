@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import { ActivityStore } from './activity-store.js';
+import { LearningSnapshotRepository } from './learning-snapshot-repository.js';
 import { LearningImportRepository } from './learning-import-repository.js';
 import {
+  asRecord, isOneOf, normalizeLearningEvidence, parseStoredLearning, practiceAttemptFromRow, parseReviewPlanRow,
   canonicalJson, parseDate, normalizeDate, finiteNumber, normalizeObservationEvidenceMode,
   parseStoredPracticeScenario, assertPracticeScenarioContract, practiceCardFromRow,
   correctionRequestPayload, correctionFromRow, relationReviewRequestPayload, relationReviewFromRow,
@@ -142,10 +144,6 @@ function computeDecay(anchorAt: string | null, halfLifeDays: number, asOf: strin
   return { elapsedDays, decay: decayAt(elapsedDays, halfLifeDays) };
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StoreError('INVALID_BODY', '请求体必须是 JSON 对象。');
-  return value as Record<string, unknown>;
-}
 
 function normalizeImportOptions(value: unknown): ImportOptions {
   if (value === undefined) return { ...DEFAULT_IMPORT_OPTIONS };
@@ -171,19 +169,14 @@ function requireFinite(record: Record<string, unknown>, key: string): number {
   return value;
 }
 
-const LEARNING_TASKS = ['concept', 'scenario'] as const;
-const LEARNING_CUES = ['independent', 'hinted', 'lookup', 'unknown'] as const;
-const LEARNING_OUTCOMES = ['success', 'partial', 'failure', 'unverified'] as const;
-const LEARNING_BASES = ['self-check', 'application', 'unknown'] as const;
+
+
 const APPLICATION_KINDS = ['application', 'summary'] as const;
 const APPLICATION_OUTCOMES = ['success', 'partial', 'failure', 'unverified'] as const;
 const APPLICATION_ASSISTANCE = ['independent', 'resources', 'people-or-ai', 'mixed', 'unknown'] as const;
 const CORRECTION_STATUSES = ['resolved', 'dismissed', 'open'] as const;
 const EVENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
-function isOneOf<T extends readonly string[]>(values: T, value: unknown): value is T[number] {
-  return typeof value === 'string' && values.includes(value);
-}
 
 function correctionText(record: Record<string, unknown>): string {
   const value = record.note;
@@ -277,91 +270,8 @@ function normalizeApplicationRequest(value: unknown): ApplicationRecordRequest {
  * additive JSON column, while every new record has one deterministic shape for
  * idempotency and export.
  */
-function normalizeLearningEvidence(value: unknown, observedAt?: string): LearningEvidence | undefined {
-  if (value === undefined) return undefined;
-  const record = asRecord(value);
-  if (!isOneOf(LEARNING_TASKS, record.task)) {
-    throw new StoreError('INVALID_LEARNING', 'learning.task 必须是 concept 或 scenario。');
-  }
-  if (!isOneOf(LEARNING_CUES, record.cue)) {
-    throw new StoreError('INVALID_LEARNING', 'learning.cue 必须是 independent、hinted、lookup 或 unknown。');
-  }
-  if (!isOneOf(LEARNING_OUTCOMES, record.outcome)) {
-    throw new StoreError('INVALID_LEARNING', 'learning.outcome 必须是 success、partial、failure 或 unverified。');
-  }
-  if (!isOneOf(LEARNING_BASES, record.basis)) {
-    throw new StoreError('INVALID_LEARNING', 'learning.basis 必须是 self-check、application 或 unknown。');
-  }
 
-  const confidence = record.confidence;
-  if (confidence !== null && (!finiteNumber(confidence) || !Number.isInteger(confidence) || confidence < 0 || confidence > 100)) {
-    throw new StoreError('INVALID_LEARNING', 'learning.confidence 必须是 0 到 100 的整数或 null。');
-  }
-  const rawConfidenceAt = record.confidenceAt;
-  if (confidence === null) {
-    if (rawConfidenceAt !== null) throw new StoreError('INVALID_LEARNING', 'confidenceAt 必须在 confidence 有值时提供，否则必须为 null。');
-  } else if (typeof rawConfidenceAt !== 'string' || !rawConfidenceAt.trim()) {
-    throw new StoreError('INVALID_LEARNING', 'confidenceAt 必须在 confidence 有值时提供。');
-  }
 
-  const confidenceAt = rawConfidenceAt === null
-    ? null
-    : normalizeDate(rawConfidenceAt as string, 'INVALID_CONFIDENCE_AT');
-  if (confidenceAt && observedAt && parseDate(confidenceAt) > parseDate(observedAt, 'INVALID_OBSERVED_AT')) {
-    throw new StoreError('INVALID_LEARNING', 'confidenceAt 不能晚于 observedAt。');
-  }
-
-  let scenario: string | undefined;
-  if (record.task === 'scenario') {
-    if (typeof record.scenario !== 'string' || !record.scenario.trim() || record.scenario.trim().length > 4000) {
-      throw new StoreError('INVALID_LEARNING', 'scenario 任务必须包含不超过 4000 个字符的场景描述。');
-    }
-    scenario = record.scenario.trim();
-    if (record.scenarioRevisit !== undefined && record.scenarioRevisit !== true) {
-      throw new StoreError('INVALID_LEARNING', 'scenarioRevisit 只能是 scenario 任务中的 true。');
-    }
-  } else if (record.scenario !== undefined) {
-    throw new StoreError('INVALID_LEARNING', 'concept 任务不能携带 scenario。');
-  } else if (record.scenarioRevisit !== undefined) {
-    throw new StoreError('INVALID_LEARNING', 'scenarioRevisit 只能用于 scenario 任务，并且必须为 true。');
-  }
-
-  let applicability: string | undefined;
-  if (record.applicability !== undefined) {
-    if (typeof record.applicability !== 'string' || !record.applicability.trim() || record.applicability.trim().length > 4000) {
-      throw new StoreError('INVALID_LEARNING', 'applicability 必须是不超过 4000 个字符的非空说明。');
-    }
-    applicability = record.applicability.trim();
-  }
-
-  if (record.outcome !== 'unverified' && record.basis === 'unknown') {
-    throw new StoreError('INVALID_LEARNING', '已验证的 learning.outcome 必须提供非 unknown 的 basis。');
-  }
-
-  return {
-    task: record.task,
-    ...(scenario !== undefined ? { scenario } : {}),
-    ...(record.scenarioRevisit === true ? { scenarioRevisit: true as const } : {}),
-    ...(applicability !== undefined ? { applicability } : {}),
-    confidence: confidence as number | null,
-    confidenceAt,
-    cue: record.cue,
-    outcome: record.outcome,
-    basis: record.basis,
-  };
-}
-
-function parseStoredLearning(value: string | null): LearningEvidence | undefined {
-  if (!value) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return normalizeLearningEvidence(parsed);
-  } catch {
-    // A corrupt optional evidence blob must not make the complete history
-    // unreadable. The original observation remains available without it.
-    return undefined;
-  }
-}
 
 function safeSqliteMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
@@ -537,6 +447,7 @@ export class Store {
   readonly observationRevisions: ObservationRevisionStore;
   private readonly now: () => Date;
   private readonly db: DatabaseSync;
+  private readonly snapshotRepository: LearningSnapshotRepository<2>;
   private readonly importRepository: LearningImportRepository;
   private readSequence = 0;
 
@@ -552,6 +463,7 @@ export class Store {
       if (schema.kind === 'legacy-v1') throw new StoreError('LEARNING_SCHEMA_UPGRADE_REQUIRED', '请先离线备份并恢复到新目录，完成学习数据库升级。', 503);
       if (schema.kind === 'empty') initializeLearningSchemaV2(this.db, { recordedAt: iso(this.now()) });
       this.initialize();
+      this.snapshotRepository = new LearningSnapshotRepository({ db: this.db, namespace: this.namespace, now: this.now });
       this.importRepository = new LearningImportRepository({ db: this.db, namespace: this.namespace, now: this.now });
       this.activity = new ActivityStore({ db: this.db, namespace: this.namespace, now: this.now });
       this.observationRevisions = new ObservationRevisionStore({ db: this.db, namespace: this.namespace, now: this.now,
@@ -598,8 +510,7 @@ export class Store {
   }
 
   getConfig(): ModelConfig {
-    const row = this.db.prepare('SELECT model_version, revision, half_life_days FROM config_history WHERE namespace = ? ORDER BY revision DESC LIMIT 1').get(this.namespace) as { model_version: string; revision: number; half_life_days: number };
-    return { modelVersion: MODEL_VERSION, halfLifeDays: row.half_life_days, revision: row.revision };
+    return this.snapshotRepository.getConfig();
   }
 
   getConfigAt(revision: number): ModelConfig | null {
@@ -607,8 +518,7 @@ export class Store {
   }
 
   getConfigHistory(): ModelConfig[] {
-    const rows = this.db.prepare('SELECT revision, half_life_days FROM config_history WHERE namespace = ? ORDER BY revision ASC').all(this.namespace) as Array<{ revision: number; half_life_days: number }>;
-    return rows.map((row) => ({ modelVersion: MODEL_VERSION, halfLifeDays: row.half_life_days, revision: row.revision }));
+    return this.snapshotRepository.getConfigHistory();
   }
 
   updateConfig(halfLifeDays: number, expectedRevision: number): ConfigWriteReceipt {
@@ -988,25 +898,7 @@ export class Store {
     check_notes: string;
     scenario_json: string | null;
   }): PracticeAttempt {
-    const scenario = row.scenario_json
-      ? parseStoredPracticeScenario<PracticeScenarioAttempt>(row.scenario_json)
-      : undefined;
-    return {
-      eventId: row.event_id,
-      cardId: row.card_id,
-      cardEventId: row.card_event_id,
-      answeredAt: row.answered_at,
-      recordedAt: row.recorded_at,
-      answer: row.answer,
-      confidence: row.confidence,
-      confidenceAt: row.confidence_at,
-      exposure: row.exposure,
-      observedExposure: row.observed_exposure === 1,
-      cue: row.cue,
-      outcome: row.outcome,
-      checkNotes: row.check_notes,
-      ...(scenario ? { scenario } : {}),
-    };
+    return practiceAttemptFromRow(row);
   }
 
   private latestPracticeCardRow(cardId: string): {
@@ -1037,48 +929,7 @@ export class Store {
 
   /** Return private practice history without projecting it into recall evidence. */
   getPracticeData(): PracticeData {
-    const cardRows = this.db.prepare(`SELECT event_id, card_id, previous_event_id, occurred_at, recorded_at,
-      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, scenario_json, paused
-      FROM practice_cards WHERE namespace = ?
-      ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{
-        event_id: string;
-        card_id: string;
-        previous_event_id: string | null;
-        occurred_at: string;
-        recorded_at: string;
-        kind: 'detail' | 'comparison' | 'scenario';
-        title: string;
-        prompt: string;
-        reference_answer: string;
-        reference_notes: string;
-        sources_json: string;
-        source_checked: number;
-        scenario_json: string | null;
-        paused: number;
-      }>;
-    const attemptRows = this.db.prepare(`SELECT event_id, card_id, card_event_id, answered_at, recorded_at,
-      answer, confidence, confidence_at, exposure, observed_exposure, cue, outcome, check_notes, scenario_json
-      FROM practice_attempts WHERE namespace = ?
-      ORDER BY answered_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{
-        event_id: string;
-        card_id: string;
-        card_event_id: string;
-        answered_at: string;
-        recorded_at: string;
-        answer: string;
-        confidence: number | null;
-        confidence_at: string | null;
-        exposure: 'unexposed' | 'exposed' | 'unknown';
-        observed_exposure: number;
-        cue: 'independent' | 'hinted' | 'lookup' | 'unknown';
-        outcome: 'success' | 'partial' | 'failure' | 'unverified';
-        check_notes: string;
-        scenario_json: string | null;
-      }>;
-    return {
-      cards: cardRows.map((row) => this.practiceCardFromRow(row)),
-      attempts: attemptRows.map((row) => this.practiceAttemptFromRow(row)),
-    };
+    return this.snapshotRepository.getPracticeData();
   }
 
   addPracticeCard(input: PracticeCardRequest, concepts: Concept[]): StoreWriteResult {
@@ -1281,9 +1132,7 @@ export class Store {
   }
 
   getAnchors(): AnchorEvent[] {
-    const rows = this.db.prepare(`SELECT event_id, concept_id, source_revision, occurred_at, recorded_at, kind
-      FROM anchors WHERE namespace = ? ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{ event_id: string; concept_id: string; source_revision: string; occurred_at: string; recorded_at: string; kind: 'review' | 'estimated' }>;
-    return rows.map((row) => ({ eventId: row.event_id, conceptId: row.concept_id, sourceRevision: row.source_revision, occurredAt: row.occurred_at, recordedAt: row.recorded_at, kind: row.kind }));
+    return this.snapshotRepository.getAnchors();
   }
 
   /** Preserve the original review request shape for portable retries. In
@@ -1291,150 +1140,36 @@ export class Store {
    * of the canonical idempotency payload even though the stored anchor always
    * has a concrete occurredAt. */
   private getAnchorRequests(): ReviewRequest[] {
-    const rows = this.db.prepare(`SELECT event_id, concept_id, source_revision, occurred_at, kind, request_payload
-      FROM anchors WHERE namespace = ? ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{
-        event_id: string; concept_id: string; source_revision: string; occurred_at: string;
-        kind: 'review' | 'estimated'; request_payload: string;
-      }>;
-    return rows.map((row) => {
-      try {
-        const parsed = JSON.parse(row.request_payload) as Record<string, unknown>;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-            && parsed.eventId === row.event_id
-            && parsed.conceptId === row.concept_id
-            && parsed.sourceRevision === row.source_revision
-            && (parsed.kind === 'review' || parsed.kind === 'estimated')
-            && (parsed.occurredAt === undefined || typeof parsed.occurredAt === 'string')) {
-          return parsed as unknown as ReviewRequest;
-        }
-      } catch {
-        // Fall through to a conservative legacy reconstruction below.
-      }
-      return {
-        eventId: row.event_id,
-        conceptId: row.concept_id,
-        sourceRevision: row.source_revision,
-        kind: row.kind,
-        occurredAt: row.occurred_at,
-      };
-    });
+    return this.snapshotRepository.getAnchorRequests();
   }
 
   private getConfigRecordedAt(): Record<string, string> {
-    const rows = this.db.prepare(`SELECT revision, recorded_at
-      FROM config_history WHERE namespace = ? ORDER BY revision ASC`).all(this.namespace) as Array<{ revision: number; recorded_at: string }>;
-    const result: Record<string, string> = {};
-    for (const row of rows) result[String(row.revision)] = row.recorded_at;
-    return result;
+    return this.snapshotRepository.getConfigRecordedAt();
   }
 
   private getImportedConcepts(): Array<Pick<Concept, 'id' | 'title' | 'source'>> {
-    const rows = this.db.prepare(`SELECT concept_id, title, source_path, source_revision
-      FROM imported_concepts WHERE namespace = ? ORDER BY concept_id ASC`).all(this.namespace) as Array<{
-        concept_id: string; title: string; source_path: string; source_revision: string;
-      }>;
-    return rows.map((row) => ({
-      id: row.concept_id,
-      title: row.title,
-      source: { path: row.source_path, revision: row.source_revision },
-    }));
+    return this.snapshotRepository.getImportedConcepts();
   }
 
   private getIdentityCatalog(): Array<{ id: string; title: string; path: string | null; revision: string | null }> {
-    const rows = this.db.prepare(`SELECT concept_id, title, source_path, source_revision
-      FROM identity_catalog WHERE namespace = ? ORDER BY concept_id ASC`).all(this.namespace) as Array<{
-        concept_id: string; title: string; source_path: string | null; source_revision: string | null;
-      }>;
-    return rows.map((row) => ({
-      id: row.concept_id,
-      title: row.title,
-      path: row.source_path,
-      revision: row.source_revision,
-    }));
+    return this.snapshotRepository.getIdentityCatalog();
   }
 
   getIdentityBindings(): IdentityBinding[] {
-    const rows = this.db.prepare(`SELECT operation_id, raw_concept_id, concept_id, from_path,
-      to_path, source_revision, confirmed_at, backup_id
-      FROM identity_bindings WHERE namespace = ? ORDER BY confirmed_at ASC, operation_id ASC`).all(this.namespace) as Array<{
-        operation_id: string; raw_concept_id: string; concept_id: string; from_path: string | null;
-        to_path: string; source_revision: string; confirmed_at: string; backup_id: string;
-      }>;
-    return rows.map((row) => ({
-      operationId: row.operation_id,
-      rawConceptId: row.raw_concept_id,
-      conceptId: row.concept_id,
-      fromPath: row.from_path,
-      toPath: row.to_path,
-      sourceRevision: row.source_revision,
-      confirmedAt: row.confirmed_at,
-      backupId: row.backup_id,
-    }));
+    return this.snapshotRepository.getIdentityBindings();
   }
 
   getIdentityAcceptedPaths(): Record<string, string[]> {
-    const paths: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
-    for (const binding of this.getIdentityBindings()) {
-      const values = paths[binding.conceptId] ?? [];
-      if (binding.fromPath && !values.includes(binding.fromPath)) values.push(binding.fromPath);
-      if (!values.includes(binding.toPath)) values.push(binding.toPath);
-      paths[binding.conceptId] = values;
-    }
-    for (const conceptId of Object.keys(paths)) paths[conceptId].sort();
-    return paths;
+    return this.snapshotRepository.getIdentityAcceptedPaths();
   }
 
   getObservations(conceptId?: string, sourceRevision?: string, strict = false): Observation[] {
-    let query = `SELECT event_id, concept_id, source_revision, observed_at, recorded_at,
-      config_revision, half_life_days, anchor_event_id, elapsed_days, decay, answer, rating, exposure, observed_exposure, learning_json, evidence_mode
-      FROM observations WHERE namespace = ?`;
-    const parameters: string[] = [this.namespace];
-    if (conceptId !== undefined) {
-      query += ' AND concept_id = ?';
-      parameters.push(conceptId);
-    }
-    if (sourceRevision !== undefined) {
-      query += ' AND source_revision = ?';
-      parameters.push(sourceRevision);
-    }
-    query += ' ORDER BY observed_at ASC, recorded_at ASC, event_id ASC';
-    const rows = this.db.prepare(query).all(...parameters) as Array<{
-        event_id: string; concept_id: string; source_revision: string; observed_at: string; recorded_at: string;
-        config_revision: number; half_life_days: number; anchor_event_id: string | null; elapsed_days: number | null; decay: number | null;
-        answer: string; rating: RecallRating; exposure: 'unexposed' | 'exposed' | 'unknown'; observed_exposure: number; learning_json: string | null; evidence_mode: Observation['evidenceMode'] | null;
-      }>;
-    return rows.map((row) => {
-      let learning: LearningEvidence | undefined;
-      try {
-        learning = strict && row.learning_json !== null
-          ? normalizeLearningEvidence(JSON.parse(row.learning_json), row.observed_at)
-          : parseStoredLearning(row.learning_json);
-        if (strict && row.evidence_mode !== null) normalizeObservationEvidenceMode(row.evidence_mode, row.answer);
-      } catch { throw new ObservationRevisionStoreError('OBSERVATION_REVISION_DATA_INVALID', 503); }
-      return {
-        eventId: row.event_id,
-        conceptId: row.concept_id,
-        sourceRevision: row.source_revision,
-        observedAt: row.observed_at,
-        recordedAt: row.recorded_at,
-        configRevision: row.config_revision,
-        halfLifeDays: row.half_life_days,
-        anchorEventId: row.anchor_event_id,
-        elapsedDays: row.elapsed_days,
-        decay: row.decay,
-        answer: row.answer,
-        rating: row.rating,
-        exposure: row.exposure,
-        observedExposure: Boolean(row.observed_exposure),
-        ...(learning ? { learning } : {}),
-        ...(row.evidence_mode !== null ? { evidenceMode: normalizeObservationEvidenceMode(row.evidence_mode, row.answer) } : {}),
-      };
-    });
+    return this.snapshotRepository.getObservations(conceptId, sourceRevision, strict);
   }
 
   /** Strict rows for revision parents, effective statistics and complete V2 backups. */
   private getObservationsStrict(conceptId?: string): Observation[] {
-    return this.getObservations(conceptId, undefined, true);
+    return this.snapshotRepository.getObservationsStrict(conceptId);
   }
 
   getLearningOverview(sourceId: string, concepts: Concept[], links: GraphLink[], asOf: string) {
@@ -1493,63 +1228,11 @@ export class Store {
   }
 
   getRetentions(): RetentionEvent[] {
-    const rows = this.db.prepare(`SELECT event_id, concept_id, source_revision, occurred_at, recorded_at,
-      active, previous_event_id
-      FROM retentions WHERE namespace = ? ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC`).all(this.namespace) as Array<{
-        event_id: string; concept_id: string; source_revision: string; occurred_at: string; recorded_at: string;
-        active: number; previous_event_id: string | null;
-      }>;
-    return rows.map((row) => ({
-      eventId: row.event_id,
-      conceptId: row.concept_id,
-      sourceRevision: row.source_revision,
-      occurredAt: row.occurred_at,
-      recordedAt: row.recorded_at,
-      active: Boolean(row.active),
-      previousEventId: row.previous_event_id,
-    }));
+    return this.snapshotRepository.getRetentions();
   }
 
   getApplications(conceptId?: string, sourceRevision?: string): ApplicationRecord[] {
-    let query = `SELECT event_id, concept_id, source_revision, occurred_at, recorded_at,
-      kind, context, content, outcome, assistance, result, limitations, insight,
-      correction, references_text, relation_suggestion_json
-      FROM applications WHERE namespace = ?`;
-    const parameters: string[] = [this.namespace];
-    if (conceptId !== undefined) {
-      query += ' AND concept_id = ?';
-      parameters.push(conceptId);
-    }
-    if (sourceRevision !== undefined) {
-      query += ' AND source_revision = ?';
-      parameters.push(sourceRevision);
-    }
-    query += ' ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC';
-    const rows = this.db.prepare(query).all(...parameters) as Array<{
-      event_id: string; concept_id: string; source_revision: string; occurred_at: string; recorded_at: string;
-      kind: 'application' | 'summary'; context: string; content: string;
-      outcome: 'success' | 'partial' | 'failure' | 'unverified';
-      assistance: 'independent' | 'resources' | 'people-or-ai' | 'mixed' | 'unknown';
-      result: string; limitations: string; insight: string; correction: string; references_text: string; relation_suggestion_json: string | null;
-    }>;
-    return rows.map((row) => ({
-      eventId: row.event_id,
-      conceptId: row.concept_id,
-      sourceRevision: row.source_revision,
-      occurredAt: row.occurred_at,
-      recordedAt: row.recorded_at,
-      kind: row.kind,
-      context: row.context,
-      content: row.content,
-      outcome: row.outcome,
-      assistance: row.assistance,
-      result: row.result,
-      limitations: row.limitations,
-      insight: row.insight,
-      correction: row.correction,
-      references: row.references_text,
-      ...(row.relation_suggestion_json === null ? {} : { relationSuggestion: parseRelationSuggestion(JSON.parse(row.relation_suggestion_json), { conceptId: row.concept_id, sourceRevision: row.source_revision }) }),
-    }));
+    return this.snapshotRepository.getApplications(conceptId, sourceRevision);
   }
 
   private correctionRequestPayload(request: CorrectionRequest): string {
@@ -1575,31 +1258,7 @@ export class Store {
   }
 
   getCorrections(conceptId?: string, applicationEventId?: string): CorrectionEvent[] {
-    let query = `SELECT event_id, application_event_id, concept_id, source_revision,
-      occurred_at, recorded_at, previous_event_id, status, note
-      FROM corrections WHERE namespace = ?`;
-    const parameters: string[] = [this.namespace];
-    if (conceptId !== undefined) {
-      query += ' AND concept_id = ?';
-      parameters.push(conceptId);
-    }
-    if (applicationEventId !== undefined) {
-      query += ' AND application_event_id = ?';
-      parameters.push(applicationEventId);
-    }
-    query += ' ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC';
-    const rows = this.db.prepare(query).all(...parameters) as Array<{
-      event_id: string;
-      application_event_id: string;
-      concept_id: string;
-      source_revision: string;
-      occurred_at: string;
-      recorded_at: string;
-      previous_event_id: string | null;
-      status: CorrectionStatus;
-      note: string;
-    }>;
-    return rows.map((row) => this.correctionFromRow(row));
+    return this.snapshotRepository.getCorrections(conceptId, applicationEventId);
   }
 
   getCorrectionHistory(applicationEventId: string, limit = 50): CorrectionHistory {
@@ -1746,31 +1405,7 @@ export class Store {
   }
 
   getRelationReviews(conceptId?: string, applicationEventId?: string): RelationReviewEvent[] {
-    let query = `SELECT event_id, application_event_id, concept_id, basis_json,
-      occurred_at, recorded_at, previous_event_id, status, note
-      FROM relation_reviews WHERE namespace = ?`;
-    const parameters: string[] = [this.namespace];
-    if (conceptId !== undefined) {
-      query += ' AND concept_id = ?';
-      parameters.push(conceptId);
-    }
-    if (applicationEventId !== undefined) {
-      query += ' AND application_event_id = ?';
-      parameters.push(applicationEventId);
-    }
-    query += ' ORDER BY occurred_at ASC, recorded_at ASC, event_id ASC';
-    const rows = this.db.prepare(query).all(...parameters) as Array<{
-      event_id: string;
-      application_event_id: string;
-      concept_id: string;
-      basis_json: string;
-      occurred_at: string;
-      recorded_at: string;
-      previous_event_id: string | null;
-      status: RelationReviewStatus;
-      note: string;
-    }>;
-    return rows.map((row) => this.relationReviewFromRow(row));
+    return this.snapshotRepository.getRelationReviews(conceptId, applicationEventId);
   }
 
   getRelationReviewHistory(applicationEventId: string, limit = 50): RelationReviewHistory {
@@ -2216,14 +1851,7 @@ export class Store {
   }
 
   getLayout(): Layout {
-    const row = this.db.prepare('SELECT layout_json FROM layouts WHERE namespace = ?').get(this.namespace) as { layout_json: string } | undefined;
-    if (!row) return {};
-    try {
-      const parsed = JSON.parse(row.layout_json) as Layout;
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-    } catch {
-      return {};
-    }
+    return this.snapshotRepository.getLayout();
   }
 
   /**
@@ -2232,14 +1860,7 @@ export class Store {
    * the same namespace isolation as the learning records.
    */
   getReviewPlan(): ReviewPlan {
-    const row = this.db.prepare(`SELECT revision, daily_budget, concepts_json
-      FROM review_plans WHERE namespace = ?`).get(this.namespace) as {
-        revision: number;
-        daily_budget: number;
-        concepts_json: string;
-      } | undefined;
-    if (!row) return { revision: 0, dailyBudget: DEFAULT_DAILY_REVIEW_BUDGET, concepts: {} };
-    return this.parseReviewPlanRow(row);
+    return this.snapshotRepository.getReviewPlan();
   }
 
   /**
@@ -2350,41 +1971,7 @@ export class Store {
   }
 
   private parseReviewPlanRow(row: { revision: number; daily_budget: number; concepts_json: string }): ReviewPlan {
-    if (!Number.isSafeInteger(row.revision) || row.revision < 0
-        || !Number.isSafeInteger(row.daily_budget) || row.daily_budget < MIN_DAILY_REVIEW_BUDGET || row.daily_budget > MAX_DAILY_REVIEW_BUDGET) {
-      throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
-    }
-    let parsed: unknown;
-    try { parsed = JSON.parse(row.concepts_json); } catch {
-      throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
-    }
-    const concepts: Record<string, ConceptReviewPreference> = {};
-    for (const [conceptId, raw] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!conceptId.trim() || !raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
-      }
-      const preference = raw as Record<string, unknown>;
-      if (typeof preference.focus !== 'boolean') {
-        throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
-      }
-      const deferUntil = preference.deferUntil;
-      if (deferUntil !== null && (typeof deferUntil !== 'string' || !isValidInstant(deferUntil))) {
-        throw new StoreError('REVIEW_PLAN_CORRUPT', '复习计划数据无效，请修复本地数据后重试。', 500);
-      }
-      Object.defineProperty(concepts, conceptId, {
-        value: {
-          focus: preference.focus,
-          deferUntil: deferUntil === null ? null : new Date(parseDate(deferUntil)).toISOString(),
-        },
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    }
-    return { revision: row.revision, dailyBudget: row.daily_budget, concepts };
+    return parseReviewPlanRow(row);
   }
 
   setLayout(layout: Layout): Layout {
@@ -2851,72 +2438,9 @@ export class Store {
   }
 
   exportData(source: ExportData['source'], concepts: Concept[]): ExportDataV2 {
-    return this.readSnapshot(() => this.readExportData(source, concepts));
+    return this.snapshotRepository.exportData(source, concepts);
   }
 
-  private readExportData(source: ExportData['source'], concepts: Concept[]): ExportDataV2 {
-    const bindings = this.getIdentityBindings();
-    const boundRawIds = new Set(bindings.map((binding) => binding.rawConceptId));
-    const liveConcepts = concepts
-      .filter((concept) => !boundRawIds.has(concept.id))
-      .map((concept) => ({ id: concept.id, title: concept.title, source: concept.source }));
-    const catalogConcepts = this.getIdentityCatalog()
-      .filter((concept) => concept.path !== null && concept.revision !== null && !boundRawIds.has(concept.id))
-      .map((concept) => ({
-        id: concept.id,
-        title: concept.title,
-        source: { path: concept.path as string, revision: concept.revision as string },
-      }));
-    const mergedConcepts = new Map(this.getImportedConcepts()
-      .filter((concept) => !boundRawIds.has(concept.id))
-      .map((concept) => [concept.id, concept]));
-    // The remembered catalog supplements imported metadata, while the current
-    // knowledge index remains authoritative for a live stable ID.
-    for (const concept of catalogConcepts) mergedConcepts.set(concept.id, concept);
-    // The current knowledge index is authoritative when an imported orphan
-    // has since become live again with the same stable concept ID.
-    for (const concept of liveConcepts) mergedConcepts.set(concept.id, concept);
-    const applications = this.getApplications();
-    for (const application of applications) {
-      if (!application.relationSuggestion) continue;
-      for (const endpoint of [application.relationSuggestion.source, application.relationSuggestion.target]) {
-        if (!mergedConcepts.has(endpoint.conceptId) && !boundRawIds.has(endpoint.conceptId)) {
-          mergedConcepts.set(endpoint.conceptId, { id: endpoint.conceptId, title: endpoint.title, source: { path: endpoint.path, revision: endpoint.sourceRevision } });
-        }
-      }
-    }
-    const relationReviews = this.getRelationReviews();
-    for (const review of relationReviews) {
-      for (const endpoint of [review.basis.source.current, review.basis.target.current]) {
-        if (endpoint && !mergedConcepts.has(endpoint.conceptId) && !boundRawIds.has(endpoint.conceptId)) mergedConcepts.set(endpoint.conceptId, { id: endpoint.conceptId, title: endpoint.title, source: { path: endpoint.path, revision: endpoint.sourceRevision } });
-      }
-    }
-    const practice = this.getPracticeData();
-    return {
-      schemaVersion: 2,
-      observationRevisions: this.observationRevisions.getRevisions(),
-      exportedAt: iso(this.now()),
-      source,
-      concepts: [...mergedConcepts.values()].sort((left, right) => left.id.localeCompare(right.id)),
-      identityBindings: bindings,
-      config: this.getConfig(),
-      configHistory: this.getConfigHistory(),
-      anchors: this.getAnchors(),
-      observations: this.getObservationsStrict(),
-      retentions: this.getRetentions(),
-      applications,
-      corrections: this.getCorrections(),
-      ...(relationReviews.length ? { relationReviews } : {}),
-      ...(practice.cards.length || practice.attempts.length ? { practice } : {}),
-      reviewPlan: this.getReviewPlan(),
-      layout: this.getLayout(),
-      restoreMetadata: {
-        sourceId: this.namespace,
-        anchorRequests: this.getAnchorRequests(),
-        configRecordedAt: this.getConfigRecordedAt(),
-      },
-    };
-  }
 }
 
 export function parseReviewRequest(value: unknown): ReviewRequest {

@@ -8,7 +8,11 @@ import { parseObservationRevisionRequest, type ObservationRevision } from '../sh
 import { parseRelationReviewRequest as parseSharedRelationReviewRequest, validateRelationReviewBasis, relationReviewMatches, type RelationReviewEvent, type RelationReviewRequest, type RelationReviewStatus } from '../shared/relation-reviews.js';
 import { parseRelationSuggestion } from '../shared/relation-suggestions.js';
 import { isValidInstant } from '../core/time-model.js';
-import type { PreparedConfig, PreparedImport } from './import-plan.js';
+import type { PreparedConfig, PreparedImport, PreparedAnswerClearingImport } from './import-plan.js';
+import type { PrivacyObservation } from '../shared/answer-clearing.js';
+import { isAnswerCleared } from '../core/answer-clearing.js';
+import { AnswerClearingImportError } from '../shared/answer-clearing-export.js';
+import { AnswerClearingStore } from './answer-clearing-store.js';
 import { inspectLearningSchema, LearningSchemaError } from './learning-schema.js';
 import { StoreError } from './store-error.js';
 import { parsePracticeAttemptRequest, parsePracticeCardRequest } from './practice-validation.js';
@@ -26,22 +30,34 @@ function parseRelationReviewRequest(value: unknown): RelationReviewRequest {
   catch (error) { throw new StoreError('INVALID_BODY', error instanceof Error ? error.message : '关系复核请求无效。'); }
 }
 
-export interface LearningImportRepositoryOptions {
+export interface LearningImportRepositoryOptions<V extends 2 | 3 = 2> {
   db: DatabaseSync;
   namespace: string;
   now?: () => Date;
+  schemaVersion?: V;
 }
 
-/** Legacy v2 import SQL on a caller-owned connection and transaction. */
-export class LearningImportRepository {
+type ImportPlanFor<V extends 2 | 3> = V extends 3 ? PreparedAnswerClearingImport : PreparedImport;
+type EventMatch = { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | 'relation-review' | 'observation-revision' | PracticeEventKind; payload: string | null };
+type EventMatchFor<V extends 2 | 3> = Omit<EventMatch, 'payload'> & { payload: V extends 3 ? string | null : string };
+
+/** Versioned import SQL on a caller-owned connection and transaction. */
+export class LearningImportRepository<V extends 2 | 3 = 2> {
   private readonly db: DatabaseSync;
   private readonly namespace: string;
   private readonly now: () => Date;
+  private readonly schemaVersion: V;
+  private readonly privacy: AnswerClearingStore | null;
 
-  constructor(options: LearningImportRepositoryOptions) {
+  constructor(options: LearningImportRepositoryOptions<V>) {
+    this.schemaVersion = (options.schemaVersion ?? 2) as V;
     try {
-      if (inspectLearningSchema(options.db).kind !== 'current-v2') {
-        throw new StoreError('LEARNING_SCHEMA_UNSUPPORTED_VERSION', '导入仓库仅支持已初始化的 v2 学习数据库。', 503);
+      if (this.schemaVersion === 3) {
+        this.privacy = new AnswerClearingStore(options);
+      } else if (this.schemaVersion === 2 && inspectLearningSchema(options.db).kind === 'current-v2') {
+        this.privacy = null;
+      } else {
+        throw new StoreError('LEARNING_SCHEMA_UNSUPPORTED_VERSION', '导入仓库需要已初始化且版本匹配的学习数据库。', 503);
       }
     } catch (error) {
       if (error instanceof LearningSchemaError) throw new StoreError(error.code, error.message, 503);
@@ -57,15 +73,20 @@ export class LearningImportRepository {
   }
 
   /** The caller must replan under BEGIN IMMEDIATE and handle commit/rollback. */
-  applyPreparedImport(prepared: PreparedImport, options: ImportOptions): void {
+  applyPreparedImport(prepared: ImportPlanFor<V>, options: ImportOptions): void {
     this.requireTransaction();
-    const validObservation = (event: Observation): boolean => !!event && typeof event.answer === 'string'
+    const validObservation = (event: PrivacyObservation): boolean => !!event && typeof event.answer === 'string'
       && !Object.prototype.hasOwnProperty.call(event, 'answerClearing');
-    if (!prepared || prepared.normalized?.schemaVersion !== 2 || prepared.preview?.canImport !== true
+    if (!prepared || prepared.normalized?.schemaVersion !== this.schemaVersion || prepared.preview?.canImport !== true
         || prepared.preview.sourceId !== this.namespace
         || !Array.isArray(prepared.normalized.observations) || !Array.isArray(prepared.newObservations)
-        || !prepared.normalized.observations.every(validObservation) || !prepared.newObservations.every(validObservation)) {
-      throw new StoreError('IMPORT_INVALID_DATA', '导入计划与当前 v2 知识空间不兼容。');
+        || (this.schemaVersion === 2 && (!prepared.normalized.observations.every(validObservation)
+          || !prepared.newObservations.every(validObservation)))) {
+      throw new StoreError('IMPORT_INVALID_DATA', '导入计划与当前知识空间版本不兼容。');
+    }
+    if (this.privacy) {
+      // Include duplicates: privacy checks precede every write or duplicate shortcut.
+      for (const event of [...prepared.normalized.observations, ...prepared.newObservations]) this.assertObservationPrivacy(event);
     }
     for (const config of prepared.newConfigs) this.insertImportedConfig(config);
     this.mergeImportedConcepts(prepared.metadataConcepts);
@@ -92,12 +113,16 @@ export class LearningImportRepository {
     if (options.restoreReviewPlan && prepared.mergedReviewPlan) this.writeImportedReviewPlan(prepared.mergedReviewPlan);
   }
 
-  findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | 'relation-review' | 'observation-revision' | PracticeEventKind; payload: string } | null {
+  findEvent(eventId: string): EventMatchFor<V> | null {
+    return this.findAnyEvent(eventId) as EventMatchFor<V> | null;
+  }
+
+  private findAnyEvent(eventId: string): EventMatch | null {
     const revision = this.db.prepare('SELECT request_payload FROM main.observation_revisions WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (revision) return { kind: 'observation-revision', payload: revision.request_payload };
     const anchor = this.db.prepare('SELECT request_payload FROM main.anchors WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (anchor) return { kind: 'anchor', payload: anchor.request_payload };
-    const observation = this.db.prepare('SELECT request_payload FROM main.observations WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
+    const observation = this.db.prepare('SELECT request_payload FROM main.observations WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string | null } | undefined;
     if (observation) return { kind: 'observation', payload: observation.request_payload };
     const retention = this.db.prepare('SELECT request_payload FROM main.retentions WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
     if (retention) return { kind: 'retention', payload: retention.request_payload };
@@ -306,6 +331,20 @@ export class LearningImportRepository {
     return canonicalJson(request);
   }
 
+  private assertObservationPrivacy(event: PrivacyObservation): void {
+    try { isAnswerCleared(event); }
+    catch { throw new AnswerClearingImportError('INVALID_IMPORT_DATA'); }
+    const current = this.privacy!.readObservation(event.eventId);
+    if (!current) return;
+    if (current.answer === null && event.answer !== null) throw new AnswerClearingImportError('ANSWER_CLEARED');
+    if (current.answer !== null && event.answer === null) throw new AnswerClearingImportError('LOCAL_CLEARING_REQUIRED');
+    if (current.answer === null && event.answer === null) {
+      const { recordedAt: _before, ...before } = current;
+      const { recordedAt: _incoming, ...incoming } = event;
+      if (canonicalJson(before) !== canonicalJson(incoming)) throw new AnswerClearingImportError('CLEARING_CONFLICT');
+    }
+  }
+
   private insertImportedObservationRevision(event: ObservationRevision): void {
     // Already replanned under this transaction's write lock. Preserve imported receipts.
     const { conceptId: _concept, sourceRevision: _source, recordedAt: _receipt, ...fields } = event;
@@ -318,10 +357,18 @@ export class LearningImportRepository {
       event.action === 'revise' ? JSON.stringify(event.assessment) : null, JSON.stringify(request));
   }
 
-  private insertImportedObservation(event: Observation): void {
+  private insertImportedObservation(event: PrivacyObservation): void {
     this.ensureEventId(event.eventId);
-    const requestPayload = this.observationRequestPayload(event);
-    if (this.eventAlreadyImported(event.eventId, 'observation', requestPayload)) return;
+    if (this.privacy) this.assertObservationPrivacy(event);
+    const requestPayload = event.answer === null ? null : this.observationRequestPayload(event);
+    if (event.answer === null) {
+      if (!this.privacy) throw new StoreError('IMPORT_INVALID_DATA', 'v2 不支持原答清除状态。');
+      const existing = this.findEvent(event.eventId);
+      if (existing) {
+        if (existing.kind !== 'observation' || existing.payload !== null) this.importEventConflict(event.eventId);
+        return;
+      }
+    } else if (this.eventAlreadyImported(event.eventId, 'observation', requestPayload!)) return;
     if (!isValidInstant(event.observedAt) || !isValidInstant(event.recordedAt)
         || !Number.isSafeInteger(event.configRevision) || !finiteNumber(event.halfLifeDays)
         || (event.elapsedDays !== null && !finiteNumber(event.elapsedDays))
@@ -334,8 +381,8 @@ export class LearningImportRepository {
     this.db.prepare(`INSERT INTO main.observations(
       namespace, event_id, concept_id, source_revision, observed_at, recorded_at,
       config_revision, half_life_days, anchor_event_id, elapsed_days, decay,
-      answer, rating, exposure, observed_exposure, learning_json, evidence_mode, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      answer, rating, exposure, observed_exposure, learning_json, evidence_mode, request_payload${this.schemaVersion === 3 ? ', answer_cleared_at' : ''}
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${this.schemaVersion === 3 ? ', ?' : ''})`).run(
       this.namespace,
       event.eventId,
       event.conceptId,
@@ -354,6 +401,7 @@ export class LearningImportRepository {
       event.learning ? canonicalJson(event.learning) : null,
       event.evidenceMode ?? null,
       requestPayload,
+      ...(this.schemaVersion === 3 ? [event.answer === null ? event.answerClearing.clearedAt : null] : []),
     );
   }
 
