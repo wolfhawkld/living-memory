@@ -6,9 +6,13 @@
 
 ## 2026-10-21 当前状态：运行已接通，学习写回待实际使用
 
-2026-10-22 接续 FR-11／LM-006 的[指定回忆原答清除](../design/answer-clearing.md)：ACLEAR-02B1 已把完整实例工具接到离线新目录迁移，显式 `restore --learning-schema 3` 生成规范 v3 隔离候选；完整备份／核验／显式恢复保留清除标记、原行号和请求字节，失败不发布 stage。默认旧归档仍恢复到 v2，v3 候选报告明确 `runtimeReady: false` 且不能解除连接器隔离。当前产品 Store／API／JSON／统计尚未接入，私人数据及启动配置不变。下一项 ACLEAR-02B2 处理学习 JSON v3 与导入合并，再接产品统计、协议及页面；暂不能在页面清除原答，不将 FR-11 或完整 LM-006 标为完成。
+2026-10-22 接续 FR-11／LM-006 的[指定回忆原答清除](../design/answer-clearing.md)：ACLEAR-02B2 已实现独立学习 JSON v3 解析／序列化、共用引擎隐私预览，以及重算 token 后返回完整 JSON 的纯合并。旧原文不能覆盖清除标记，外部标记不能代替本机清除确认；当前原始事件、修订及审计元数据保留。此模块尚未接产品 Store／API／统计／UI，Web 仍导入导出 JSON v2，私人实例与启动候选不变。宿主完整 1535 项通过；最后严格 JSON 边界调整后定向 24 项与类型检查通过；构建、8 项主题及文档链接检查通过。最终提交的远端 CI 另行核对。
 
-此前 ACLEAR-02A 的独立 schema 3 与 SQLite 清除内核已交付：`4aae504`／[CI 39723972726](https://github.com/wolfhawkld/living-memory/actions/runs/39723972726) 的 1497 项 Node／HTTP、构建、8 项主题及 33 项远端浏览器全部通过。该阶段产品与离线完整备份当时均拒绝 v3；本轮只扩展离线工具的候选通道，产品运行仍拒绝 v3。
+下一项 ACLEAR-02C 接事务内 SQL 合并及回执、产品 Store、统计与协议。启用前必须处理 `import_receipts.request_hash`、`Store.identityToken`／`identity_bindings.request_hash` 中依赖原答的持久凭证，且隐私检查必须先于任何 duplicate 快捷分支；不能保留原答摘要或哈希 tombstone。纯 JSON token 仅临时比较新提供快照，不落盘，不代表数据库事务或持久幂等。随后再开放页面清除，不将 FR-11 或完整 LM-006 标为完成。
+
+此前 ACLEAR-02B1 的完整实例离线迁移与往返已交付：`4267099`／[CI 39728639421](https://github.com/wolfhawkld/living-memory/actions/runs/39728639421) 的 1511 项 Node／HTTP、33 项远端浏览器、8 项主题与构建全部通过。显式 `restore --learning-schema 3` 可生成保留清除状态的隔离候选；默认仍到 v2，v3 报告 `runtimeReady: false`，当前服务不能启动或激活连接器。
+
+此前 ACLEAR-02A 的独立 schema 3 与 SQLite 清除内核已交付：`4aae504`／[CI 39723972726](https://github.com/wolfhawkld/living-memory/actions/runs/39723972726) 的 1497 项 Node／HTTP、构建、8 项主题及 33 项远端浏览器全部通过。该阶段产品与离线完整备份当时均拒绝 v3；后续 02B1 扩展离线候选通道，产品运行仍拒绝 v3。
 
 此前 ACLEAR-01 的设计、独立严格契约及纯清除规划已交付：`ba3eb29`／[CI 39575795852](https://github.com/wolfhawkld/living-memory/actions/runs/39575795852) 的 1475 项 Node／HTTP、构建、8 项主题及 33 项远端浏览器全部通过。纯逻辑和本轮 SQLite 内核分别记录验证范围，不把临时库清除等同于已上线的删除入口。
 

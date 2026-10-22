@@ -1,4 +1,5 @@
 import type { Observation } from '../shared/types.js';
+import type { PrivacyObservation } from '../shared/answer-clearing.js';
 import { parseObservationRevision, type ObservationRevision } from '../shared/observation-revisions.js';
 import { projectObservationAssessments } from '../core/observation-revisions.js';
 import { isValidInstant } from '../core/time-model.js';
@@ -8,11 +9,11 @@ export type ObservationRevisionImportErrorCode = `OBSERVATION_REVISION_IMPORT_${
 export class ObservationRevisionImportError extends Error {
   constructor(readonly code: ObservationRevisionImportErrorCode) { super(code); this.name = 'ObservationRevisionImportError'; }
 }
-export interface ObservationRevisionImportInput {
+export interface ObservationRevisionImportInput<T extends PrivacyObservation = Observation> {
   /** Actual persisted parents, before incoming observations are merged. */
-  currentObservations: readonly Observation[];
+  currentObservations: readonly T[];
   /** Complete, already authorized and consistently mapped parent collection. */
-  observations: readonly Observation[];
+  observations: readonly T[];
   currentRevisions: readonly unknown[];
   incomingRevisions: readonly unknown[];
   /** IDs occupied by the other learning event kinds in this namespace. */
@@ -33,7 +34,7 @@ function parsed(value: unknown, incoming: boolean): ObservationRevision {
   try { return parseObservationRevision(value); }
   catch { return fail(incoming ? 'INVALID_INCOMING' : 'INVALID_CURRENT'); }
 }
-function orderedChain(observations: readonly Observation[], events: readonly ObservationRevision[]): ObservationRevision[] {
+function orderedChain<T extends PrivacyObservation>(observations: readonly T[], events: readonly ObservationRevision[]): ObservationRevision[] {
   let cutoff = -Infinity;
   for (const parent of observations) {
     if (!parent || typeof parent.recordedAt !== 'string' || !isValidInstant(parent.recordedAt)) fail('INVALID_INPUT');
@@ -60,7 +61,7 @@ function orderedChain(observations: readonly Observation[], events: readonly Obs
 }
 
 /** Pure planning only: no database, request-payload reconstruction, clock or KG access. */
-export function planObservationRevisionImport(input: ObservationRevisionImportInput): ObservationRevisionImportPlan {
+export function planObservationRevisionImport<T extends PrivacyObservation = Observation>(input: ObservationRevisionImportInput<T>): ObservationRevisionImportPlan {
   try {
     if (!input || !Array.isArray(input.currentObservations) || !Array.isArray(input.observations) || !Array.isArray(input.currentRevisions) || !Array.isArray(input.incomingRevisions)
       || typeof input.exportedAt !== 'string' || !isValidInstant(input.exportedAt) || typeof input.occupiedEventIds?.has !== 'function') fail('INVALID_INPUT');

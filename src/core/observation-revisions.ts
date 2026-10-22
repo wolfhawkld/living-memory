@@ -1,4 +1,5 @@
 import type { Observation } from '../shared/types.js';
+import type { PrivacyObservation } from '../shared/answer-clearing.js';
 import {
   assessmentFromObservation, observationAssessmentsEqual, observationRevisionRequestEqual,
   ObservationRevisionError, parseObservationRevision, parseObservationRevisionRequest,
@@ -32,15 +33,15 @@ export interface ObservationAssessmentState {
   audit: ObservationRevisionAuditEntry[];
   issues: ObservationRevisionIssue[];
 }
-export interface DerivedObservationAssessment {
+export interface DerivedObservationAssessment<T extends PrivacyObservation = Observation> {
   kind: 'derived-observation-assessment';
   observationEventId: string;
   revisionEventId: string | null;
-  observation: Observation;
+  observation: T;
 }
-export interface ObservationAssessmentProjection {
+export interface ObservationAssessmentProjection<T extends PrivacyObservation = Observation> {
   asOf: string;
-  effective: DerivedObservationAssessment[];
+  effective: DerivedObservationAssessment<T>[];
   states: ObservationAssessmentState[];
   issues: ObservationRevisionIssue[];
 }
@@ -65,13 +66,13 @@ function compare(left: string, right: string): number { return left < right ? -1
 function identity(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 512 && value.trim().length > 0 && value === value.trim();
 }
-interface Parent {
-  observation: Observation;
+interface Parent<T extends PrivacyObservation = Observation> {
+  observation: T;
   observed: number;
   recorded: number;
   assessment: ObservationAssessment;
 }
-function parentOf(observation: Observation): Parent {
+function parentOf<T extends PrivacyObservation>(observation: T): Parent<T> {
   try {
     if (typeof observation.eventId !== 'string' || !ID.test(observation.eventId)
       || !identity(observation.conceptId) || !identity(observation.sourceRevision)) throw new Error();
@@ -101,7 +102,7 @@ function transition(status: 'active' | 'withdrawn', current: ObservationAssessme
     ? { status: 'withdrawn', assessment: current } : 'INVALID_TRANSITION';
   return status === 'withdrawn' ? { status: 'active', assessment: current } : 'INVALID_TRANSITION';
 }
-function derived(parent: Observation, assessment: ObservationAssessment): Observation {
+function derived<T extends PrivacyObservation>(parent: T, assessment: ObservationAssessment): T {
   const observation = { ...parent, rating: assessment.rating };
   if (parent.learning !== undefined) observation.learning = { ...parent.learning, ...assessment.learning! };
   return observation;
@@ -112,13 +113,13 @@ function derived(parent: Observation, assessment: ObservationAssessment): Observ
  * current KG lookup or implicit clock. Tagged results are not raw export rows.
  * An unattributable visible corrupt record throws rather than reviving scores.
  */
-export function projectObservationAssessments(
-  rawObservations: readonly Observation[], revisions: readonly unknown[], asOf: string,
-): ObservationAssessmentProjection {
+export function projectObservationAssessments<T extends PrivacyObservation = Observation>(
+  rawObservations: readonly T[], revisions: readonly unknown[], asOf: string,
+): ObservationAssessmentProjection<T> {
   const cutoff = time(asOf);
   if (cutoff === null) throw new ObservationRevisionError('INVALID_AS_OF');
-  const parents = new Map<string, Observation>();
-  const validated = new Map<string, Parent>();
+  const parents = new Map<string, T>();
+  const validated = new Map<string, Parent<T>>();
   const issuesByParent = new Map<string, ObservationRevisionIssue[]>();
   const issueKeys = new Set<string>();
   function issue(parentId: string, eventId: string | null, code: ObservationRevisionIssueCode) {
@@ -194,7 +195,7 @@ export function projectObservationAssessments(
     compare(a.observationEventId ?? '', b.observationEventId ?? '') || compare(a.eventId ?? '', b.eventId ?? '')
       || compare(a.code, b.code) || compare(a.kind, b.kind);
   const states: ObservationAssessmentState[] = [];
-  const effective: DerivedObservationAssessment[] = [];
+  const effective: DerivedObservationAssessment<T>[] = [];
   const sortableParent = (id: string) => issuesByParent.get(id)?.some(item => item.code === 'INVALID_PARENT')
     ? undefined : validated.get(id);
   const ordered = [...parents].sort(([idA], [idB]) => {

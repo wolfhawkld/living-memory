@@ -113,7 +113,7 @@ export function observationRevisionRequestEqual(a: ObservationRevisionRequest, b
 export function observationAssessmentsEqual(a: ObservationAssessment, b: ObservationAssessment): boolean {
   return JSON.stringify(assessment(a, 'INVALID_REQUEST')) === JSON.stringify(assessment(b, 'INVALID_REQUEST'));
 }
-export function assessmentFromObservation(observation: Observation): ObservationAssessment {
+export function assessmentFromObservation(observation: Pick<Observation, 'rating' | 'learning'>): ObservationAssessment {
   const code = 'INVALID_PARENT';
   try {
     // Only assessment fields are projected. Other historical conditions stay raw.

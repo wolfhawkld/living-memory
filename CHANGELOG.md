@@ -4,7 +4,9 @@
 
 ## Unreleased
 
-完整实例离线工具接通 ACLEAR-02B1：显式 `restore --learning-schema 3` 可将已知旧归档迁移到新的规范 v3 隔离候选，保留原行号、字段、整数、请求字节及修订链；完整备份／核验／显式 v3 恢复保持清除标记和两个 NULL。默认恢复仍到 v2，v3 候选不能启动当前服务或激活连接器，失败不发布目录；私人实例未升级。学习 JSON 导入合并仍待后续，详见[候选说明](docs/development/instance-migration.md#学习结构-v3-的隔离候选)。
+新增 ACLEAR-02B2 独立学习 JSON v3 解析／序列化、隐私导入预览，以及重算 token 后生成完整 JSON 的纯合并：旧原文不能覆盖已清除状态，外部标记不能代替本机确认，首次标记、原始事件及本地审计信息保留。此模块未接 SQL／产品 Store／协议／统计／UI；Web 仍使用 JSON v2，私人实例和启动候选不变。数据库事务、回执与原答派生持久凭证审计留至 ACLEAR-02C，临时 token 不代表数据库幂等。见[范围与门槛](docs/design/answer-clearing.md#aclear-02b2独立学习-json-v3-与纯合并)。
+
+完整实例离线工具接通 ACLEAR-02B1：显式 `restore --learning-schema 3` 可将已知旧归档迁移到新的规范 v3 隔离候选，保留原行号、字段、整数、请求字节及修订链；完整备份／核验／显式 v3 恢复保持清除标记和两个 NULL。默认恢复仍到 v2，v3 候选不能启动当前服务或激活连接器，失败不发布目录；私人实例未升级。详见[候选说明](docs/development/instance-migration.md#学习结构-v3-的隔离候选)。
 
 新增原答清除的 ACLEAR-02A SQLite 内核：独立完整 schema 3 只在空库显式初始化，事务内同时清除原答与整份请求副本，保留首次清除时间及原事件占位；支持 namespace 隔离读取和要求调用方事务的重放 guard。现行 v2 产品 Store、协议、学习 JSON、统计和页面未接入，产品运行入口继续拒绝 v3；离线完整实例候选支持见上项，私人实例不升级。见[实现范围及后续接线](docs/design/answer-clearing.md#aclear-02a独立-sqlite-内核)。
 

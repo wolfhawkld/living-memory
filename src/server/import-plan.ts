@@ -3,12 +3,12 @@ import type {
   AnchorEvent,
   ApplicationRecord,
   Concept,
-  ExportData,
+  ExportData as LegacyExportData,
   ExportDataV2,
   LearningEvidence,
   Layout,
   ModelConfig,
-  Observation,
+  Observation as IntactObservation,
   RetentionEvent,
   ReviewRequest,
 } from '../shared/types.js';
@@ -50,12 +50,17 @@ import {
 } from './practice-import.js';
 import { parseObservationRevision, type ObservationRevision } from '../shared/observation-revisions.js';
 import { planObservationRevisionImport, ObservationRevisionImportError } from './observation-revision-import.js';
+import { parseAnswerClearingMarker, type PrivacyObservation } from '../shared/answer-clearing.js';
+import { AnswerClearingImportError, type ExportDataV3 } from '../shared/answer-clearing-export.js';
+
+type ExportData = LegacyExportData | ExportDataV3;
+type Observation = PrivacyObservation;
 
 /** Input accepted by the pure import planner. */
 export interface ImportPlanInput {
   data: unknown;
   options: ImportOptions;
-  current: ExportData;
+  current: LegacyExportData;
   concepts: Concept[];
   sourceId: string;
   now: string;
@@ -71,7 +76,7 @@ export interface PreparedImport {
   preview: ImportPreview;
   normalized: ExportDataV2;
   newAnchors: AnchorEvent[];
-  newObservations: Observation[];
+  newObservations: IntactObservation[];
   newObservationRevisions: ObservationRevision[];
   newRetentions: RetentionEvent[];
   newApplications: ApplicationRecord[];
@@ -85,6 +90,16 @@ export interface PreparedImport {
   metadataConcepts: ExportData['concepts'];
   anchorRequests: Record<string, ReviewRequest>;
 }
+
+export interface AnswerClearingImportPlanInput extends Omit<ImportPlanInput, 'current'> { current: ExportDataV3 }
+export interface PreparedAnswerClearingImport extends Omit<PreparedImport, 'normalized' | 'newObservations'> {
+  normalized: ExportDataV3;
+  newObservations: PrivacyObservation[];
+}
+type EngineInput = Omit<ImportPlanInput, 'current'> & { current: ExportData };
+type EnginePrepared = Omit<PreparedImport, 'normalized' | 'newObservations'> & {
+  normalized: ExportDataV2 | ExportDataV3; newObservations: PrivacyObservation[];
+};
 
 const EVENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_HALF_LIFE_DAYS = 3650;
@@ -249,11 +264,11 @@ function validateOptions(value: ImportOptions): ImportOptions {
   };
 }
 
-function validateExportEnvelope(data: unknown, now: string): Record<string, unknown> {
+function validateExportEnvelope(data: unknown, now: string, privacy = false): Record<string, unknown> {
   const record = requireRecord(data, '导入数据');
-  if (record.schemaVersion !== 1 && record.schemaVersion !== 2) invalid('仅支持 schemaVersion 1 或 2 的导出文件。', 'UNSUPPORTED_SCHEMA');
+  if (record.schemaVersion !== 1 && record.schemaVersion !== 2 && !(privacy && record.schemaVersion === 3)) invalid(privacy ? '不支持的学习 JSON 版本。' : '仅支持 schemaVersion 1 或 2 的导出文件。', 'UNSUPPORTED_SCHEMA');
   if (record.schemaVersion === 1 && Object.hasOwn(record, 'observationRevisions')) invalid('v1 文件不能包含自评修订字段。', 'INVALID_OBSERVATION_REVISIONS');
-  if (record.schemaVersion === 2) requireArray(record.observationRevisions, 'observationRevisions');
+  if (record.schemaVersion === 2 || record.schemaVersion === 3) requireArray(record.observationRevisions, 'observationRevisions');
   const exported = timestamp(record.exportedAt, 'exportedAt');
   const currentNow = timestamp(now, 'now');
   if (exported.ms > currentNow.ms) invalid('exportedAt 不能晚于当前时间。', 'FUTURE_EXPORT');
@@ -560,6 +575,9 @@ function validateObservation(
   index: number,
   nowMs: number,
   state: IssueState,
+  schemaVersion: unknown,
+  exportedAt: string,
+  privacy: boolean,
 ): Observation {
   const record = requireRecord(value, `observations[${index}]`);
   const eventId = validateEventId(record.eventId, `observations[${index}].eventId`);
@@ -579,7 +597,13 @@ function validateObservation(
   if (anchorEventId === null && (elapsedDays !== null || decay !== null)) {
     invalid(`observations[${index}] 无 anchorEventId 时 elapsedDays 与 decay 必须为 null。`, 'FROZEN_DECAY_MISMATCH');
   }
-  if (typeof record.answer !== 'string') invalid(`observations[${index}].answer 必须是字符串。`);
+  const hasMarker = Object.hasOwn(record, 'answerClearing');
+  if (privacy && schemaVersion !== 3 && hasMarker) throw new AnswerClearingImportError('INVALID_IMPORT_DATA');
+  if (typeof record.answer !== 'string' && !(schemaVersion === 3 && record.answer === null)) invalid(`observations[${index}].answer 无效。`);
+  if (privacy && (record.answer === null) !== hasMarker) throw new AnswerClearingImportError('INVALID_IMPORT_DATA');
+  const marker = schemaVersion === 3 && hasMarker ? parseAnswerClearingMarker(record.answerClearing) : null;
+  if (marker && (marker.observationEventId !== eventId || Date.parse(marker.clearedAt) < recordedAt.ms
+    || Date.parse(marker.clearedAt) > Date.parse(exportedAt) || Date.parse(marker.clearedAt) > nowMs)) throw new AnswerClearingImportError('INVALID_IMPORT_DATA');
   const evidenceMode = record.evidenceMode;
   if (evidenceMode !== undefined && evidenceMode !== 'mental' && evidenceMode !== 'written') {
     invalid(`observations[${index}].evidenceMode 必须是 mental 或 written。`, 'INVALID_EVIDENCE_MODE');
@@ -607,13 +631,14 @@ function validateObservation(
     anchorEventId,
     elapsedDays,
     decay,
-    answer: record.answer,
+    answer: record.answer as string | null,
+    ...(marker ? { answerClearing: marker } : {}),
     rating: record.rating as Observation['rating'],
     exposure: record.exposure as Observation['exposure'],
     observedExposure,
     ...(learning ? { learning } : {}),
     ...(evidenceMode !== undefined ? { evidenceMode: evidenceMode as Observation['evidenceMode'] } : {}),
-  };
+  } as Observation;
 }
 
 function validateRetention(
@@ -685,6 +710,7 @@ function parseEventArrays(
   record: Record<string, unknown>,
   nowMs: number,
   state: IssueState,
+  privacy: boolean,
 ): { anchors: AnchorEvent[]; observations: Observation[]; retentions: RetentionEvent[]; applications: ApplicationRecord[]; corrections: CorrectionEvent[] } {
   const raw = {
     anchors: optionalArray(record, 'anchors'),
@@ -696,7 +722,7 @@ function parseEventArrays(
   if (eventCount(raw) > MAX_EVENTS) invalid(`事件总数不能超过 ${MAX_EVENTS}。`, 'IMPORT_LIMIT');
   return {
     anchors: raw.anchors.map((value, index) => validateAnchor(value, index, nowMs, state)),
-    observations: raw.observations.map((value, index) => validateObservation(value, index, nowMs, state)),
+    observations: raw.observations.map((value, index) => validateObservation(value, index, nowMs, state, record.schemaVersion, String(record.exportedAt), privacy)),
     retentions: raw.retentions.map((value, index) => validateRetention(value, index, nowMs, state)),
     applications: raw.applications.map((value, index) => validateApplication(value, index, nowMs, state)),
     corrections: raw.corrections.map((value, index) => validateCorrection(value, index, nowMs, state)),
@@ -773,6 +799,13 @@ function collectCurrentEvents(current: ExportData): Map<string, EventIdentity> {
   return map;
 }
 
+function assertObservationPrivacy(a: Observation, b: Observation): void {
+  if (a.answer === null && b.answer !== null) throw new AnswerClearingImportError('ANSWER_CLEARED');
+  if (a.answer !== null && b.answer === null) throw new AnswerClearingImportError('LOCAL_CLEARING_REQUIRED');
+  if (a.answer === null && b.answer === null
+    && canonical(eventPayload('observations', a)) !== canonical(eventPayload('observations', b))) throw new AnswerClearingImportError('CLEARING_CONFLICT');
+}
+
 function compareEventIdentity(left: Event, right: Event, kind: AnyEventKind): boolean {
   return canonical(eventPayload(kind, left)) === canonical(eventPayload(kind, right));
 }
@@ -784,6 +817,7 @@ function classifyEventConflicts(
   state: IssueState,
 ): { newAnchors: AnchorEvent[]; newObservations: Observation[]; newRetentions: RetentionEvent[]; newApplications: ApplicationRecord[]; newCorrections: CorrectionEvent[]; newRelationReviews: RelationReviewEvent[]; newPracticeCards: PracticeCardEvent[]; newPracticeAttempts: PracticeAttempt[]; duplicates: number } {
   const currentEvents = collectCurrentEvents(current);
+  const currentRevisionIds = new Set(current.schemaVersion === 3 ? current.observationRevisions.map(event => event.eventId) : []);
   const currentByEventId = new Map<string, EventIdentity[]>();
   for (const identity of currentEvents.values()) {
     const sameId = currentByEventId.get(identity.event.eventId) ?? [];
@@ -823,6 +857,10 @@ function classifyEventConflicts(
         continue;
       }
       seenByEventId.set(event.eventId, identity);
+      if (currentRevisionIds.has(event.eventId)) {
+        addIssue(state, 'EVENT_CONFLICT', `eventId ${event.eventId} 已被当前自评修订记录占用。`, { eventId: event.eventId });
+        continue;
+      }
       const currentSameId = currentByEventId.get(event.eventId) ?? [];
       if (currentSameId.length) {
         if (currentSameId.length !== 1 || currentSameId[0].kind !== kind || !compareEventIdentity(currentSameId[0].event, event, kind)) {
@@ -1564,7 +1602,7 @@ function sortTokenCollections(value: ExportData): ExportData {
   copy.configHistory = [...copy.configHistory].sort((a, b) => a.revision - b.revision);
   copy.anchors = [...copy.anchors].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.observations = [...copy.observations].sort((a, b) => a.eventId.localeCompare(b.eventId));
-  if (copy.schemaVersion === 2) copy.observationRevisions = [...copy.observationRevisions].sort((a, b) => a.eventId.localeCompare(b.eventId));
+  if (copy.schemaVersion !== 1) copy.observationRevisions = [...copy.observationRevisions].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.retentions = [...(copy.retentions ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.applications = [...(copy.applications ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
   copy.corrections = [...(copy.corrections ?? [])].sort((a, b) => a.eventId.localeCompare(b.eventId));
@@ -1573,6 +1611,8 @@ function sortTokenCollections(value: ExportData): ExportData {
     copy.practice.cards = [...copy.practice.cards].sort((a, b) => a.eventId.localeCompare(b.eventId));
     copy.practice.attempts = [...copy.practice.attempts].sort((a, b) => a.eventId.localeCompare(b.eventId));
   }
+  if (copy.restoreMetadata) copy.restoreMetadata.anchorRequests.sort((a, b) => a.eventId.localeCompare(b.eventId));
+  if (copy.identityBindings) copy.identityBindings.sort((a, b) => a.operationId.localeCompare(b.operationId));
   return copy;
 }
 
@@ -1591,10 +1631,36 @@ function sortAcceptedPaths(value: Record<string, string[]> | undefined): Record<
  * separate commit transaction.
  */
 export function buildImportPlan(input: ImportPlanInput): PreparedImport {
+  if ((input.current as ExportData).schemaVersion === 3) invalid('当前产品不支持此学习快照。', 'UNSUPPORTED_SCHEMA');
+  return buildImportEngine(input, false) as PreparedImport;
+}
+
+/** Internal v3 dialect; the public codec validates current independently before calling. No database writes. */
+export function buildAnswerClearingImportEngine(input: AnswerClearingImportPlanInput): PreparedAnswerClearingImport {
+  return buildImportEngine(input, true) as PreparedAnswerClearingImport;
+}
+
+/** Standalone format validation, using file identities without inventing live KG content. */
+export function normalizeAnswerClearingExportData(data: unknown, now: string): ExportDataV3 {
+  const record = validateExportEnvelope(data, now, true);
+  if (record.schemaVersion !== 3) throw new AnswerClearingImportError('INVALID_IMPORT_DATA');
+  const metadata = validateConcepts(requireArray(record.concepts, 'concepts'));
+  const first = parseConfig(requireArray(record.configHistory, 'configHistory')[0], 'configHistory[0]');
+  const empty: ExportDataV3 = { schemaVersion: 3, exportedAt: String(record.exportedAt),
+    source: record.source as ExportData['source'], concepts: [], config: first, configHistory: [first],
+    anchors: [], observations: [], observationRevisions: [], layout: {} };
+  const prepared = buildImportEngine({ data: record, current: empty, now, sourceId: 'json-format-validation',
+    concepts: metadata.map(concept => ({ ...concept, aliases: [], domain: '', summary: '', body: '' })),
+    options: DEFAULT_IMPORT_OPTIONS }, true, true);
+  if (!prepared.preview.canImport) throw new AnswerClearingImportError('INVALID_IMPORT_DATA');
+  return prepared.normalized as ExportDataV3;
+}
+
+function buildImportEngine(input: EngineInput, privacy: boolean, formatOnly = false): EnginePrepared {
   const options = validateOptions(input.options ?? DEFAULT_IMPORT_OPTIONS);
   const now = timestamp(input.now, 'now');
   if (jsonByteLength(input.data) > MAX_IMPORT_BYTES) invalid(`导入文件不能超过 ${MAX_IMPORT_BYTES} 字节。`, 'IMPORT_LIMIT');
-  const record = validateExportEnvelope(input.data, input.now);
+  const record = validateExportEnvelope(input.data, input.now, privacy);
   const exportedAt = timestamp(record.exportedAt, 'exportedAt');
   const backupConcepts = validateConcepts(requireArray(record.concepts, 'concepts'));
   const rawEvents: Record<EventKind, unknown[]> = {
@@ -1611,7 +1677,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     }
     : null;
   const rawRelationReviews = optionalArray(record, 'relationReviews');
-  const rawObservationRevisions = record.schemaVersion === 2 ? requireArray(record.observationRevisions, 'observationRevisions') : [];
+  const rawObservationRevisions = record.schemaVersion !== 1 ? requireArray(record.observationRevisions, 'observationRevisions') : [];
   const references = collectReferences(rawEvents, record);
   for (const raw of rawObservationRevisions) if (isRecord(raw) && typeof raw.conceptId === 'string') references.add(raw.conceptId.trim());
   for (const raw of rawRelationReviews) {
@@ -1628,7 +1694,15 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
     addIssue(state, 'IDENTITY_BINDINGS_UNTRUSTED', '备份中的 identityBindings 仅供确认时核对，不会授权路径映射或自动创建绑定；导入仍按当前知识空间的路径和版本关联。', { severity: 'warning' });
   }
   const mapping = buildConceptMapping(backupConcepts, input.concepts, references, input.acceptedPaths, state);
-  const parsedEvents = parseEventArrays(record, now.ms, state);
+  const parsedEvents = parseEventArrays(record, now.ms, state, privacy);
+  // Inspect every observation before duplicate/cross-kind shortcuts or token hashing.
+  if (privacy) {
+    const currentObservations = new Map(input.current.observations.map(event => [event.eventId, event]));
+    for (const event of parsedEvents.observations) {
+      const current = currentObservations.get(event.eventId);
+      if (current) assertObservationPrivacy(current, mappedConceptEvent(event, mapping));
+    }
+  }
   if (eventCount(rawEvents) + rawObservationRevisions.length + rawRelationReviews.length + (rawPractice ? rawPractice.cards.length + rawPractice.attempts.length : 0) > MAX_EVENTS) {
     invalid(`事件总数不能超过 ${MAX_EVENTS}。`, 'IMPORT_LIMIT');
   }
@@ -1766,8 +1840,8 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   const incomingPlan = record.reviewPlan === undefined ? currentPlan : validateReviewPlan(record.reviewPlan, 'reviewPlan');
   const reviewPlan = mergeReviewPlan(currentPlan, incomingPlan, mapping, options.restoreReviewPlan);
   const anchorRequests = buildAnchorRequests(record, parsedEvents.anchors, mapping, exportedAt.raw, input.sourceId, state);
-  const normalizedInput: ExportDataV2 = {
-    schemaVersion: 2,
+  const normalizedInput = {
+    schemaVersion: privacy ? 3 : 2,
     exportedAt: exportedAt.raw,
     source: clone(record.source) as ExportData['source'],
     concepts: mapping.metadata,
@@ -1785,7 +1859,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
       : {}),
     ...(record.reviewPlan !== undefined ? { reviewPlan: mapReviewPlan(incomingPlan, mapping) } : {}),
     layout: mapLayout(incomingLayout, mapping),
-  };
+  } as ExportDataV2 | ExportDataV3;
   if (record.restoreMetadata !== undefined) {
     const metadata = requireRecord(record.restoreMetadata, 'restoreMetadata');
     normalizedInput.restoreMetadata = { sourceId: typeof metadata.sourceId === 'string' ? metadata.sourceId : '', anchorRequests: Object.values(anchorRequests), configRecordedAt: configMerge.recordedAt };
@@ -1795,7 +1869,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
   }
 
   const metadataForToken = input.concepts.map((concept) => ({ id: concept.id, path: concept.source.path, revision: concept.source.revision })).sort((a, b) => a.id.localeCompare(b.id));
-  const token = stableHash({ data: sortTokenCollections(normalizedInput), options, current: sortTokenCollections(stripExportedAt(input.current) as ExportData), liveConcepts: metadataForToken, acceptedPaths: sortAcceptedPaths(input.acceptedPaths), sourceId: input.sourceId });
+  const token = formatOnly ? '' : stableHash({ data: sortTokenCollections(normalizedInput), options, current: sortTokenCollections(stripExportedAt(input.current) as ExportData), liveConcepts: metadataForToken, acceptedPaths: sortAcceptedPaths(input.acceptedPaths), sourceId: input.sourceId });
   const counts: ImportCounts = {
     added: {
       anchors: classified.newAnchors.length,
@@ -1805,7 +1879,7 @@ export function buildImportPlan(input: ImportPlanInput): PreparedImport {
       corrections: classified.newCorrections.length,
     },
     duplicates: classified.duplicates + observationRevisionDuplicates,
-    ...(record.schemaVersion === 2 ? { observationRevisions: newObservationRevisions.length } : {}),
+    ...(record.schemaVersion !== 1 ? { observationRevisions: newObservationRevisions.length } : {}),
     configurations: configMerge.newConfigs.length,
     matchedConcepts: mapping.matches.filter((match) => match.toId !== null).length,
     remappedConcepts: mapping.matches.filter((match) => match.match === 'path-revision').length,
