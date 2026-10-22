@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { inspectAnswerClearingSchemaV3 } from '../src/server/answer-clearing-schema.js';
-import { AnswerClearingStore } from '../src/server/answer-clearing-store.js';
+import { AnswerClearingStore, ANSWER_CLEARING_RETIRED_CREDENTIAL } from '../src/server/answer-clearing-store.js';
 import { activateRestoredConnectors, backupInstance, restoreInstance, verifyInstanceBundle,
   type RestoreReport } from '../src/server/instance-backup.js';
 import { isRestoreQuarantined, readInstanceId } from '../src/server/instance-state.js';
@@ -48,9 +48,20 @@ test('offline v2 to v3 candidate, clear, v3 backup and explicit v3 restore prese
       try {
         store.observationRevisions.append({eventId:`revision-${index}`,observationEventId:`observation-${index}`,previousEventId:null,
           occurredAt:'2026-10-21T00:00:00.000Z',action:'withdraw',reason:'other',note:`Independent namespace ${index} note`});
+        // Use the existing v2 writer to generate real legacy answer-derived import credentials.
+        const concepts=source.source.index.concepts.map(concept=>concept.id===source.raw.id?{...concept,id:source.stable.id}:concept);
+        const data=store.exportData(source.source.index.source,concepts),options={restoreLayout:false,restoreReviewPlan:false};
+        const preview=store.previewImport(data,options,source.source.index.source,concepts);
+        assert.equal(preview.canImport,true,JSON.stringify(preview.issues));
+        store.commitImport({importId:`bundle-import-${index}`,data,options,previewToken:preview.token,confirmed:true},
+          source.source.index.source,concepts,()=>`synthetic-import-backup-${index}`);
       } finally {store.close();}
     }
     const sourceRows=tableRows(sourcePath),sourceBytes=digest(readFileSync(sourcePath));
+    for(const table of ['import_receipts','identity_bindings']) {
+      assert.equal(sourceRows[table].length,2);
+      for(const row of sourceRows[table]) assert.match(row.request_hash,/^[a-f0-9]{64}$/);
+    }
     const sourceAccounts=tableRows(join(f.options.dataDir,'accounts.sqlite'));
     const manifest2=await backupInstance(f.options);
     assert.equal(manifest2.version,2); assert.equal(manifest2.learningSchemaVersion,2);
@@ -73,12 +84,17 @@ test('offline v2 to v3 candidate, clear, v3 backup and explicit v3 restore prese
     try {
       db.exec('PRAGMA foreign_keys=ON');
       const clearing=new AnswerClearingStore({db,namespace:f.sources[0].source.namespace,now:()=>new Date(clearedAt)});
+      assert.deepEqual(clearing.prepareReplayPrivacy(),{status:'already-ready',retiredImportCredentials:0,retiredIdentityCredentials:0});
       assert.deepEqual(clearing.clear({observationEventId:'observation-0'}),{status:'accepted',observationEventId:'observation-0',clearedAt});
+      assert.deepEqual(clearing.getReplayPrivacyStatus(),{status:'ready',clearedObservations:1,activeImportCredentials:0,
+        activeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:1});
     } finally {db.close();}
     const clearedRows=tableRows(path);
     for(const [table,records] of Object.entries(tableRows(join(f.options.output,'data/living-memory.sqlite')))) {
       if(table==='observations'||table==='learning_schema_metadata') continue;
-      assert.deepEqual(clearedRows[table],records,table);
+      assert.deepEqual(clearedRows[table],table==='import_receipts'||table==='identity_bindings'
+        ? records.map(record=>record.namespace===f.sources[0].source.namespace
+          ? {...record,request_hash:ANSWER_CLEARING_RETIRED_CREDENTIAL}:record) : records,table);
     }
     assert.equal(clearedRows.observations.length,sourceRows.observations.length);
     for(const original of sourceRows.observations) {
@@ -93,6 +109,20 @@ test('offline v2 to v3 candidate, clear, v3 backup and explicit v3 restore prese
     const restored=await restoreInstance({bundle:bundle3,target:join(f.base,'roundtrip-v3'),now,targetLearningSchemaVersion:3});
     assert.deepEqual(restored.learningSchemaCandidate,{schemaVersion:3,runtimeReady:false});assert.deepEqual(restored.schemaMigrations,[]);
     assert.deepEqual(tableRows(join(restored.startup.dataDir,'living-memory.sqlite')),clearedRows);
+    const restoredDb=new DatabaseSync(join(restored.startup.dataDir,'living-memory.sqlite'));
+    try {
+      restoredDb.exec('PRAGMA foreign_keys=ON');
+      const clearing=new AnswerClearingStore({db:restoredDb,namespace:f.sources[0].source.namespace,now:()=>{throw new Error('no clock on replay');}});
+      assert.equal(clearing.getReplayPrivacyStatus().status,'ready');
+      assert.deepEqual(clearing.prepareReplayPrivacy(),{status:'already-ready',retiredImportCredentials:0,retiredIdentityCredentials:0});
+      restoredDb.exec('BEGIN IMMEDIATE');
+      assert.throws(()=>clearing.assertOperationReplayAllowed('import','bundle-import-0'),{code:'ANSWER_CLEARING_OPERATION_RETIRED'});
+      assert.throws(()=>clearing.assertOperationReplayAllowed('identity','move-0'),{code:'ANSWER_CLEARING_OPERATION_RETIRED'});
+      const member=new AnswerClearingStore({db:restoredDb,namespace:f.sources[1].source.namespace});
+      assert.equal(member.getReplayPrivacyStatus().clearedObservations,0);
+      member.assertOperationReplayAllowed('import','bundle-import-1');member.assertOperationReplayAllowed('identity','move-1');
+      restoredDb.exec('ROLLBACK');
+    } finally {if(restoredDb.isTransaction)restoredDb.exec('ROLLBACK');restoredDb.close();}
     assert.equal(isRestoreQuarantined(restored.startup.dataDir),true);
     assert.notEqual(restored.instanceId,candidate.instanceId);
     assert.equal(tableRows(join(restored.startup.dataDir,'accounts.sqlite')).sessions.length,0);

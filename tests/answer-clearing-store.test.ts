@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
-import { AnswerClearingStore, AnswerClearingStoreError } from '../src/server/answer-clearing-store.js';
+import { AnswerClearingStore, AnswerClearingStoreError, ANSWER_CLEARING_RETIRED_CREDENTIAL } from '../src/server/answer-clearing-store.js';
 import { initializeAnswerClearingSchemaV3 } from '../src/server/answer-clearing-schema.js';
 import type { Observation, ObservationRequest } from '../src/shared/types.js';
 
@@ -239,7 +240,17 @@ test('two ready processes racing to clear accept once and return one shared firs
   const base=mkdtempSync(join(tmpdir(),'lm-answer-clear-race-')), path=join(base,'learning.sqlite');
   const children:ChildProcess[]=[];
   try {
-    const { db }=fixture(path); seed(db); db.close();
+    const { db }=fixture(path); seed(db);
+    const importHash=createHash('sha256').update(JSON.stringify({data:{observations:[{answer:ORIGINAL}]}})).digest('hex');
+    const identityHash=createHash('sha256').update(JSON.stringify({previewToken:importHash,confirmed:true})).digest('hex');
+    db.prepare('INSERT INTO import_receipts(namespace,import_id,request_hash,receipt_json) VALUES(?,?,?,?)')
+      .run(namespace,'race-import',importHash,JSON.stringify({status:'accepted',importId:'race-import',backupId:'race-backup'}));
+    db.prepare(`INSERT INTO identity_bindings(namespace,operation_id,raw_concept_id,concept_id,from_path,to_path,
+      source_revision,confirmed_at,backup_id,request_hash,receipt_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(namespace,'race-identity','raw-race','concept-1',null,'Race.md','revision-1',RECORDED,'race-identity-backup',identityHash,
+        JSON.stringify({status:'accepted',operationId:'race-identity',backupId:'race-identity-backup'}));
+    const credentials=Object.fromEntries(['import_receipts','identity_bindings'].map(table=>[table,db.prepare(`SELECT * FROM ${table}`).all()]));
+    db.close();
     const moduleUrl=new URL('../src/server/answer-clearing-store.ts',import.meta.url).href;
     const source=`import {DatabaseSync} from 'node:sqlite'; import {AnswerClearingStore} from ${JSON.stringify(moduleUrl)};
       const db=new DatabaseSync(process.env.TEST_DB); db.exec('PRAGMA busy_timeout=5000');
@@ -269,6 +280,12 @@ test('two ready processes racing to clear accept once and return one shared firs
     assert.deepEqual(receipts.map(value=>value.status).sort(),['accepted','duplicate']);
     assert.equal(receipts[0].clearedAt,receipts[1].clearedAt); assert.ok([CLEARED,'2026-10-22T08:00:01.000Z'].includes(receipts[0].clearedAt));
     const reader=new DatabaseSync(path); try { assert.equal(row(reader).answer,null);assert.equal(row(reader).request_payload,null);
-      assert.equal(row(reader).answer_cleared_at,receipts[0].clearedAt); } finally {reader.close();}
+      assert.equal(row(reader).answer_cleared_at,receipts[0].clearedAt);
+      for(const [table,records] of Object.entries(credentials)) assert.deepEqual(JSON.parse(JSON.stringify(reader.prepare(`SELECT * FROM ${table}`).all())),
+        records.map(record=>({...record,request_hash:ANSWER_CLEARING_RETIRED_CREDENTIAL})));
+      const clearing=new AnswerClearingStore({db:reader,namespace});
+      assert.deepEqual(clearing.getReplayPrivacyStatus(),{status:'ready',clearedObservations:1,activeImportCredentials:0,
+        activeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:1});
+    } finally {reader.close();}
   } finally { for(const child of children) if(child.exitCode===null) child.kill(); rmSync(base,{recursive:true,force:true}); }
 });

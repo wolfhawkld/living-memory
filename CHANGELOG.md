@@ -4,7 +4,9 @@
 
 ## Unreleased
 
-新增 ACLEAR-02B2 独立学习 JSON v3 解析／序列化、隐私导入预览，以及重算 token 后生成完整 JSON 的纯合并：旧原文不能覆盖已清除状态，外部标记不能代替本机确认，首次标记、原始事件及本地审计信息保留。此模块未接 SQL／产品 Store／协议／统计／UI；Web 仍使用 JSON v2，私人实例和启动候选不变。数据库事务、回执与原答派生持久凭证审计留至 ACLEAR-02C，临时 token 不代表数据库幂等。见[范围与门槛](docs/design/answer-clearing.md#aclear-02b2独立学习-json-v3-与纯合并)。
+新增 ACLEAR-02C1 重放隐私准备：独立 v3 内核在首次及重复清除时，原子退休同 namespace 的导入／身份绑定请求摘要，保留操作占位、绑定、收据及学习事实；新增只读状态、遗留准备与要求调用方事务的操作 guard。退休使用固定非哈希哨兵，不保存原答摘要；`ready` 仅指两类凭证准备完成。产品仍使用 schema／协议／JSON 2，私人实例与启动候选不变；真正 SQL 导入和无原答凭证契约留待 02C2。见[边界及后续](docs/design/answer-clearing.md#aclear-02c1已有凭证退休与事务内-guard)。
+
+新增 ACLEAR-02B2 独立学习 JSON v3 解析／序列化、隐私导入预览，以及重算 token 后生成完整 JSON 的纯合并：旧原文不能覆盖已清除状态，外部标记不能代替本机确认，首次标记、原始事件及本地审计信息保留。此模块未接 SQL／产品 Store／协议／统计／UI；Web 仍使用 JSON v2，私人实例和启动候选不变。临时 token 不代表数据库幂等，事务导入仍待后续。见[范围与门槛](docs/design/answer-clearing.md#aclear-02b2独立学习-json-v3-与纯合并)。
 
 完整实例离线工具接通 ACLEAR-02B1：显式 `restore --learning-schema 3` 可将已知旧归档迁移到新的规范 v3 隔离候选，保留原行号、字段、整数、请求字节及修订链；完整备份／核验／显式 v3 恢复保持清除标记和两个 NULL。默认恢复仍到 v2，v3 候选不能启动当前服务或激活连接器，失败不发布目录；私人实例未升级。详见[候选说明](docs/development/instance-migration.md#学习结构-v3-的隔离候选)。
 

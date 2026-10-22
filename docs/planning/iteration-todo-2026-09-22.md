@@ -6,9 +6,11 @@
 
 ## 2026-10-21 当前状态：运行已接通，学习写回待实际使用
 
-2026-10-22 接续 FR-11／LM-006 的[指定回忆原答清除](../design/answer-clearing.md)：ACLEAR-02B2 已实现独立学习 JSON v3 解析／序列化、共用引擎隐私预览，以及重算 token 后返回完整 JSON 的纯合并。旧原文不能覆盖清除标记，外部标记不能代替本机清除确认；当前原始事件、修订及审计元数据保留。此模块尚未接产品 Store／API／统计／UI，Web 仍导入导出 JSON v2，私人实例与启动候选不变。宿主完整 1535 项通过；最后严格 JSON 边界调整后定向 24 项与类型检查通过；构建、8 项主题及文档链接检查通过。最终提交的远端 CI 另行核对。
+2026-10-22 接续 FR-11／LM-006 的[指定回忆原答清除](../design/answer-clearing.md)：ACLEAR-02C1 已在独立 v3 内核加入重放凭证退休。清除及重复清除在同一事务中将同 namespace 的导入／身份绑定 `request_hash` 改为固定非哈希哨兵，保留操作占位、绑定、收据和学习事实；任一失败整体回滚。新增只读准备状态、遗留凭证准备及调用方事务 guard。`ready` 只针对这两类凭证，v3 候选仍为 `runtimeReady: false`。产品 schema／协议／JSON 仍为 2，私人实例及启动候选不变。宿主完整 1545 项、类型检查、独立构建、8 项主题与文档链接检查通过；最终提交的远端 CI 另行核对。
 
-下一项 ACLEAR-02C 接事务内 SQL 合并及回执、产品 Store、统计与协议。启用前必须处理 `import_receipts.request_hash`、`Store.identityToken`／`identity_bindings.request_hash` 中依赖原答的持久凭证，且隐私检查必须先于任何 duplicate 快捷分支；不能保留原答摘要或哈希 tombstone。纯 JSON token 仅临时比较新提供快照，不落盘，不代表数据库事务或持久幂等。随后再开放页面清除，不将 FR-11 或完整 LM-006 标为完成。
+下一项 ACLEAR-02C2 接真正的事务内 SQL 合并和无原答凭证契约，再接产品 Store、统计与协议。每个 duplicate 快捷分支前须在同事务调用隐私 guard，不能重新持久保存由原答、全导出或其 preview token 派生的摘要。纯 JSON token 仍只临时比较新提供快照，不落盘。随后再开放页面清除，不将 FR-11 或完整 LM-006 标为完成。
+
+此前 ACLEAR-02B2 的独立 JSON v3 解析／序列化、隐私预览及完整纯合并已交付：`1e7d270`／[CI 39734361444](https://github.com/wolfhawkld/living-memory/actions/runs/39734361444) 的 1535 项 Node／HTTP、33 项远端浏览器、8 项主题与构建全部通过。它阻断旧原文覆盖标记和外部标记代替本机确认，尚未接入 Web JSON 导入／导出。
 
 此前 ACLEAR-02B1 的完整实例离线迁移与往返已交付：`4267099`／[CI 39728639421](https://github.com/wolfhawkld/living-memory/actions/runs/39728639421) 的 1511 项 Node／HTTP、33 项远端浏览器、8 项主题与构建全部通过。显式 `restore --learning-schema 3` 可生成保留清除状态的隔离候选；默认仍到 v2，v3 报告 `runtimeReady: false`，当前服务不能启动或激活连接器。
 

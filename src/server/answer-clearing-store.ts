@@ -13,6 +13,23 @@ export interface AnswerClearingStoreOptions {
   namespace: string;
   now?: () => Date;
 }
+/** Reserved non-hash marker; contains no answer, digest, event identity or clearing timestamp. */
+export const ANSWER_CLEARING_RETIRED_CREDENTIAL = 'answer-clearing:credential-retired:v1';
+export interface ReplayPrivacyStatus {
+  /** Readiness of these two credential families only, not product/runtime readiness. */
+  status: 'ready' | 'repair-required';
+  clearedObservations: number;
+  activeImportCredentials: number;
+  activeIdentityCredentials: number;
+  retiredImportCredentials: number;
+  retiredIdentityCredentials: number;
+}
+export interface ReplayPrivacyPreparation {
+  status: 'prepared' | 'already-ready';
+  /** Credentials changed in this call, not cumulative totals. */
+  retiredImportCredentials: number;
+  retiredIdentityCredentials: number;
+}
 const failure = (suffix: string, status = 503) => new AnswerClearingStoreError(`ANSWER_CLEARING_${suffix}`, status);
 const invalid = () => failure('DATA_INVALID');
 const LEARNING_FIELDS = ['task', 'scenario', 'scenarioRevisit', 'applicability', 'confidence', 'confidenceAt', 'cue', 'outcome', 'basis'];
@@ -56,8 +73,8 @@ function observation(row: Record<string, unknown>): PrivacyObservation {
 }
 
 /**
- * ACLEAR-02A only: a caller-owned, verified schema 3 connection. No runtime, migration,
- * API, import or existing Store calls this module yet. It never opens or closes a database.
+ * Independent schema 3 kernel, including ACLEAR-02C1 credential retirement.
+ * Product runtime/API/import writers do not call it yet. Never opens or closes a database.
  */
 export class AnswerClearingStore {
   private readonly db: DatabaseSync;
@@ -84,6 +101,61 @@ export class AnswerClearingStore {
     try { return this.read(eventId); }
     catch (error) { if (error instanceof AnswerClearingStoreError) throw error; throw invalid(); }
   }
+  /** All counts come from one SQL snapshot; never reads or returns old credential text. */
+  getReplayPrivacyStatus(): ReplayPrivacyStatus {
+    try {
+      const row = this.db.prepare(`SELECT
+        (SELECT COUNT(*) FROM main.observations WHERE namespace=? AND answer_cleared_at IS NOT NULL) AS clearedObservations,
+        (SELECT COUNT(*) FROM main.import_receipts WHERE namespace=? AND request_hash<>?) AS activeImportCredentials,
+        (SELECT COUNT(*) FROM main.identity_bindings WHERE namespace=? AND request_hash<>?) AS activeIdentityCredentials,
+        (SELECT COUNT(*) FROM main.import_receipts WHERE namespace=? AND request_hash=?) AS retiredImportCredentials,
+        (SELECT COUNT(*) FROM main.identity_bindings WHERE namespace=? AND request_hash=?) AS retiredIdentityCredentials`).get(
+        this.namespace, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
+        this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
+        this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
+        this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
+      )!;
+      const count = (key: string): number => {
+        const value = row[key];
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw invalid();
+        return value;
+      };
+      const counts = {
+        clearedObservations: count('clearedObservations'), activeImportCredentials: count('activeImportCredentials'),
+        activeIdentityCredentials: count('activeIdentityCredentials'), retiredImportCredentials: count('retiredImportCredentials'),
+        retiredIdentityCredentials: count('retiredIdentityCredentials'),
+      };
+      return Object.freeze({ status: counts.clearedObservations > 0
+        && counts.activeImportCredentials + counts.activeIdentityCredentials > 0 ? 'repair-required' : 'ready', ...counts });
+    } catch { throw invalid(); }
+  }
+  private retireOperationCredentials(): Pick<ReplayPrivacyPreparation, 'retiredImportCredentials' | 'retiredIdentityCredentials'> {
+    if (!this.db.isTransaction) throw failure('TRANSACTION_REQUIRED');
+    // No dependency index exists for legacy digests: conservatively retire the whole namespace.
+    const imports = this.db.prepare(`UPDATE main.import_receipts SET request_hash=? WHERE namespace=? AND request_hash<>?`)
+      .run(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL);
+    const identities = this.db.prepare(`UPDATE main.identity_bindings SET request_hash=? WHERE namespace=? AND request_hash<>?`)
+      .run(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL);
+    return { retiredImportCredentials: Number(imports.changes), retiredIdentityCredentials: Number(identities.changes) };
+  }
+  /** Explicit repair for a candidate cleared by an older kernel. No clock or source-data changes. */
+  prepareReplayPrivacy(): ReplayPrivacyPreparation {
+    let ownsTransaction = false;
+    try {
+      this.db.exec('BEGIN IMMEDIATE'); ownsTransaction = true;
+      const status = this.getReplayPrivacyStatus();
+      const counts = status.status === 'repair-required' ? this.retireOperationCredentials()
+        : { retiredImportCredentials: 0, retiredIdentityCredentials: 0 };
+      const receipt: ReplayPrivacyPreparation = Object.freeze({ status: status.status === 'repair-required'
+        ? 'prepared' : 'already-ready', ...counts });
+      this.db.exec('COMMIT'); ownsTransaction = false;
+      return receipt;
+    } catch (error) {
+      if (ownsTransaction) { try { this.db.exec('ROLLBACK'); } catch { /* Preserve a fixed error. */ } }
+      if (error instanceof AnswerClearingStoreError) throw error;
+      throw failure('WRITE_FAILED');
+    }
+  }
   clear(input: unknown): AnswerClearingReceipt {
     let eventId: string;
     try { eventId = parseAnswerClearingRequest(input).observationEventId; }
@@ -108,6 +180,8 @@ export class AnswerClearingStore {
           WHERE namespace=? AND event_id=? AND answer_cleared_at IS NULL`).run(receipt.clearedAt, this.namespace, eventId);
         if (result.changes !== 1) throw invalid();
       }
+      // Also repair previously cleared parents; never replace their first marker or inspect old digests.
+      this.retireOperationCredentials();
       this.db.exec('COMMIT'); ownsTransaction = false;
       return receipt;
     } catch (error) {
@@ -131,6 +205,24 @@ export class AnswerClearingStore {
       if (!this.db.isTransaction) throw failure('TRANSACTION_REQUIRED');
       const parent = this.read(eventId);
       if (parent?.answer === null) throw new AnswerClearingStoreError('ANSWER_CLEARED', 409);
+    } catch (error) { if (error instanceof AnswerClearingStoreError) throw error; throw invalid(); }
+  }
+  /**
+   * Necessary gate before future operation duplicate shortcuts. Callers must hold BEGIN IMMEDIATE;
+   * isTransaction cannot identify its mode. This does not compare payloads or establish idempotency.
+   */
+  assertOperationReplayAllowed(kind: 'import' | 'identity', operationId: string): void {
+    if (kind !== 'import' && kind !== 'identity') throw failure('INVALID_REQUEST', 400);
+    const id = target(operationId);
+    try {
+      if (!this.db.isTransaction) throw failure('TRANSACTION_REQUIRED');
+      if (this.getReplayPrivacyStatus().status !== 'ready') throw failure('REPLAY_PREPARATION_REQUIRED', 409);
+      const row = kind === 'import'
+        ? this.db.prepare('SELECT request_hash=? AS retired FROM main.import_receipts WHERE namespace=? AND import_id=?')
+          .get(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, id)
+        : this.db.prepare('SELECT request_hash=? AS retired FROM main.identity_bindings WHERE namespace=? AND operation_id=?')
+          .get(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, id);
+      if (row?.retired === 1) throw failure('OPERATION_RETIRED', 409);
     } catch (error) { if (error instanceof AnswerClearingStoreError) throw error; throw invalid(); }
   }
 }
