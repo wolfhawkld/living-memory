@@ -1,6 +1,6 @@
 # 清除指定回忆的原回答
 
-更新：2026-10-22。对应 FR-11／LM-006：主动保存的回答片段应能查看与清除。**独立清除内核、离线迁移、JSON v3 纯合并，以及 ACLEAR-02C1 的重放凭证退休与准备检查已实现；删除 API 和界面尚未开放。** 当前产品仍使用学习 schema 2、HTTP 协议 2、学习 JSON v2；独立模块未接入 Web，显式生成的 schema 3 隔离候选仍不能由当前服务启动。本轮不升级或操作运行中的私人实例及已有启动候选。
+更新：2026-10-22。对应 FR-11／LM-006：主动保存的回答片段应能查看与清除。**独立清除内核、离线迁移、JSON v3 纯合并与凭证退休已实现；ACLEAR-02C2A 已将现行 v2 导入 SQL 提取为产品实际使用的共用仓库。删除 API 和界面尚未开放。** 当前产品仍使用学习 schema 2、HTTP 协议 2、学习 JSON v2，v3 SQL 导入尚未接通；显式生成的 schema 3 隔离候选仍不能由当前服务启动。本轮不升级或操作运行中的私人实例及已有启动候选。
 
 本项只处理一条已保存概念解释或场景调用 `Observation` 的 `answer`，包括数据库原字段、请求载荷中的机械副本以及当前可控的同条浏览器副本。它与[自评更正、暂不采用和恢复采用](observation-revisions.md)分开；清除原答不等于把当时的回答改成空白、不等于脑中回忆，也不撤销练习发生的事实。
 
@@ -154,9 +154,17 @@ token 覆盖标记、当前修订和事件占位、映射、概念、选项及�
 
 存在清除标记且仍有 active 凭证时为 `repair-required`；没有清除标记时不因正常 active 凭证要求退休。这里的 `ready` 仅表示这两类旧凭证满足当前准备条件，**不是产品 `runtimeReady`**，也不保证未来写入方不会重新保存原答摘要。未来写入方须先取得 `BEGIN IMMEDIATE` 再调用 guard；当前 `isTransaction` 检查只判断有无事务，不能辨别事务模式。schema DDL 和迁移行为不变，v3 候选仍为 `runtimeReady: false`；产品运行链、私人实例和启动候选不变。
 
-#### ACLEAR-02C2 及之后
+#### ACLEAR-02C2A：现行 v2 导入 SQL 共用仓库
 
-后续真正接通事务内 SQL 导入与回执时，必须建立不依赖原答的凭证契约，禁止再次持久保存由 answer、全导出或其预览 token 派生的 hash；任何 duplicate 快捷分支之前必须先在同事务调用隐私 guard。02C1 没有接通这些产品写入方，不改写现行 v2 历史，也不把独立 JSON token 落盘。随后完成 Store 所有读写与占位检查、统计隐私门槛及排除计数、协议 v3 和客户端握手，再开放 API／Web。
+[LearningImportRepository](../../src/server/learning-import-repository.ts)承接原 Store 的全部导入 SQL，包括两项练习导入；`Store.commitImport` 已实际委托此实现，原 writer 主体移除。九类事件的 `findEvent` 占位查询及少量 writer 前置／链尾查询也共用同一实现，Store 只作薄委托；两个公开练习导入方法继续保留，但写入要求调用方事务。此阶段复用现产品 v2 路径，不是另外复制一套未来导入器。
+
+仓库只读核验已经初始化的 `current-v2`，拒绝空库、legacy 或 schema 3；不创建 schema、namespace、连接或事务。`applyPreparedImport` 要求已有调用方事务，缺少时抛 503 `IMPORT_TRANSACTION_REQUIRED`；计划必须为 v2、允许导入、匹配 namespace，观察必须为字符串原答且没有清除标记，不符抛 400 `IMPORT_INVALID_DATA`。调用方仍须先取得 `BEGIN IMMEDIATE` 并在锁内重新规划；仓库不验证预览 token，也不负责备份、receipt、提交或回滚。事务存在检查不能辨别锁模式，不能替代调用方责任。
+
+[共用纯编解码](../../src/server/store-codecs.ts)保留 v2 规范载荷、日期与练习读取容错；[独立 StoreError](../../src/server/store-error.ts)由原 Store 路径重新导出，既有错误类身份不变。主读取、`readSnapshot`、统计、协议和 JSON 格式均未改，产品仍运行 v2，v3 候选仍为 `runtimeReady: false`；私人实例、服务和启动候选未操作。
+
+#### ACLEAR-02C2B 及之后
+
+下一项在同一仓库补经审查的 v3 分支、同连接完整 snapshot、真实 SQL 事务导入与不依赖原答的凭证契约。禁止再次持久保存由 answer、全导出或其预览 token 派生的 hash；任何 duplicate 快捷分支之前必须先在同事务调用隐私 guard。02C2A 的 v2 提取没有启用这些 v3 能力，不改写现行 v2 历史，也不把独立 JSON token 落盘。随后完成 Store 其他读写与占位检查、统计隐私门槛及排除计数、协议 v3 和客户端握手，再开放 API／Web。
 
 ## ACLEAR-03：界面与可控副本
 
@@ -175,7 +183,8 @@ token 覆盖标记、当前修订和事件占位、映射、概念、选项及�
 | ACLEAR-02B1 完整实例迁移 | 已实现：显式离线 v1／v2 到新目录 v3 候选，bundle 内层版本、清除后完整往返及失败 stage 清理；当前服务仍不支持候选启动 |
 | ACLEAR-02B2 JSON 与纯合并 | 已实现独立 v3 解析／序列化、共用预览、重算 token 后的完整 JSON 合并及四向隐私检查；未接产品，SQL 事务与回执移至 02C |
 | ACLEAR-02C1 凭证退休与准备 | 已实现独立 v3 内核的原子退休、遗留准备、只读状态与调用方事务 guard；未接产品写入方 |
-| ACLEAR-02C2 产品存储与协议后续 | 待开发：事务内导入与无原答凭证、每个 duplicate 前 guard、Store 所有读写／全局占位、统计隐私门槛与排除计数、协议 3 及客户端握手 |
+| ACLEAR-02C2A v2 导入仓库提取 | 已实现：Store 真实委托共用导入 SQL、占位与必要前置查询；仍只支持 v2，要求调用方事务 |
+| ACLEAR-02C2B v3 导入与后续 | 待开发：同仓库 v3 分支、同连接完整 snapshot、事务内导入与无原答凭证、每个 duplicate 前 guard；其后接其他 Store 读写、统计、协议与客户端 |
 | ACLEAR-03 API／Web 与缓存 | 待开发：权限、明确确认、结果未知恢复、水位、迟到响应、跨页队列与 checkpoint |
 | ACLEAR-04 集成与交付 | 待开发：非空 JSON／bundle 往返、跨页／多标签、已有修订链与飞书计数、远端浏览器回归；私人升级和真实删除单独安排 |
 
@@ -187,6 +196,6 @@ ACLEAR-02B1 的[迁移测试](../../tests/answer-clearing-migration.test.ts)核�
 
 ACLEAR-02B1 的提交 `4267099`／[CI 39728639421](https://github.com/wolfhawkld/living-memory/actions/runs/39728639421) 已通过 1511 项 Node／HTTP、33 项远端浏览器、8 项主题与构建。ACLEAR-02B2 的[JSON 测试](../../tests/answer-clearing-json.test.ts)及[修订类型测试](../../tests/answer-clearing-revision-types.test.ts)覆盖独立纯模块；最终提交 `1e7d270`／[CI 39734361444](https://github.com/wolfhawkld/living-memory/actions/runs/39734361444) 的 1535 项 Node／HTTP、33 项远端浏览器、8 项主题与构建全部通过。
 
-ACLEAR-02C1 的[凭证测试](../../tests/answer-clearing-replay.test.ts)核对双 namespace、真实原答派生摘要、首次／重复退休、遗留准备、动态状态、固定错误、失败回滚和调用方事务保护；已有清除测试补齐非空凭证的双进程竞争，bundle 测试验证真实旧凭证的迁移与退休后完整往返。宿主全量 1545 项 Node／HTTP、类型检查、独立临时目录构建、8 项主题及本地文档链接检查通过；最终提交对应的远端 CI 另行核对，不沿用前一轮结果。
+ACLEAR-02C1 的[凭证测试](../../tests/answer-clearing-replay.test.ts)核对双 namespace、真实原答派生摘要、首次／重复退休、遗留准备、动态状态、固定错误、失败回滚和调用方事务保护；已有清除测试补齐非空凭证的双进程竞争，bundle 测试验证真实旧凭证的迁移与退休后完整往返。提交 `a046000`／[CI 39739507446](https://github.com/wolfhawkld/living-memory/actions/runs/39739507446) 的 1545 项 Node／HTTP、33 项远端浏览器、8 项主题与构建全部通过。ACLEAR-02C2A 暂停 checkpoint 已记录新增 8 项定向测试、类型检查、独立构建及 8 项主题检查通过，本地全量 1553 项全部通过（失败、取消、跳过均为 0，约 86.8 秒）。恢复时原 `/tmp` 日志已不存在，本处据暂停记录补记，未重跑全量或重新核读日志。当前恢复文档与提交审查收尾，精确提交及其远端 CI 尚待核对，不沿用上轮结果。
 
 完整逻辑清除只保证当前应用记录及之后的受控导出；SQLite WAL、释放页、系统快照、旧归档和外部副本不是本功能已擦除的对象。软件正确性与记忆收益分别验收。

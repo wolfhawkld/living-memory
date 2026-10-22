@@ -10,7 +10,7 @@ import type {
   PracticeSource,
 } from '../shared/practice.js';
 import type { Exposure } from '../shared/types.js';
-import { StoreError } from './store.js';
+import { StoreError } from './store-error.js';
 
 const EVENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const PRACTICE_KINDS = ['detail', 'comparison', 'scenario'] as const;

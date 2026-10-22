@@ -97,7 +97,9 @@ P0-1～P0-3 的软件实现已完成；P0-4 的回忆观察流程已实现，但
 
 ### LM-006 — 可靠学习记录
 
-- **2026-10-22 重放凭证退休**：[ACLEAR-02C1](../design/answer-clearing.md#aclear-02c1已有凭证退休与事务内-guard)已加入独立 v3 内核：首次及重复清除均原子退休同 namespace 的两类 `request_hash`，保留占位、绑定、receipt 与学习事实；支持只读状态、遗留准备及调用方事务 guard。`ready` 不等于运行就绪，不改 schema DDL／迁移或私人实例，产品仍为 schema／协议／JSON 2。后续 02C2 接事务导入与不依赖原答的凭证，所有 duplicate 前检查隐私。宿主完整 1545 项、类型检查、独立构建及 8 项主题通过；远端 CI 按最终提交另行核对，不将完整 LM-006 标为完成。
+- **2026-10-22 v2 导入仓库提取**：[ACLEAR-02C2A](../design/answer-clearing.md#aclear-02c2a现行-v2-导入-sql-共用仓库)已将现产品导入 SQL、练习导入及占位／必要前置查询提取到共用仓库，Store 真实委托且旧主体移除；共用 codec 和错误身份保持兼容。仓库要求调用方事务且仅支持已初始化 v2，不负责 token、备份或回执。产品读取／统计／协议仍为 v2，私人实例、服务和启动候选不变。02C2B 再补同仓库 v3 分支、同连接完整 snapshot 与无原答凭证；暂停 checkpoint 已记录新增 8 项定向、类型检查、独立构建、8 项主题及本地全量 1553 项通过（失败、取消、跳过均为 0）；恢复时原临时日志已不存在，本处据暂停记录补记，未重跑全量或重新核读日志。当前恢复收尾，精确提交与远端 CI 尚待核对，不将 v3 SQL 导入或完整 LM-006 标为完成。
+
+- **2026-10-22 重放凭证退休**：[ACLEAR-02C1](../design/answer-clearing.md#aclear-02c1已有凭证退休与事务内-guard)已加入独立 v3 内核：首次及重复清除均原子退休同 namespace 的两类 `request_hash`，保留占位、绑定、receipt 与学习事实；支持只读状态、遗留准备及调用方事务 guard。`ready` 不等于运行就绪，不改 schema DDL／迁移或私人实例。`a046000`／[CI 39739507446](https://github.com/wolfhawkld/living-memory/actions/runs/39739507446) 的 1545 项 Node／HTTP、33 项远端浏览器、8 项主题与构建全部通过。
 
 - **2026-10-22 独立 JSON 与纯合并**：[ACLEAR-02B2](../design/answer-clearing.md#aclear-02b2独立学习-json-v3-与纯合并)已实现 v3 解析／序列化、共用引擎隐私预览及重算 token 后的完整 JSON 合并；阻断旧原文恢复与外部标记代替本机确认，保留原始事件、修订及本地审计元数据。未接 SQL／Store／协议／统计／UI，Web 仍使用 JSON v2，私人实例及启动候选不变。`1e7d270`／[CI 39734361444](https://github.com/wolfhawkld/living-memory/actions/runs/39734361444) 的 1535 项 Node／HTTP、33 项远端浏览器、8 项主题与构建全部通过。
 

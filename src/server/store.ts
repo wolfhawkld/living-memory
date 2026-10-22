@@ -1,9 +1,17 @@
 import { createHash } from 'node:crypto';
 import { ActivityStore } from './activity-store.js';
+import { LearningImportRepository } from './learning-import-repository.js';
+import {
+  canonicalJson, parseDate, normalizeDate, finiteNumber, normalizeObservationEvidenceMode,
+  parseStoredPracticeScenario, assertPracticeScenarioContract, practiceCardFromRow,
+  correctionRequestPayload, correctionFromRow, relationReviewRequestPayload, relationReviewFromRow,
+} from './store-codecs.js';
+import { StoreError } from './store-error.js';
+export { StoreError } from './store-error.js';
 import { inspectLearningSchema, initializeLearningSchemaV2 } from './learning-schema.js';
 import { ObservationRevisionStore, ObservationRevisionStoreError } from './observation-revision-store.js';
 import { projectObservationAssessments } from '../core/observation-revisions.js';
-import { parseObservationRevisionRequest, type ObservationRevision } from '../shared/observation-revisions.js';
+import type { ObservationRevision } from '../shared/observation-revisions.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -49,7 +57,6 @@ import type {
   PracticeCardRequest,
   PracticeData,
   PracticeScenarioAttempt,
-  PracticeScenarioCard,
   PracticeSource,
 } from '../shared/practice.js';
 import {
@@ -76,9 +83,9 @@ import { buildLearningOverview } from '../core/learning-overview.js';
 import type { GraphLink } from '../shared/types.js';
 import { buildLearningProgress } from '../core/learning-progress.js';
 import { buildScenarioPromptPage, type ScenarioPromptCursor } from '../core/scenario-prompts.js';
-import { buildImportPlan, type PreparedConfig, type PreparedImport } from './import-plan.js';
+import { buildImportPlan, type PreparedImport } from './import-plan.js';
 import { parsePracticeAttemptRequest, parsePracticeCardRequest } from './practice-validation.js';
-import { parseRelationReviewRequest as parseSharedRelationReviewRequest, parseRelationReviewBasis, validateRelationReviewBasis, relationReviewMatches, type RelationReviewRequest, type RelationReviewEvent, type RelationReviewHistory, type RelationReviewStatus } from '../shared/relation-reviews.js';
+import { parseRelationReviewRequest as parseSharedRelationReviewRequest, validateRelationReviewBasis, relationReviewMatches, type RelationReviewRequest, type RelationReviewEvent, type RelationReviewHistory, type RelationReviewStatus } from '../shared/relation-reviews.js';
 import { parseRelationSuggestion } from '../shared/relation-suggestions.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 7;
@@ -111,18 +118,6 @@ interface ConceptHistoryCursor {
   eventId: string;
 }
 
-export class StoreError extends Error {
-  readonly code: string;
-  readonly status: number;
-
-  constructor(code: string, message: string, status = 400) {
-    super(message);
-    this.name = 'StoreError';
-    this.code = code;
-    this.status = status;
-  }
-}
-
 /** Read-only startup gate; call before source registration or credential rotation. */
 export function assertLearningDatabaseReady(dbPath: string): void {
   if (!existsSync(dbPath)) return;
@@ -133,34 +128,12 @@ export function assertLearningDatabaseReady(dbPath: string): void {
   } finally { db.close(); }
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
-}
-
 function sameCanonicalJson(left: unknown, right: unknown): boolean {
   return canonicalJson(left) === canonicalJson(right);
 }
 
 function iso(value: Date): string {
   return value.toISOString();
-}
-
-function parseDate(value: string, code = 'INVALID_DATE'): number {
-  if (!isValidInstant(value)) throw new StoreError(code, '时间格式无效，请使用带时区的 ISO 8601 时间。');
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) throw new StoreError(code, '时间格式无效，请使用 ISO 8601 时间。');
-  return parsed;
-}
-
-function normalizeDate(value: string, code = 'INVALID_DATE'): string {
-  return new Date(parseDate(value, code)).toISOString();
-}
-
-function finiteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function computeDecay(anchorAt: string | null, halfLifeDays: number, asOf: string): { elapsedDays: number | null; decay: number | null } {
@@ -298,18 +271,6 @@ function normalizeApplicationRequest(value: unknown): ApplicationRecordRequest {
   };
 }
 
-/** Missing mode stays missing; an empty legacy answer is not mental evidence. */
-function normalizeObservationEvidenceMode(value: unknown, answer: unknown): Observation['evidenceMode'] {
-  if (value === undefined) return undefined;
-  if (value !== 'mental' && value !== 'written') {
-    throw new StoreError('INVALID_EVIDENCE_MODE', 'evidenceMode 必须是 mental 或 written。');
-  }
-  if (value === 'mental' && answer !== '') {
-    throw new StoreError('INVALID_EVIDENCE_MODE', 'mental 观察的 answer 必须是空字符串。');
-  }
-  return value;
-}
-
 /**
  * Validate and normalize optional evidence attached to an observation. Keeping
  * this at the request boundary means old observations can remain NULL in the
@@ -398,40 +359,6 @@ function parseStoredLearning(value: string | null): LearningEvidence | undefined
   } catch {
     // A corrupt optional evidence blob must not make the complete history
     // unreadable. The original observation remains available without it.
-    return undefined;
-  }
-}
-
-function parseStoredPracticeSources(value: string): PracticeSource[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new StoreError('PRACTICE_DATA_CORRUPT', '练习卡来源数据无效，请检查本地数据。', 500);
-  }
-  if (!Array.isArray(parsed)) throw new StoreError('PRACTICE_DATA_CORRUPT', '练习卡来源数据无效，请检查本地数据。', 500);
-  return parsed.map((item) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      throw new StoreError('PRACTICE_DATA_CORRUPT', '练习卡来源数据无效，请检查本地数据。', 500);
-    }
-    const record = item as Record<string, unknown>;
-    if (typeof record.conceptId !== 'string' || !record.conceptId
-        || typeof record.sourceRevision !== 'string' || !record.sourceRevision) {
-      throw new StoreError('PRACTICE_DATA_CORRUPT', '练习卡来源数据无效，请检查本地数据。', 500);
-    }
-    return { conceptId: record.conceptId, sourceRevision: record.sourceRevision };
-  });
-}
-
-function parseStoredPracticeScenario<T extends PracticeScenarioCard | PracticeScenarioAttempt>(value: string | null): T | undefined {
-  if (!value) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-    return parsed as T;
-  } catch {
-    // Scenario metadata is optional for old rows. Keep a damaged optional
-    // blob from making the rest of a private practice history unreadable.
     return undefined;
   }
 }
@@ -610,6 +537,7 @@ export class Store {
   readonly observationRevisions: ObservationRevisionStore;
   private readonly now: () => Date;
   private readonly db: DatabaseSync;
+  private readonly importRepository: LearningImportRepository;
   private readSequence = 0;
 
   constructor(options: StoreOptions) {
@@ -624,6 +552,7 @@ export class Store {
       if (schema.kind === 'legacy-v1') throw new StoreError('LEARNING_SCHEMA_UPGRADE_REQUIRED', '请先离线备份并恢复到新目录，完成学习数据库升级。', 503);
       if (schema.kind === 'empty') initializeLearningSchemaV2(this.db, { recordedAt: iso(this.now()) });
       this.initialize();
+      this.importRepository = new LearningImportRepository({ db: this.db, namespace: this.namespace, now: this.now });
       this.activity = new ActivityStore({ db: this.db, namespace: this.namespace, now: this.now });
       this.observationRevisions = new ObservationRevisionStore({ db: this.db, namespace: this.namespace, now: this.now,
         getObservation: (_namespace, eventId) => this.getObservationsStrict().find(event => event.eventId === eventId) ?? null,
@@ -674,8 +603,7 @@ export class Store {
   }
 
   getConfigAt(revision: number): ModelConfig | null {
-    const row = this.db.prepare('SELECT model_version, revision, half_life_days FROM config_history WHERE namespace = ? AND revision = ?').get(this.namespace, revision) as { model_version: string; revision: number; half_life_days: number } | undefined;
-    return row ? { modelVersion: MODEL_VERSION, halfLifeDays: row.half_life_days, revision: row.revision } : null;
+    return this.importRepository.getConfigAt(revision);
   }
 
   getConfigHistory(): ModelConfig[] {
@@ -725,24 +653,7 @@ export class Store {
   }
 
   private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | 'relation-review' | 'observation-revision' | PracticeEventKind; payload: string } | null {
-    const revision = this.db.prepare('SELECT request_payload FROM observation_revisions WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    if (revision) return { kind: 'observation-revision', payload: revision.request_payload };
-    const anchor = this.db.prepare('SELECT request_payload FROM anchors WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    if (anchor) return { kind: 'anchor', payload: anchor.request_payload };
-    const observation = this.db.prepare('SELECT request_payload FROM observations WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    if (observation) return { kind: 'observation', payload: observation.request_payload };
-    const retention = this.db.prepare('SELECT request_payload FROM retentions WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    if (retention) return { kind: 'retention', payload: retention.request_payload };
-    const application = this.db.prepare('SELECT request_payload FROM applications WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    if (application) return { kind: 'application', payload: application.request_payload };
-    const correction = this.db.prepare('SELECT request_payload FROM corrections WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    if (correction) return { kind: 'correction', payload: correction.request_payload };
-    const relationReview = this.db.prepare('SELECT request_payload FROM relation_reviews WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    if (relationReview) return { kind: 'relation-review', payload: relationReview.request_payload };
-    const card = this.db.prepare('SELECT request_payload FROM practice_cards WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    if (card) return { kind: 'practice-card', payload: card.request_payload };
-    const attempt = this.db.prepare('SELECT request_payload FROM practice_attempts WHERE namespace = ? AND event_id = ?').get(this.namespace, eventId) as { request_payload: string } | undefined;
-    return attempt ? { kind: 'practice-attempt', payload: attempt.request_payload } : null;
+    return this.importRepository.findEvent(eventId);
   }
 
   hasEvent(eventId: string): boolean {
@@ -1039,31 +950,7 @@ export class Store {
     attempt: PracticeAttemptRequest,
     recordedAt: string,
   ): void {
-    if (card.kind !== 'scenario') {
-      if (attempt.scenario !== undefined) {
-        throw new StoreError('PRACTICE_SCENARIO_MISMATCH', '非 scenario 练习卡不能保存 scenario 分阶段回答。');
-      }
-      return;
-    }
-    if (!card.scenario) {
-      throw new StoreError('PRACTICE_SCENARIO_INVALID', 'scenario 练习卡缺少场景卡片信息。', 500);
-    }
-    if (!attempt.scenario) {
-      throw new StoreError('PRACTICE_SCENARIO_MISSING', 'scenario 练习卡必须保存 scenario 分阶段回答。');
-    }
-    const upperBound = parseDate(recordedAt, 'PRACTICE_SCENARIO_TIME');
-    for (const stage of attempt.scenario.stages) {
-      if (parseDate(stage.answeredAt, 'PRACTICE_SCENARIO_TIME') > upperBound
-          || (stage.hintShownAt !== null && parseDate(stage.hintShownAt, 'PRACTICE_SCENARIO_TIME') > upperBound)) {
-        throw new StoreError('PRACTICE_SCENARIO_TIME', '场景阶段时间不能晚于记录时间。');
-      }
-      if (stage.stage === 'structure' && !card.scenario.structureHint.trim()) {
-        throw new StoreError('PRACTICE_SCENARIO_HINT_MISSING', '场景卡没有可供 structure 阶段显示的提示。');
-      }
-      if (stage.stage === 'name' && !card.scenario.nameHint.trim()) {
-        throw new StoreError('PRACTICE_SCENARIO_HINT_MISSING', '场景卡没有可供 name 阶段显示的提示。');
-      }
-    }
+    return assertPracticeScenarioContract(card, attempt, recordedAt);
   }
 
   private practiceCardFromRow(row: {
@@ -1082,25 +969,7 @@ export class Store {
     scenario_json: string | null;
     paused: number;
   }): PracticeCardEvent {
-    const scenario = row.scenario_json
-      ? parseStoredPracticeScenario<PracticeScenarioCard>(row.scenario_json)
-      : undefined;
-    return {
-      eventId: row.event_id,
-      cardId: row.card_id,
-      previousEventId: row.previous_event_id,
-      occurredAt: row.occurred_at,
-      recordedAt: row.recorded_at,
-      kind: row.kind,
-      title: row.title,
-      prompt: row.prompt,
-      referenceAnswer: row.reference_answer,
-      referenceNotes: row.reference_notes,
-      sources: parseStoredPracticeSources(row.sources_json),
-      sourceChecked: true,
-      paused: row.paused === 1,
-      ...(scenario ? { scenario } : {}),
-    };
+    return practiceCardFromRow(row);
   }
 
   private practiceAttemptFromRow(row: {
@@ -1156,25 +1025,7 @@ export class Store {
     scenario_json: string | null;
     paused: number;
   } | undefined {
-    return this.db.prepare(`SELECT event_id, card_id, previous_event_id, occurred_at, recorded_at,
-      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, scenario_json, paused
-      FROM practice_cards WHERE namespace = ? AND card_id = ?
-      ORDER BY rowid DESC LIMIT 1`).get(this.namespace, cardId) as {
-        event_id: string;
-        card_id: string;
-        previous_event_id: string | null;
-        occurred_at: string;
-        recorded_at: string;
-        kind: 'detail' | 'comparison' | 'scenario';
-        title: string;
-        prompt: string;
-        reference_answer: string;
-        reference_notes: string;
-        sources_json: string;
-        source_checked: number;
-        scenario_json: string | null;
-        paused: number;
-      } | undefined;
+    return this.importRepository.latestPracticeCardRow(cardId);
   }
 
   /** Return the latest append-only revision of one private practice card. */
@@ -1381,110 +1232,12 @@ export class Store {
    * The helper deliberately does not open a nested transaction.
    */
   insertImportedPracticeCard(event: PracticeCardEvent): void {
-    const request = parsePracticeCardRequest(event);
-    this.ensureEventId(request.eventId);
-    const recordedAt = normalizeDate(event.recordedAt, 'IMPORT_INVALID_DATA');
-    if (parseDate(recordedAt) < parseDate(request.occurredAt)) {
-      throw new StoreError('IMPORT_INVALID_DATA', `practice card ${event.eventId} 的 recordedAt 早于 occurredAt。`);
-    }
-    const requestPayload = canonicalJson(request);
-    if (this.eventAlreadyImported(event.eventId, 'practice-card', requestPayload)) return;
-    const tail = this.latestPracticeCardRow(request.cardId);
-    if (request.previousEventId === null) {
-      if (tail) throw new StoreError('IMPORT_CONFLICT', `practice card ${event.eventId} 的 cardId 已有尾记录。`, 409);
-    } else if (!tail || tail.event_id !== request.previousEventId) {
-      throw new StoreError('IMPORT_CONFLICT', `practice card ${event.eventId} 的链式前置记录不匹配。`, 409);
-    } else if (parseDate(request.occurredAt) < parseDate(tail.occurred_at)) {
-      throw new StoreError('IMPORT_INVALID_DATA', `practice card ${event.eventId} 的 occurredAt 早于前置记录。`);
-    }
-    this.db.prepare(`INSERT INTO practice_cards(
-      namespace, event_id, card_id, previous_event_id, occurred_at, recorded_at,
-      kind, title, prompt, reference_answer, reference_notes, sources_json,
-      source_checked, scenario_json, paused, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      this.namespace,
-      request.eventId,
-      request.cardId,
-      request.previousEventId,
-      request.occurredAt,
-      recordedAt,
-      request.kind,
-      request.title,
-      request.prompt,
-      request.referenceAnswer,
-      request.referenceNotes,
-      canonicalJson(request.sources),
-      1,
-      request.scenario ? canonicalJson(request.scenario) : null,
-      request.paused ? 1 : 0,
-      requestPayload,
-    );
-    for (const source of request.sources) {
-      this.db.prepare(`INSERT INTO practice_card_sources(
-        namespace, card_event_id, card_id, concept_id, source_revision
-      ) VALUES (?, ?, ?, ?, ?)`).run(
-        this.namespace, request.eventId, request.cardId, source.conceptId, source.sourceRevision,
-      );
-    }
+    return this.importRepository.insertImportedPracticeCard(event);
   }
 
   /** Restore an answer inside the caller's existing import transaction. */
   insertImportedPracticeAttempt(event: PracticeAttempt): void {
-    const request = parsePracticeAttemptRequest(event);
-    this.ensureEventId(request.eventId);
-    const recordedAt = normalizeDate(event.recordedAt, 'IMPORT_INVALID_DATA');
-    if (parseDate(recordedAt) < parseDate(request.answeredAt)) {
-      throw new StoreError('IMPORT_INVALID_DATA', `practice attempt ${event.eventId} 的 recordedAt 早于 answeredAt。`);
-    }
-    const requestPayload = canonicalJson(request);
-    if (this.eventAlreadyImported(event.eventId, 'practice-attempt', requestPayload)) return;
-    const cardRow = this.db.prepare(`SELECT event_id, card_id, previous_event_id, occurred_at, recorded_at,
-      kind, title, prompt, reference_answer, reference_notes, sources_json, source_checked, scenario_json, paused
-      FROM practice_cards WHERE namespace = ? AND event_id = ?`).get(this.namespace, request.cardEventId) as {
-        event_id: string;
-        card_id: string;
-        previous_event_id: string | null;
-        occurred_at: string;
-        recorded_at: string;
-        kind: 'detail' | 'comparison' | 'scenario';
-        title: string;
-        prompt: string;
-        reference_answer: string;
-        reference_notes: string;
-        sources_json: string;
-        source_checked: number;
-        scenario_json: string | null;
-        paused: number;
-      } | undefined;
-    if (!cardRow) throw new StoreError('IMPORT_CONFLICT', `practice attempt ${event.eventId} 引用的练习卡版本不存在。`, 409);
-    if (cardRow.card_id !== request.cardId) throw new StoreError('IMPORT_INVALID_DATA', `practice attempt ${event.eventId} 的 cardId 与卡片版本不一致。`);
-    if (parseDate(request.answeredAt) < parseDate(cardRow.occurred_at)) {
-      throw new StoreError('IMPORT_INVALID_DATA', `practice attempt ${event.eventId} 的 answeredAt 早于卡片发生时间。`);
-    }
-    const card = this.practiceCardFromRow(cardRow);
-    this.assertPracticeScenarioContract(card, request, recordedAt);
-    this.db.prepare(`INSERT INTO practice_attempts(
-      namespace, event_id, card_id, card_event_id, answered_at, recorded_at,
-      answer, confidence, confidence_at, exposure, observed_exposure, cue, outcome,
-      check_notes, scenario_json, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      this.namespace,
-      request.eventId,
-      request.cardId,
-      request.cardEventId,
-      request.answeredAt,
-      recordedAt,
-      request.answer,
-      request.confidence,
-      request.confidenceAt,
-      request.exposure,
-      request.observedExposure ? 1 : 0,
-      request.cue,
-      request.outcome,
-      request.checkNotes,
-      request.scenario ? canonicalJson(request.scenario) : null,
-      requestPayload,
-    );
+    return this.importRepository.insertImportedPracticeAttempt(event);
   }
 
   getAnchorById(eventId: string): StoredAnchor | null {
@@ -1524,24 +1277,7 @@ export class Store {
 
   /** Return the latest retention toggle for a concept, including an inactive clear. */
   getRetention(conceptId: string, asOf?: string): RetentionEvent | null {
-    const constraint = asOf ? ' AND occurred_at <= ?' : '';
-    const parameters = asOf ? [this.namespace, conceptId, normalizeDate(asOf)] : [this.namespace, conceptId];
-    const row = this.db.prepare(`SELECT event_id, concept_id, source_revision, occurred_at, recorded_at,
-      active, previous_event_id
-      FROM retentions WHERE namespace = ? AND concept_id = ?${constraint}
-      ORDER BY rowid DESC LIMIT 1`).get(...parameters) as {
-        event_id: string; concept_id: string; source_revision: string; occurred_at: string; recorded_at: string;
-        active: number; previous_event_id: string | null;
-      } | undefined;
-    return row ? {
-      eventId: row.event_id,
-      conceptId: row.concept_id,
-      sourceRevision: row.source_revision,
-      occurredAt: row.occurred_at,
-      recordedAt: row.recorded_at,
-      active: Boolean(row.active),
-      previousEventId: row.previous_event_id,
-    } : null;
+    return this.importRepository.getRetention(conceptId, asOf);
   }
 
   getAnchors(): AnchorEvent[] {
@@ -1817,16 +1553,7 @@ export class Store {
   }
 
   private correctionRequestPayload(request: CorrectionRequest): string {
-    return canonicalJson({
-      eventId: request.eventId,
-      applicationEventId: request.applicationEventId,
-      conceptId: request.conceptId,
-      sourceRevision: request.sourceRevision,
-      occurredAt: request.occurredAt,
-      previousEventId: request.previousEventId,
-      status: request.status,
-      note: request.note,
-    });
+    return correctionRequestPayload(request);
   }
 
   private correctionFromRow(row: {
@@ -1840,46 +1567,11 @@ export class Store {
     status: CorrectionStatus;
     note: string;
   }): CorrectionEvent {
-    return {
-      eventId: row.event_id,
-      applicationEventId: row.application_event_id,
-      conceptId: row.concept_id,
-      sourceRevision: row.source_revision,
-      occurredAt: row.occurred_at,
-      recordedAt: row.recorded_at,
-      previousEventId: row.previous_event_id,
-      status: row.status,
-      note: row.note,
-    };
+    return correctionFromRow(row);
   }
 
   private correctionTail(applicationEventId: string): CorrectionEvent | null {
-    const rows = this.db.prepare(`
-      SELECT c.event_id, c.application_event_id, c.concept_id, c.source_revision,
-        c.occurred_at, c.recorded_at, c.previous_event_id, c.status, c.note
-      FROM corrections AS c
-      WHERE c.namespace = ? AND c.application_event_id = ?
-        AND NOT EXISTS (
-          SELECT 1 FROM corrections AS child
-          WHERE child.namespace = c.namespace
-            AND child.application_event_id = c.application_event_id
-            AND child.previous_event_id = c.event_id
-        )
-    `).all(this.namespace, applicationEventId) as Array<{
-      event_id: string;
-      application_event_id: string;
-      concept_id: string;
-      source_revision: string;
-      occurred_at: string;
-      recorded_at: string;
-      previous_event_id: string | null;
-      status: CorrectionStatus;
-      note: string;
-    }>;
-    if (rows.length > 1) {
-      throw new StoreError('CORRECTION_CONFLICT', '修正历史链出现多个当前尾节点，无法安全追加。', 409);
-    }
-    return rows.length === 1 ? this.correctionFromRow(rows[0]) : null;
+    return this.importRepository.correctionTail(applicationEventId);
   }
 
   getCorrections(conceptId?: string, applicationEventId?: string): CorrectionEvent[] {
@@ -2032,16 +1724,7 @@ export class Store {
   }
 
   private relationReviewRequestPayload(request: RelationReviewRequest): string {
-    return canonicalJson({
-      eventId: request.eventId,
-      applicationEventId: request.applicationEventId,
-      conceptId: request.conceptId,
-      basis: request.basis,
-      occurredAt: request.occurredAt,
-      previousEventId: request.previousEventId,
-      status: request.status,
-      note: request.note,
-    });
+    return relationReviewRequestPayload(request);
   }
 
   private relationReviewFromRow(row: {
@@ -2055,46 +1738,11 @@ export class Store {
     status: RelationReviewStatus;
     note: string;
   }): RelationReviewEvent {
-    return {
-      eventId: row.event_id,
-      applicationEventId: row.application_event_id,
-      conceptId: row.concept_id,
-      basis: parseRelationReviewBasis(JSON.parse(row.basis_json)),
-      occurredAt: row.occurred_at,
-      recordedAt: row.recorded_at,
-      previousEventId: row.previous_event_id,
-      status: row.status,
-      note: row.note,
-    };
+    return relationReviewFromRow(row);
   }
 
   private relationReviewTail(applicationEventId: string): RelationReviewEvent | null {
-    const rows = this.db.prepare(`
-      SELECT c.event_id, c.application_event_id, c.concept_id, c.basis_json,
-        c.occurred_at, c.recorded_at, c.previous_event_id, c.status, c.note
-      FROM relation_reviews AS c
-      WHERE c.namespace = ? AND c.application_event_id = ?
-        AND NOT EXISTS (
-          SELECT 1 FROM relation_reviews AS child
-          WHERE child.namespace = c.namespace
-            AND child.application_event_id = c.application_event_id
-            AND child.previous_event_id = c.event_id
-        )
-    `).all(this.namespace, applicationEventId) as Array<{
-      event_id: string;
-      application_event_id: string;
-      concept_id: string;
-      basis_json: string;
-      occurred_at: string;
-      recorded_at: string;
-      previous_event_id: string | null;
-      status: RelationReviewStatus;
-      note: string;
-    }>;
-    if (rows.length > 1) {
-      throw new StoreError('RELATION_REVIEW_CONFLICT', '关系复核历史链出现多个当前尾节点，无法安全追加。', 409);
-    }
-    return rows.length === 1 ? this.relationReviewFromRow(rows[0]) : null;
+    return this.importRepository.relationReviewTail(applicationEventId);
   }
 
   getRelationReviews(conceptId?: string, applicationEventId?: string): RelationReviewEvent[] {
@@ -3137,337 +2785,6 @@ export class Store {
     return this.buildPreparedImport(data, options, source, concepts).preview;
   }
 
-  private importEventConflict(eventId: string): never {
-    throw new StoreError('IMPORT_CONFLICT', `导入事件 ${eventId} 与当前知识空间中的记录不一致。`, 409);
-  }
-
-  private eventAlreadyImported(eventId: string, kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | 'relation-review' | PracticeEventKind, requestPayload: string): boolean {
-    const existing = this.findEvent(eventId);
-    if (!existing) return false;
-    if (existing.kind !== kind || existing.payload !== requestPayload) this.importEventConflict(eventId);
-    return true;
-  }
-
-  private insertImportedConfig(config: PreparedConfig): void {
-    if (!Number.isSafeInteger(config.revision) || config.revision < 1
-        || !finiteNumber(config.halfLifeDays) || typeof config.modelVersion !== 'string'
-        || !isValidInstant(config.recordedAt)) {
-      throw new StoreError('IMPORT_INVALID_DATA', '导入配置历史包含无效字段。');
-    }
-    const existing = this.db.prepare(`SELECT model_version, half_life_days, recorded_at
-      FROM config_history WHERE namespace = ? AND revision = ?`).get(this.namespace, config.revision) as {
-        model_version: string; half_life_days: number; recorded_at: string;
-      } | undefined;
-    if (existing) {
-      if (existing.model_version !== config.modelVersion || existing.half_life_days !== config.halfLifeDays) {
-        throw new StoreError('IMPORT_CONFLICT', `配置 revision ${config.revision} 与当前知识空间内容不一致。`, 409);
-      }
-      return;
-    }
-    this.db.prepare(`INSERT INTO config_history(namespace, revision, model_version, half_life_days, recorded_at)
-      VALUES (?, ?, ?, ?, ?)`).run(this.namespace, config.revision, config.modelVersion, config.halfLifeDays, config.recordedAt);
-  }
-
-  private insertImportedAnchor(event: AnchorEvent, request: ReviewRequest): void {
-    this.ensureEventId(event.eventId);
-    if (request.eventId !== event.eventId || request.conceptId !== event.conceptId
-        || request.sourceRevision !== event.sourceRevision || request.kind !== event.kind
-        || (request.kind === 'estimated' && request.occurredAt === undefined)) {
-      throw new StoreError('IMPORT_INVALID_DATA', `anchor ${event.eventId} 的原始请求与事件不一致。`);
-    }
-    const requestPayload = canonicalJson(request);
-    if (this.eventAlreadyImported(event.eventId, 'anchor', requestPayload)) return;
-    if (!isValidInstant(event.occurredAt) || !isValidInstant(event.recordedAt)) {
-      throw new StoreError('IMPORT_INVALID_DATA', `anchor ${event.eventId} 的时间字段无效。`);
-    }
-    this.db.prepare(`INSERT INTO anchors(namespace, event_id, concept_id, source_revision, occurred_at, recorded_at, kind, request_payload)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      this.namespace, event.eventId, event.conceptId, event.sourceRevision,
-      event.occurredAt, event.recordedAt, event.kind, requestPayload,
-    );
-  }
-
-  private observationRequestPayload(event: Observation): string {
-    const request = {
-      eventId: event.eventId,
-      conceptId: event.conceptId,
-      sourceRevision: event.sourceRevision,
-      observedAt: event.observedAt,
-      configRevision: event.configRevision,
-      anchorEventId: event.anchorEventId,
-      answer: event.answer,
-      rating: event.rating,
-      exposure: event.exposure,
-      observedExposure: event.observedExposure,
-      ...(event.learning ? { learning: event.learning } : {}),
-      ...(event.evidenceMode !== undefined ? { evidenceMode: normalizeObservationEvidenceMode(event.evidenceMode, event.answer) } : {}),
-    };
-    return canonicalJson(request);
-  }
-
-  private insertImportedObservationRevision(event: ObservationRevision): void {
-    // Already replanned under this transaction's write lock. Preserve imported receipts.
-    const { conceptId: _concept, sourceRevision: _source, recordedAt: _receipt, ...fields } = event;
-    const request = parseObservationRevisionRequest(fields);
-    if (this.findEvent(event.eventId)) this.importEventConflict(event.eventId);
-    this.db.prepare(`INSERT INTO observation_revisions(namespace,event_id,observation_event_id,previous_event_id,concept_id,source_revision,
-      occurred_at,recorded_at,action,reason,note,assessment_json,request_payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      this.namespace, event.eventId, event.observationEventId, event.previousEventId, event.conceptId, event.sourceRevision,
-      event.occurredAt, event.recordedAt, event.action, event.reason, event.note ?? null,
-      event.action === 'revise' ? JSON.stringify(event.assessment) : null, JSON.stringify(request));
-  }
-
-  private insertImportedObservation(event: Observation): void {
-    this.ensureEventId(event.eventId);
-    const requestPayload = this.observationRequestPayload(event);
-    if (this.eventAlreadyImported(event.eventId, 'observation', requestPayload)) return;
-    if (!isValidInstant(event.observedAt) || !isValidInstant(event.recordedAt)
-        || !Number.isSafeInteger(event.configRevision) || !finiteNumber(event.halfLifeDays)
-        || (event.elapsedDays !== null && !finiteNumber(event.elapsedDays))
-        || (event.decay !== null && !finiteNumber(event.decay))) {
-      throw new StoreError('IMPORT_INVALID_DATA', `observation ${event.eventId} 的字段无效。`);
-    }
-    if (!this.getConfigAt(event.configRevision)) {
-      throw new StoreError('IMPORT_CONFLICT', `observation ${event.eventId} 引用的配置 revision 不存在。`, 409);
-    }
-    this.db.prepare(`INSERT INTO observations(
-      namespace, event_id, concept_id, source_revision, observed_at, recorded_at,
-      config_revision, half_life_days, anchor_event_id, elapsed_days, decay,
-      answer, rating, exposure, observed_exposure, learning_json, evidence_mode, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      this.namespace,
-      event.eventId,
-      event.conceptId,
-      event.sourceRevision,
-      event.observedAt,
-      event.recordedAt,
-      event.configRevision,
-      event.halfLifeDays,
-      event.anchorEventId,
-      event.elapsedDays,
-      event.decay,
-      event.answer,
-      event.rating,
-      event.exposure,
-      event.observedExposure ? 1 : 0,
-      event.learning ? canonicalJson(event.learning) : null,
-      event.evidenceMode ?? null,
-      requestPayload,
-    );
-  }
-
-  private insertImportedRetention(event: RetentionEvent): void {
-    this.ensureEventId(event.eventId);
-    const requestPayload = canonicalJson({
-      eventId: event.eventId,
-      conceptId: event.conceptId,
-      sourceRevision: event.sourceRevision,
-      occurredAt: event.occurredAt,
-      active: event.active,
-      previousEventId: event.previousEventId,
-    });
-    if (this.eventAlreadyImported(event.eventId, 'retention', requestPayload)) return;
-    if (!isValidInstant(event.occurredAt) || !isValidInstant(event.recordedAt)) {
-      throw new StoreError('IMPORT_INVALID_DATA', `retention ${event.eventId} 的时间字段无效。`);
-    }
-    const currentPreviousEventId = this.getRetention(event.conceptId)?.eventId ?? null;
-    if (event.previousEventId !== currentPreviousEventId) {
-      throw new StoreError('IMPORT_CONFLICT', `retention ${event.eventId} 的链式前置记录不匹配。`, 409);
-    }
-    this.db.prepare(`INSERT INTO retentions(
-      namespace, event_id, concept_id, source_revision, occurred_at, recorded_at,
-      active, previous_event_id, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      this.namespace,
-      event.eventId,
-      event.conceptId,
-      event.sourceRevision,
-      event.occurredAt,
-      event.recordedAt,
-      event.active ? 1 : 0,
-      event.previousEventId,
-      requestPayload,
-    );
-  }
-
-  private insertImportedApplication(event: ApplicationRecord): void {
-    this.ensureEventId(event.eventId);
-    const requestPayload = canonicalJson({
-      eventId: event.eventId,
-      conceptId: event.conceptId,
-      sourceRevision: event.sourceRevision,
-      occurredAt: event.occurredAt,
-      kind: event.kind,
-      context: event.context,
-      content: event.content,
-      outcome: event.outcome,
-      assistance: event.assistance,
-      result: event.result,
-      limitations: event.limitations,
-      insight: event.insight,
-      correction: event.correction,
-      references: event.references,
-      ...(event.relationSuggestion === undefined ? {} : { relationSuggestion: parseRelationSuggestion(event.relationSuggestion, event) }),
-    });
-    if (this.eventAlreadyImported(event.eventId, 'application', requestPayload)) return;
-    if (!isValidInstant(event.occurredAt) || !isValidInstant(event.recordedAt)) {
-      throw new StoreError('IMPORT_INVALID_DATA', `application ${event.eventId} 的时间字段无效。`);
-    }
-    this.db.prepare(`INSERT INTO applications(
-      namespace, event_id, concept_id, source_revision, occurred_at, recorded_at,
-      kind, context, content, outcome, assistance, result, limitations,
-      insight, correction, references_text, relation_suggestion_json, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      this.namespace,
-      event.eventId,
-      event.conceptId,
-      event.sourceRevision,
-      event.occurredAt,
-      event.recordedAt,
-      event.kind,
-      event.context,
-      event.content,
-      event.outcome,
-      event.assistance,
-      event.result,
-      event.limitations,
-      event.insight,
-      event.correction,
-      event.references,
-      event.relationSuggestion ? canonicalJson(event.relationSuggestion) : null,
-      requestPayload,
-    );
-  }
-
-  private insertImportedCorrection(event: CorrectionEvent): void {
-    this.ensureEventId(event.eventId);
-    this.ensureEventId(event.applicationEventId);
-    if (event.previousEventId !== null) this.ensureEventId(event.previousEventId);
-    const requestPayload = this.correctionRequestPayload({
-      eventId: event.eventId,
-      applicationEventId: event.applicationEventId,
-      conceptId: event.conceptId,
-      sourceRevision: event.sourceRevision,
-      occurredAt: event.occurredAt,
-      previousEventId: event.previousEventId,
-      status: event.status,
-      note: event.note,
-    });
-    if (this.eventAlreadyImported(event.eventId, 'correction', requestPayload)) return;
-    if (!isValidInstant(event.occurredAt) || !isValidInstant(event.recordedAt)
-        || !isOneOf(CORRECTION_STATUSES, event.status)
-        || typeof event.note !== 'string' || event.note.length > 4000) {
-      throw new StoreError('IMPORT_INVALID_DATA', `correction ${event.eventId} 的字段无效。`);
-    }
-    const occurredAtMs = parseDate(event.occurredAt);
-    const recordedAtMs = parseDate(event.recordedAt);
-    if (recordedAtMs < occurredAtMs) {
-      throw new StoreError('IMPORT_INVALID_DATA', `correction ${event.eventId} 的 recordedAt 早于 occurredAt。`);
-    }
-    const parent = this.db.prepare(`SELECT concept_id, source_revision, occurred_at, correction
-      FROM applications WHERE namespace = ? AND event_id = ?`).get(this.namespace, event.applicationEventId) as {
-        concept_id: string;
-        source_revision: string;
-        occurred_at: string;
-        correction: string;
-      } | undefined;
-    if (!parent) throw new StoreError('IMPORT_CONFLICT', `correction ${event.eventId} 引用的应用记录不存在。`, 409);
-    if (parent.concept_id !== event.conceptId) {
-      throw new StoreError('IMPORT_CONFLICT', `correction ${event.eventId} 的 conceptId 与应用记录不一致。`, 409);
-    }
-    if (!parent.correction.trim()) {
-      throw new StoreError('IMPORT_INVALID_DATA', `correction ${event.eventId} 引用的应用记录没有 correction 内容。`);
-    }
-    if (event.status === 'resolved' && event.sourceRevision === parent.source_revision) {
-      throw new StoreError('IMPORT_CONFLICT', `correction ${event.eventId} 的 resolved sourceRevision 未发生变化。`, 409);
-    }
-    const tail = this.correctionTail(event.applicationEventId);
-    if (event.previousEventId !== (tail?.eventId ?? null)) {
-      throw new StoreError('IMPORT_CONFLICT', `correction ${event.eventId} 的链式前置记录不匹配。`, 409);
-    }
-    const lowerBound = tail ? parseDate(tail.occurredAt) : parseDate(parent.occurred_at);
-    if (occurredAtMs < lowerBound) {
-      throw new StoreError('IMPORT_INVALID_DATA', `correction ${event.eventId} 的 occurredAt 早于父记录或前置修正。`);
-    }
-    this.db.prepare(`INSERT INTO corrections(
-      namespace, event_id, application_event_id, concept_id, source_revision,
-      occurred_at, recorded_at, previous_event_id, status, note, request_payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      this.namespace,
-      event.eventId,
-      event.applicationEventId,
-      event.conceptId,
-      event.sourceRevision,
-      event.occurredAt,
-      event.recordedAt,
-      event.previousEventId,
-      event.status,
-      event.note,
-      requestPayload,
-    );
-  }
-
-  private insertImportedRelationReview(event: RelationReviewEvent): void {
-    const request = parseRelationReviewRequest({ eventId: event.eventId, applicationEventId: event.applicationEventId, conceptId: event.conceptId, occurredAt: event.occurredAt, previousEventId: event.previousEventId, status: event.status, note: event.note, basis: event.basis });
-    const payload = this.relationReviewRequestPayload(request);
-    if (this.eventAlreadyImported(event.eventId, 'relation-review', payload)) return;
-    if (!isValidInstant(event.recordedAt) || parseDate(event.recordedAt) < parseDate(request.occurredAt)) throw new StoreError('IMPORT_INVALID_DATA', '关系复核记录时间无效。');
-    const parent = this.db.prepare(`SELECT concept_id, source_revision, occurred_at, relation_suggestion_json
-      FROM applications WHERE namespace = ? AND event_id = ?`).get(this.namespace, request.applicationEventId) as {
-        concept_id: string; source_revision: string; occurred_at: string; relation_suggestion_json: string | null;
-      } | undefined;
-    if (!parent || parent.concept_id !== request.conceptId) throw new StoreError('IMPORT_CONFLICT', '关系复核父记录不存在或主概念不一致。', 409);
-    if (!parent.relation_suggestion_json) throw new StoreError('IMPORT_INVALID_DATA', '关系复核父记录没有关系建议。');
-    const suggestion = parseRelationSuggestion(JSON.parse(parent.relation_suggestion_json), { conceptId: parent.concept_id, sourceRevision: parent.source_revision });
-    try { validateRelationReviewBasis(suggestion, request.basis); } catch (error) { throw new StoreError('IMPORT_INVALID_DATA', error instanceof Error ? error.message : '关系复核依据无效。'); }
-    if (request.status === 'resolved' && !relationReviewMatches(suggestion, request.basis)) throw new StoreError('IMPORT_CONFLICT', '已采纳关系复核的历史依据不匹配。', 409);
-    const tail = this.relationReviewTail(request.applicationEventId);
-    if (request.previousEventId !== (tail?.eventId ?? null)) throw new StoreError('IMPORT_CONFLICT', '关系复核前置记录不匹配。', 409);
-    if (parseDate(request.occurredAt) < parseDate(tail?.occurredAt ?? parent.occurred_at)) throw new StoreError('IMPORT_INVALID_DATA', '关系复核早于父记录或前置复核。');
-    this.db.prepare(`INSERT INTO relation_reviews(namespace, event_id, application_event_id, concept_id, basis_json, occurred_at, recorded_at, previous_event_id, status, note, request_payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(this.namespace, request.eventId, request.applicationEventId, request.conceptId, canonicalJson(request.basis), request.occurredAt, event.recordedAt, request.previousEventId, request.status, request.note, payload);
-  }
-
-  private mergeImportedConcepts(concepts: Array<Pick<Concept, 'id' | 'title' | 'source'>>): void {
-    for (const concept of concepts) {
-      if (typeof concept.id !== 'string' || !concept.id.trim()
-          || typeof concept.title !== 'string' || !concept.source
-          || typeof concept.source.path !== 'string' || typeof concept.source.revision !== 'string') {
-        throw new StoreError('IMPORT_INVALID_DATA', '导入概念 manifest 包含无效字段。');
-      }
-      this.db.prepare(`INSERT INTO imported_concepts(namespace, concept_id, title, source_path, source_revision)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(namespace, concept_id) DO UPDATE SET
-          title = excluded.title,
-          source_path = excluded.source_path,
-          source_revision = excluded.source_revision`).run(
-        this.namespace, concept.id, concept.title, concept.source.path, concept.source.revision,
-      );
-    }
-  }
-
-  private writeImportedLayout(layout: Layout): void {
-    this.db.prepare(`INSERT INTO layouts(namespace, layout_json, recorded_at) VALUES (?, ?, ?)
-      ON CONFLICT(namespace) DO UPDATE SET layout_json = excluded.layout_json, recorded_at = excluded.recorded_at`).run(
-      this.namespace, canonicalJson(layout), iso(this.now()),
-    );
-  }
-
-  private writeImportedReviewPlan(plan: import('../shared/review-plan.js').ReviewPlan): void {
-    this.db.prepare(`INSERT INTO review_plans(namespace, revision, daily_budget, concepts_json, recorded_at)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(namespace) DO UPDATE SET
-        revision = excluded.revision,
-        daily_budget = excluded.daily_budget,
-        concepts_json = excluded.concepts_json,
-        recorded_at = excluded.recorded_at`).run(
-      this.namespace,
-      plan.revision,
-      plan.dailyBudget,
-      canonicalJson(plan.concepts),
-      iso(this.now()),
-    );
-  }
-
   commitImport(
     request: ImportCommitRequest,
     source: ExportData['source'],
@@ -3512,30 +2829,7 @@ export class Store {
         throw new StoreError('IMPORT_BACKUP_FAILED', '导入前备份未返回有效标识。', 503);
       }
 
-      for (const config of prepared.newConfigs) this.insertImportedConfig(config);
-      this.mergeImportedConcepts(prepared.metadataConcepts);
-      for (const anchor of prepared.newAnchors) {
-        const requestForAnchor = prepared.anchorRequests[anchor.eventId] ?? {
-          eventId: anchor.eventId,
-          conceptId: anchor.conceptId,
-          sourceRevision: anchor.sourceRevision,
-          kind: anchor.kind,
-          occurredAt: anchor.occurredAt,
-        };
-        this.insertImportedAnchor(anchor, requestForAnchor);
-      }
-      for (const observation of prepared.newObservations) this.insertImportedObservation(observation);
-      for (const revision of prepared.newObservationRevisions) this.insertImportedObservationRevision(revision);
-      for (const retention of prepared.newRetentions) this.insertImportedRetention(retention);
-      for (const application of prepared.newApplications) this.insertImportedApplication(application);
-      for (const review of prepared.newRelationReviews) this.insertImportedRelationReview(review);
-      for (const correction of prepared.newCorrections) this.insertImportedCorrection(correction);
-      // Practice history is restored in the same transaction, but remains in
-      // its own tables so it cannot affect Observation-based aggregates.
-      for (const card of prepared.newPracticeCards) this.insertImportedPracticeCard(card);
-      for (const attempt of prepared.newPracticeAttempts) this.insertImportedPracticeAttempt(attempt);
-      if (request.options?.restoreLayout && prepared.mergedLayout) this.writeImportedLayout(prepared.mergedLayout);
-      if (request.options?.restoreReviewPlan && prepared.mergedReviewPlan) this.writeImportedReviewPlan(prepared.mergedReviewPlan);
+      this.importRepository.applyPreparedImport(prepared, normalizeImportOptions(request.options));
 
       const accepted: ImportReceipt = {
         status: 'accepted',
