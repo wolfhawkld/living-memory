@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { api, configureSessionScope, writeJson } from '../src/web/api.ts';
+import { api, configureSessionScope, writeJson, subscribeToSessionRecovery } from '../src/web/api.ts';
 import { runCli } from '../src/cli/index.js';
 import { LEARNING_PROTOCOL_HEADER, supportsLearningProtocol } from '../src/shared/learning-protocol.js';
 const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -11,7 +11,7 @@ const response = (data: unknown, status = 200) => new Response(JSON.stringify(da
 test('Web refuses missing, old or future server handshake before any protected request, including direct API reads', async () => {
   const original = globalThis.fetch;
   try {
-    for (const version of [undefined, 1, 3, '2', null]) {
+    for (const version of [undefined, 1, 4, '2', '3', [2, 3], null]) {
       configureSessionScope(null);
       const calls: string[] = [];
       globalThis.fetch = async input => { calls.push(String(input)); return response({ writeToken: 'protocol-client-token', sourceId: 'synthetic-source', learningProtocolVersion: version }); };
@@ -41,7 +41,7 @@ test('Web coalesces handshake, sends protocol on JSON/blob, and never renews or 
     const before = calls.length;
     await assert.rejects(writeJson('/observations', {}, session.writeToken, session.sourceId), { code: 'LEARNING_PROTOCOL_REQUIRED', status: 426, retryable: false });
     assert.equal(calls.length, before + 1);
-    for (const call of calls) assert.equal(call.headers.get(LEARNING_PROTOCOL_HEADER), '2');
+    for (const call of calls) assert.equal(call.headers.get(LEARNING_PROTOCOL_HEADER), call.path === '/api/session' ? null : '2');
   } finally { globalThis.fetch = original; configureSessionScope(null); }
 });
 
@@ -69,7 +69,7 @@ test('late coalesced Web handshake cannot release requests after logout or sourc
 test('CLI requires declared protocol 2 before refresh or local receipts and sends it on successful writes', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'lm-cli-protocol-'));
   try {
-    for (const version of [undefined, 1, 3, '2']) {
+    for (const version of [undefined, 1, 4, '2', '3', [2, 3]]) {
       const calls: string[] = [];
       await assert.rejects(runCli(['refresh'], { stateDir, env: {}, fetchImpl: async input => {
         calls.push(new URL(String(input)).pathname); return response({ writeToken: 'token', sourceId: 'source', learningProtocolVersion: version });
@@ -83,7 +83,7 @@ test('CLI requires declared protocol 2 before refresh or local receipts and send
     } });
     assert.equal((result as { command: string }).command, 'refresh');
     assert.deepEqual(calls.map(call => call.path), ['/api/session', '/api/refresh']);
-    for (const call of calls) assert.equal(call.headers.get(LEARNING_PROTOCOL_HEADER), '2');
+    for (const call of calls) assert.equal(call.headers.get(LEARNING_PROTOCOL_HEADER), call.path === '/api/session' ? null : '2');
   } finally { rmSync(stateDir, { recursive: true, force: true }); }
 });
 
@@ -147,4 +147,138 @@ test('an explicit session from a different source or instance never authorizes t
       assert.deepEqual(calls, ['/api/session']);
     }
   } finally { globalThis.fetch = original; configureSessionScope(null); }
+});
+
+test('Web uses the confirmed 2 or 3 on JSON, blob and admin reads/writes; bootstrap declares no version', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const version of [2, 3] as const) {
+      configureSessionScope(null);
+      const session = { writeToken: `dual-token-${version}`, sourceId: `dual-source-${version}`, instanceId: `dual-instance-${version}`, learningProtocolVersion: version };
+      const calls: Array<{ path: string; headers: Headers; method: string }> = [];
+      globalThis.fetch = async (input, init) => {
+        const path = String(input); calls.push({ path, headers: new Headers(init?.headers), method: init?.method ?? 'GET' });
+        return response(path === '/api/session' ? session : { synthetic: true });
+      };
+      const confirmed = await api.getSession(); configureSessionScope(confirmed);
+      await api.getSnapshot(undefined, session.sourceId);
+      await api.exportData(session.writeToken, session.sourceId);
+      await api.adminRequest('/admin/users', { method: 'GET' }, session.writeToken, session.sourceId);
+      await api.adminRequest('/admin/users', { method: 'POST', body: JSON.stringify({ username: 'synthetic' }) }, session.writeToken, session.sourceId);
+      assert.equal(confirmed.learningProtocolVersion, version);
+      for (const call of calls) assert.equal(call.headers.get(LEARNING_PROTOCOL_HEADER), call.path === '/api/session' ? null : String(version));
+      assert.deepEqual(calls.filter(call => call.path === '/api/admin/users').map(call => call.method), ['GET', 'POST']);
+    }
+  } finally { globalThis.fetch = original; configureSessionScope(null); }
+});
+
+test('same-source protocol switch invalidates late reads and prevents a previously bound token from authorizing v3', async () => {
+  const original = globalThis.fetch;
+  try {
+    const a = { writeToken: 'version-a-token', sourceId: 'version-source', instanceId: 'version-instance', learningProtocolVersion: 2 as const };
+    const b = { ...a, writeToken: 'version-b-token', learningProtocolVersion: 3 as const };
+    configureSessionScope(a);
+    let current: typeof a | typeof b = a;
+    let release!: (value: Response) => void;
+    const late = new Promise<Response>(resolve => { release = resolve; }); const paths: string[] = [];
+    globalThis.fetch = async input => { const path = String(input); paths.push(path); return path === '/api/session' ? response(current) : late; };
+    await api.getSession();
+    const old = api.adminRequest('/admin/users', {}, a.writeToken, a.sourceId);
+    const rejected = assert.rejects(old, { code: 'INSTANCE_MISMATCH' });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    current = b; const confirmed = await api.getSession(); configureSessionScope(confirmed);
+    release(response({ secret: 'OLD_RESPONSE_MUST_NOT_BE_CONSUMED' })); await rejected;
+    const count = paths.filter(path => path === '/api/admin/users').length;
+    await assert.rejects(api.adminRequest('/admin/users', { method: 'POST', body: '{}' }, a.writeToken, a.sourceId), { code: 'LEARNING_PROTOCOL_REQUIRED' });
+    assert.equal(paths.filter(path => path === '/api/admin/users').length, count);
+  } finally { globalThis.fetch = original; configureSessionScope(null); }
+});
+
+test('a protocol switch while consuming JSON or blob cannot publish the old response', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const kind of ['json', 'blob'] as const) {
+      const a = { writeToken: `consume-${kind}-2`, sourceId: `consume-${kind}`, instanceId: `consume-${kind}`, learningProtocolVersion: 2 as const };
+      const b = { ...a, writeToken: `consume-${kind}-3`, learningProtocolVersion: 3 as const };
+      configureSessionScope(a);
+      let current: typeof a | typeof b = a;
+      let consumed!: () => void; const started = new Promise<void>(resolve => { consumed = resolve; });
+      let finish!: (value: any) => void; const body = new Promise(resolve => { finish = resolve; });
+      globalThis.fetch = async input => {
+        if (String(input) === '/api/session') return response(current);
+        const result = response({});
+        Object.defineProperty(result, kind, { value: () => { consumed(); return body; } });
+        return result;
+      };
+      await api.getSession();
+      const pending = kind === 'json' ? api.getSnapshot() : api.exportData(a.writeToken, a.sourceId);
+      const rejected = assert.rejects(pending, { code: 'INSTANCE_MISMATCH' });
+      await started; current = b; configureSessionScope(await api.getSession());
+      finish(kind === 'json' ? { private: 'old-answer' } : new Blob(['old-answer'])); await rejected;
+    }
+  } finally { globalThis.fetch = original; configureSessionScope(null); }
+});
+
+test('401 recovery cannot replay a frozen write after a protocol change and a token cannot change its declared version', async () => {
+  const original = globalThis.fetch;
+  try {
+    const a = { writeToken: 'renew-version-2', sourceId: 'renew-version-source', instanceId: 'renew-version-instance', learningProtocolVersion: 2 as const };
+    configureSessionScope(a); let sessions = 0; let writes = 0;
+    globalThis.fetch = async input => {
+      if (String(input) === '/api/session') return response(++sessions === 1 ? a : { ...a, writeToken: 'renew-version-3', learningProtocolVersion: 3 });
+      writes++; return response({ error: { code: 'TOKEN_REQUIRED', message: 'expired' } }, 401);
+    };
+    await api.getSession();
+    await assert.rejects(writeJson('/observations', { eventId: 'frozen-event' }, a.writeToken, a.sourceId), { code: 'INSTANCE_MISMATCH' });
+    assert.equal(writes, 1); assert.equal(sessions, 2);
+    configureSessionScope(null);
+    globalThis.fetch = async () => response({ ...a, learningProtocolVersion: 3 });
+    await assert.rejects(api.getSession(), { code: 'LEARNING_PROTOCOL_REQUIRED' });
+  } finally { globalThis.fetch = original; configureSessionScope(null); }
+});
+
+test('first write with an unconfirmed scope locks its initial protocol before 401 recovery', async () => {
+  const original = globalThis.fetch;
+  try {
+    const initial = { writeToken: 'unknown-scope-original', sourceId: 'unknown-scope-source' };
+    configureSessionScope(initial); let sessions = 0; let writes = 0;
+    globalThis.fetch = async input => {
+      if (String(input) === '/api/session') return response(++sessions === 1
+        ? { ...initial, learningProtocolVersion: 3 }
+        : { ...initial, writeToken: 'unknown-scope-renewed', learningProtocolVersion: 2 });
+      writes++; return response({ error: { code: 'TOKEN_REQUIRED' } }, 401);
+    };
+    await assert.rejects(writeJson('/observations', { eventId: 'unknown-frozen' }, initial.writeToken, initial.sourceId), { code: 'LEARNING_PROTOCOL_REQUIRED' });
+    assert.equal(writes, 1); assert.equal(sessions, 2);
+  } finally { globalThis.fetch = original; configureSessionScope(null); }
+});
+
+test('late error bodies cannot notify or sign out a newer scope', async () => {
+  const original = globalThis.fetch;
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const events: string[] = []; const notices: unknown[] = [];
+  const unsubscribe = subscribeToSessionRecovery(event => notices.push(event));
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { dispatchEvent: (event: Event) => { events.push(event.type); return true; } } });
+  try {
+    for (const code of ['AUTH_REQUIRED', 'SOURCE_MISMATCH', 'INSTANCE_MISMATCH']) {
+      const a = { writeToken: `error-old-${code}`, sourceId: `error-${code}`, learningProtocolVersion: 2 as const };
+      const b = { ...a, writeToken: `error-new-${code}`, learningProtocolVersion: 3 as const };
+      configureSessionScope(a);
+      let started!: () => void; const reading = new Promise<void>(resolve => { started = resolve; });
+      let resolve!: (value: unknown) => void; const body = new Promise(done => { resolve = done; });
+      globalThis.fetch = async input => {
+        if (String(input) === '/api/session') return response(a);
+        const result = response({}, 401);
+        Object.defineProperty(result, 'json', { value: () => { started(); return body; } }); return result;
+      };
+      await api.getSession();
+      const old = api.adminRequest('/admin/users', {}, a.writeToken, a.sourceId);
+      const rejected = assert.rejects(old, { code: 'INSTANCE_MISMATCH' });
+      await reading; configureSessionScope(b); resolve({ error: { code } }); await rejected;
+    }
+    assert.deepEqual(events, []); assert.deepEqual(notices, []);
+  } finally {
+    unsubscribe(); globalThis.fetch = original; configureSessionScope(null);
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow); else Reflect.deleteProperty(globalThis, 'window');
+  }
 });

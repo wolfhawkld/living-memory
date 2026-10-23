@@ -1,7 +1,6 @@
-import { LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_VERSION } from '../shared/learning-protocol';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import type { AccountDirectory, AccountStatus, AccountUser } from '../shared/accounts';
-import { api } from './api';
+import { ApiRequestError, api } from './api';
 import { ThemeProvider } from './ThemeProvider';
 import { ThemeSelector } from './ThemeSelector';
 
@@ -120,7 +119,6 @@ async function authRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
       ...init,
       headers: {
         Accept: 'application/json',
-        [LEARNING_PROTOCOL_HEADER]: String(LEARNING_PROTOCOL_VERSION),
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
         ...init.headers,
       },
@@ -151,8 +149,9 @@ function announceAuthChange(): void {
   } catch { /* BroadcastChannel is optional. */ }
 }
 
-function isAuthRequired(error: unknown): boolean {
-  return error instanceof AuthHttpError && (error.status === 401 || error.code === 'AUTH_REQUIRED' || error.code === 'SESSION_EXPIRED');
+export function isAuthRequired(error: unknown): boolean {
+  return (error instanceof AuthHttpError || error instanceof ApiRequestError)
+    && (error.status === 401 || error.code === 'AUTH_REQUIRED' || error.code === 'SESSION_EXPIRED');
 }
 
 function useAuthStatusEvents(
@@ -253,13 +252,7 @@ function AdminDialog({ open, user, onClose, onAuthRequired }: {
 
   const adminRequest = useCallback(async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
     const session = await api.getSession();
-    return authRequest<T>(path, {
-      ...init,
-      headers: {
-        ...authSessionHeaders(session),
-        ...init.headers,
-      },
-    });
+    return api.adminRequest<T>(path, init, session.writeToken, session.sourceId);
   }, []);
 
   const loadDirectory = useCallback(async () => {

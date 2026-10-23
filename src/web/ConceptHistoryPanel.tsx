@@ -3,11 +3,14 @@ import type {
   ApplicationRecord,
   AnchorEvent,
   Concept,
-  ConceptHistory,
-  ConceptHistoryEntry,
+  ConceptHistory as IntactConceptHistory,
+  ConceptHistoryEntry as IntactConceptHistoryEntry,
   MemoryState,
-  Observation,
 } from '../shared/types';
+import type { PrivacyObservation } from '../shared/answer-clearing';
+type Observation = PrivacyObservation;
+type ConceptHistory = IntactConceptHistory<PrivacyObservation>;
+type ConceptHistoryEntry = IntactConceptHistoryEntry<PrivacyObservation>;
 import type { CorrectionHistory } from '../shared/corrections';
 import { ApplicationMaterialPreview } from './ApplicationRecordDialog';
 import { ApplicationCorrectionPanel, type SaveCorrection } from './ApplicationCorrectionPanel';
@@ -120,9 +123,13 @@ function eventDate(entry: ConceptHistoryEntry): string {
 /** An answer is inserted only after the user explicitly asks to reveal it. */
 export function HistoryObservationAnswer({ event, onRevealAnswer }: HistoryObservationAnswerProps) {
   const [revealed, setRevealed] = useState(false);
+  const cleared = event.answer === null;
   if (event.evidenceMode === 'mental') return <p className="concept-history-old-note">脑中回忆，未记录原答 · 脑中自报，不计入独立成功或信心校准。</p>;
   if (!revealed) {
     return (
+      <>
+      {cleared ? <p className="concept-history-old-note">原答已清除 · 首次清除 {formatDate(event.answerClearing.clearedAt)}；保留最初自评，不计入当前回忆表现。</p> : null}
+      {!cleared || event.learning?.scenario || event.learning?.applicability ?
       <button
         type="button"
         className="concept-history-answer-toggle"
@@ -132,15 +139,16 @@ export function HistoryObservationAnswer({ event, onRevealAnswer }: HistoryObser
           onRevealAnswer();
         }}
       >
-        展开原始回答
-      </button>
+        {cleared ? '查看保留的场景与核对说明' : '展开原始回答'}
+      </button> : null}
+      </>
     );
   }
   return (
     <div className="concept-history-answer" aria-live="polite">
       {event.learning?.scenario ? <p className="concept-history-scenario">场景：{event.learning.scenario}</p> : null}
-      <span className="concept-history-answer-label">原始回答</span>
-      <p>{event.answer || '（空白回答）'}</p>
+      <span className="concept-history-answer-label">{cleared ? '原答已清除' : '原始回答'}</span>
+      {cleared ? <p>首次清除 {formatDate(event.answerClearing.clearedAt)}；原答不再可用，保留的场景与核对说明不属于本次清除范围。</p> : <p>{event.answer || '（空白回答）'}</p>}
       {event.learning?.applicability ? <p className="concept-history-scenario">核对补充：{event.learning.applicability}</p> : null}
     </div>
   );
@@ -436,6 +444,7 @@ export function ConceptHistoryPanel({
       {history ? (
         <>
           <CurrentAnchorSummary history={history} />
+          {history.observationPrivacy ? <p className="concept-history-old-note">当前概念 · 全部资料版本：已清除原答 {history.observationPrivacy.cleared} 条，其中采用中的 {history.observationPrivacy.excludedFromPerformance} 条不进入当前表现统计；原练习事实与复习消耗保留。</p> : null}
           {history.entries.length > 0 ? (
             <ol className="concept-history-timeline" aria-label="按发生时间排列的学习事件">
               {history.entries.map((entry) => (

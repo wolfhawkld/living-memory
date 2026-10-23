@@ -1,4 +1,6 @@
-import { LEARNING_PROTOCOL_VERSION, LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, supportsLearningProtocol, isLearningProtocolExempt } from '../shared/learning-protocol';
+import { LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, supportsLearningProtocol, isLearningProtocolExempt, type LearningProtocolVersion } from '../shared/learning-protocol';
+import type { PrivacyObservation } from '../shared/answer-clearing';
+import { validateConceptHistoryPrivacy, validateRevisionHistoryPrivacy, validateLearningOverviewPrivacy } from './privacy-response';
 import type {
   ApplicationRecordRequest,
   ConceptHistory,
@@ -31,7 +33,7 @@ import type { ActivityViewPage } from '../shared/activity-reference-status';
 import { PendingCoordinationError, withPendingStorageLock, withPendingSyncLock } from './pending-coordination';
 import { BULK_REQUEST_TIMEOUT_MS, RequestDeadlineError, withRequestDeadline } from './request-deadline';
 
-export type SessionResponse = LocalSession & { user?: AccountUser; learningProtocolVersion: typeof LEARNING_PROTOCOL_VERSION };
+export type SessionResponse = LocalSession & { user?: AccountUser; learningProtocolVersion: LearningProtocolVersion };
 
 export interface PendingWriteError {
   code: string;
@@ -103,7 +105,8 @@ export function subscribeToSessionRecovery(listener: (event: SessionRecoveryEven
 
 /** Token bindings are immutable: a late GET must never upgrade old credentials. */
 const tokenInstances = new Map<string, string>();
-let activeScope: { sourceId: string; instanceId: string } | null = null;
+const tokenProtocols = new Map<string, LearningProtocolVersion>();
+let activeScope: { sourceId: string; instanceId: string; learningProtocolVersion?: LearningProtocolVersion } | null = null;
 let scopeConfigured = false;
 let scopeGeneration = 0;
 let protocolConfirmation: { generation: number; session: SessionResponse } | null = null;
@@ -112,17 +115,28 @@ let protocolHandshake: ProtocolHandshake | null = null;
 function instanceError(): ApiRequestError {
   return new ApiRequestError('知识空间实例已变化，请重新加载页面后确认操作。', { code: 'INSTANCE_MISMATCH', status: 409 });
 }
+function protocolError(): ApiRequestError {
+  return new ApiRequestError(LEARNING_PROTOCOL_MESSAGE, { code: LEARNING_PROTOCOL_ERROR, status: 426 });
+}
 function bindToken(session: LocalSession): string {
   const instance = normalizeInstanceId(session.instanceId);
   const previous = tokenInstances.get(session.writeToken);
   if (previous !== undefined && previous !== instance) throw instanceError();
+  if (session.learningProtocolVersion !== undefined) {
+    if (!supportsLearningProtocol(session.learningProtocolVersion)) throw protocolError();
+    const protocol = tokenProtocols.get(session.writeToken);
+    if (protocol !== undefined && protocol !== session.learningProtocolVersion) throw protocolError();
+    tokenProtocols.set(session.writeToken, session.learningProtocolVersion);
+  }
   tokenInstances.set(session.writeToken, instance);
   return instance;
 }
 /** Only the authenticated loader commits an active scope; GET alone never does. */
 export function configureSessionScope(session: LocalSession | null): void {
-  const next = session ? { sourceId: session.sourceId.trim(), instanceId: bindToken(session) } : null;
-  if (!session || !scopeConfigured || next?.sourceId !== activeScope?.sourceId || next?.instanceId !== activeScope?.instanceId) {
+  const next = session ? { sourceId: session.sourceId.trim(), instanceId: bindToken(session),
+    learningProtocolVersion: session.learningProtocolVersion ?? tokenProtocols.get(session.writeToken) } : null;
+  if (!session || !scopeConfigured || next?.sourceId !== activeScope?.sourceId || next?.instanceId !== activeScope?.instanceId
+    || next?.learningProtocolVersion !== activeScope?.learningProtocolVersion) {
     scopeGeneration++; protocolConfirmation = null;
   }
   scopeConfigured = true;
@@ -150,14 +164,28 @@ async function getSession(): Promise<SessionResponse> {
   const session = await requestJson<SessionResponse>('/session', { cache: 'no-store' });
   if (generation !== scopeGeneration) throw instanceError();
   if (!supportsLearningProtocol(session?.learningProtocolVersion)) {
-    protocolConfirmation = null;
+    scopeGeneration++; protocolConfirmation = null;
     throw new ApiRequestError(LEARNING_PROTOCOL_MESSAGE, { code: LEARNING_PROTOCOL_ERROR, status: 426 });
   }
   if (!session || typeof session.writeToken !== 'string' || !session.writeToken.trim()
       || typeof session.sourceId !== 'string' || !session.sourceId.trim()) {
     throw new ApiRequestError('无法取得有效的本地会话，请重新连接。', { code: 'SESSION_INVALID' });
   }
+  const previousProtocol = tokenProtocols.get(session.writeToken);
+  if (previousProtocol !== undefined && previousProtocol !== session.learningProtocolVersion) {
+    scopeGeneration++; protocolConfirmation = null;
+    throw protocolError();
+  }
   bindToken(session);
+  if (activeScope && activeScope.sourceId === session.sourceId.trim()
+      && activeScope.instanceId === normalizeInstanceId(session.instanceId)
+      && activeScope.learningProtocolVersion !== undefined
+      && activeScope.learningProtocolVersion !== session.learningProtocolVersion) {
+    // The loader may inspect this new session, but in-flight work from the old
+    // protocol must not consume responses or renew credentials into it.
+    scopeGeneration++; protocolConfirmation = null;
+    return session;
+  }
   protocolConfirmation = { generation, session };
   return session;
 }
@@ -183,8 +211,17 @@ async function withSession<T>(writeToken: string, sourceId: string, send: (heade
     if (instanceId !== scope.instanceId) throw instanceError();
     bindToken({ writeToken, sourceId, instanceId });
     let attempts = 0;
-    return await sessionRecovery.run({ writeToken, sourceId, instanceId }, (session) => {
+    const learningProtocolVersion = tokenProtocols.get(writeToken) ?? activeScope?.learningProtocolVersion;
+    return await sessionRecovery.run({ writeToken, sourceId, instanceId, learningProtocolVersion }, (session) => {
       assertScope(scope);
+      // The first request may have performed the initial handshake itself.
+      // Re-read the original token binding before any recovery attempt.
+      const originalProtocol = tokenProtocols.get(writeToken) ?? learningProtocolVersion;
+      if (originalProtocol !== undefined && session.learningProtocolVersion !== undefined
+        && originalProtocol !== session.learningProtocolVersion) {
+        scopeGeneration++; protocolConfirmation = null;
+        throw protocolError();
+      }
       if (attempts++ > 0) {
         if (scopeConfigured) configureSessionScope(session);
         notifySession({ kind: 'recovered', session });
@@ -196,8 +233,8 @@ async function withSession<T>(writeToken: string, sourceId: string, send: (heade
       });
     });
   } catch (error) {
-    if (error instanceof ApiRequestError && error.code === 'INSTANCE_MISMATCH') notifySession({ kind: 'instance-mismatch', sourceId, expectedInstanceId: instanceId });
-    if (error instanceof ApiRequestError && error.code === 'SOURCE_MISMATCH') notifySession({ kind: 'source-mismatch' });
+    if (scopeCurrent(scope) && error instanceof ApiRequestError && error.code === 'INSTANCE_MISMATCH') notifySession({ kind: 'instance-mismatch', sourceId, expectedInstanceId: instanceId });
+    if (scopeCurrent(scope) && error instanceof ApiRequestError && error.code === 'SOURCE_MISMATCH') notifySession({ kind: 'source-mismatch' });
     throw error;
   }
 }
@@ -513,10 +550,6 @@ async function parseError(response: Response, signal: AbortSignal): Promise<ApiR
     // Some infrastructure errors return an empty body. The HTTP status remains useful.
   }
   signal.throwIfAborted();
-  if (code === 'INSTANCE_MISMATCH') notifySession({ kind: 'instance-mismatch' });
-  if ((code === 'AUTH_REQUIRED' || code === 'SOURCE_MISMATCH') && typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('lm-auth-required'));
-  }
   return new ApiRequestError(message, {
     code,
     status: response.status,
@@ -524,10 +557,11 @@ async function parseError(response: Response, signal: AbortSignal): Promise<ApiR
   });
 }
 
-async function requestBody<T>(path: string, init: RequestInit, consume: (response: Response) => Promise<T>, bulk = false): Promise<T> {
+async function requestBody<T>(path: string, init: RequestInit, consume: (response: Response, protocol?: LearningProtocolVersion) => Promise<T>, bulk = false): Promise<T> {
   try {
     init.signal?.throwIfAborted();
     const generation = scopeGeneration;
+    let protocol: LearningProtocolVersion | undefined;
     if (!isLearningProtocolExempt(path)) {
       if (protocolConfirmation?.generation !== generation) {
         if (protocolHandshake?.generation !== generation) {
@@ -558,7 +592,22 @@ async function requestBody<T>(path: string, init: RequestInit, consume: (respons
         throw new ApiRequestError('知识源已变化，请重新连接后确认操作。', { code: 'SOURCE_MISMATCH', status: 409 });
       }
       if (activeScope && normalizeInstanceId(confirmed.instanceId) !== activeScope.instanceId) throw instanceError();
+      if (activeScope?.learningProtocolVersion !== undefined
+        && confirmed.learningProtocolVersion !== activeScope.learningProtocolVersion) throw protocolError();
+      protocol = confirmed.learningProtocolVersion;
     }
+    const headers = new Headers(init.headers);
+    headers.set('Accept', 'application/json');
+    if (init.body) headers.set('Content-Type', 'application/json');
+    if (protocol !== undefined) {
+      headers.set(LEARNING_PROTOCOL_HEADER, String(protocol));
+      const token = headers.get('x-lm-token');
+      if (token) {
+        const previous = tokenProtocols.get(token);
+        if (previous !== undefined && previous !== protocol) throw protocolError();
+        tokenProtocols.set(token, protocol);
+      }
+    } else headers.delete(LEARNING_PROTOCOL_HEADER);
     return await withRequestDeadline(async signal => {
       let response: Response;
       try {
@@ -566,12 +615,7 @@ async function requestBody<T>(path: string, init: RequestInit, consume: (respons
           credentials: 'same-origin',
           ...init,
           signal,
-          headers: {
-            Accept: 'application/json',
-            [LEARNING_PROTOCOL_HEADER]: String(LEARNING_PROTOCOL_VERSION),
-            ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-            ...init.headers,
-          },
+          headers,
         });
       } catch {
         signal.throwIfAborted();
@@ -580,9 +624,20 @@ async function requestBody<T>(path: string, init: RequestInit, consume: (respons
         });
       }
       signal.throwIfAborted();
-      if (!response.ok) throw await parseError(response, signal);
-      const result = await consume(response);
+      if (generation !== scopeGeneration) throw instanceError();
+      if (!response.ok) {
+        const error = await parseError(response, signal);
+        if (generation !== scopeGeneration) throw instanceError();
+        if (error.code === 'INSTANCE_MISMATCH') notifySession({ kind: 'instance-mismatch' });
+        if ((error.code === 'AUTH_REQUIRED' || error.code === 'SOURCE_MISMATCH') && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('lm-auth-required'));
+        }
+        if (response.status === 426) { scopeGeneration++; protocolConfirmation = null; }
+        throw error;
+      }
+      const result = await consume(response, protocol);
       signal.throwIfAborted();
+      if (generation !== scopeGeneration) throw instanceError();
       return result;
     }, { signal: init.signal, ...(bulk ? { timeoutMs: BULK_REQUEST_TIMEOUT_MS } : {}) });
   } catch (error) {
@@ -600,8 +655,13 @@ async function requestBody<T>(path: string, init: RequestInit, consume: (respons
   }
 }
 
-function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-  return requestBody(path, init, async response => response.status === 204 ? undefined as T : await response.json() as T,
+function requestJson<T>(path: string, init: RequestInit = {}, decode?: (value: unknown, protocol: LearningProtocolVersion) => T): Promise<T> {
+  return requestBody(path, init, async (response, protocol) => {
+    const value: unknown = response.status === 204 ? undefined : await response.json();
+    if (!decode) return value as T;
+    if (protocol === undefined) throw protocolError();
+    return decode(value, protocol);
+  },
     path === '/import/preview' || path === '/import/commit');
 }
 
@@ -678,11 +738,17 @@ export const api = {
       method: 'PUT', body: JSON.stringify(payload),
     }, writeToken, sourceId),
   getSession,
+  adminRequest: <T>(path: string, init: RequestInit, writeToken: string, sourceId: string): Promise<T> => {
+    if (!/^\/admin\/users(?:\/[A-Za-z0-9%._~-]+)?$/.test(path)) {
+      return Promise.reject(new ApiRequestError('账号管理请求路径无效。', { code: 'INVALID_REQUEST' }));
+    }
+    return authenticatedJson<T>(path, { ...init, cache: 'no-store' }, writeToken, sourceId);
+  },
   getLearningOverview: (sourceId: string, signal?: AbortSignal) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
     return requestJson<LearningOverview>('/learning-overview', {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal,
-    });
+    }, validateLearningOverviewPrivacy);
   },
   getScenarioPrompts: (sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
@@ -713,17 +779,17 @@ export const api = {
     const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
     if (options.cursor) params.set('cursor', options.cursor);
     if (options.applicationEventId) params.set('applicationEventId', options.applicationEventId);
-    return requestJson<ConceptHistory>(`/concepts/${encodeURIComponent(conceptId)}/history?${params}`, {
+    return requestJson<ConceptHistory<PrivacyObservation>>(`/concepts/${encodeURIComponent(conceptId)}/history?${params}`, {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
-    });
+    }, validateConceptHistoryPrivacy);
   },
   getObservationRevisions: (observationEventId: string, sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识空间，请重新连接。', { code: 'SOURCE_REQUIRED' }));
     const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
     if (options.cursor) params.set('cursor', options.cursor);
-    return requestJson<ObservationRevisionHistory>(`/observations/${encodeURIComponent(observationEventId)}/revisions?${params}`, {
+    return requestJson<ObservationRevisionHistory<PrivacyObservation>>(`/observations/${encodeURIComponent(observationEventId)}/revisions?${params}`, {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
-    });
+    }, validateRevisionHistoryPrivacy);
   },
   postObservationRevision: (payload: ObservationRevisionRequest, writeToken: string, sourceId: string) =>
     writeJson<ObservationRevisionReceipt>(`/observations/${encodeURIComponent(payload.observationEventId)}/revisions`, payload, writeToken, sourceId),

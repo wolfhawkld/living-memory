@@ -1,4 +1,4 @@
-import { LEARNING_PROTOCOL_VERSION, LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, supportsLearningProtocol } from '../shared/learning-protocol.js';
+import { LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, supportsLearningProtocol, type LearningProtocolVersion } from '../shared/learning-protocol.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -82,7 +82,7 @@ interface ParsedCommand {
 }
 
 interface SessionResponse {
-  learningProtocolVersion: typeof LEARNING_PROTOCOL_VERSION;
+  learningProtocolVersion: LearningProtocolVersion;
   writeToken: string;
   sourceId: string;
   sourceRootFingerprint?: string;
@@ -327,6 +327,7 @@ class ApiClient {
   private sourceId: string | undefined;
   private readonly deviceSession: string | undefined;
   private instanceId: string | undefined;
+  private learningProtocolVersion: LearningProtocolVersion | undefined;
 
   constructor(options: { baseUrl: string; timeoutMs: number; fetchImpl: FetchImplementation; deviceSession?: string }) {
     this.baseUrl = options.baseUrl;
@@ -340,7 +341,13 @@ class ApiClient {
   }
 
   async json<T>(path: string, init: { method?: string; body?: unknown; write?: boolean; timeoutMs?: number } = {}): Promise<T> {
-    const headers: Record<string, string> = { Accept: 'application/json', [LEARNING_PROTOCOL_HEADER]: String(LEARNING_PROTOCOL_VERSION) };
+    // Session is the only bootstrap request. Protected operations must use its
+    // confirmed version, never the current product's default protocol number.
+    if (path !== '/session' && this.learningProtocolVersion === undefined) {
+      throw new CliError(LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, { status: 426 });
+    }
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (this.learningProtocolVersion !== undefined) headers[LEARNING_PROTOCOL_HEADER] = String(this.learningProtocolVersion);
     if (this.deviceSession) headers.Authorization = `Bearer ${this.deviceSession}`;
     if (init.body !== undefined) headers['Content-Type'] = 'application/json';
     if (init.write) {
@@ -392,6 +399,10 @@ class ApiClient {
       }
     }
     if (!response.ok) {
+      if (response.status === 426) {
+        this.learningProtocolVersion = undefined;
+        this.token = undefined;
+      }
       const record = data && typeof data === 'object' ? data as Record<string, unknown> : {};
       const error = record.error && typeof record.error === 'object' ? record.error as Record<string, unknown> : {};
       const message = typeof error.message === 'string' ? error.message : `请求失败（HTTP ${response.status}）。`;
@@ -413,7 +424,8 @@ class ApiClient {
     if (result.user !== undefined && (!result.user || typeof result.user.id !== 'string' || !result.user.id.trim())) throw new CliError('SESSION_INVALID', '本地服务账号主体无效。');
     if (result.instanceId !== undefined && (typeof result.instanceId !== 'string' || !result.instanceId.trim() || result.instanceId.length > 200 || /[\u0000-\u001f\u007f]/.test(result.instanceId))) throw new CliError('SESSION_INVALID', '本地服务实例标识无效。');
     this.instanceId = result.instanceId;
-    return { learningProtocolVersion: LEARNING_PROTOCOL_VERSION, writeToken: result.writeToken, sourceId: result.sourceId,
+    this.learningProtocolVersion = result.learningProtocolVersion;
+    return { learningProtocolVersion: result.learningProtocolVersion, writeToken: result.writeToken, sourceId: result.sourceId,
       ...(result.user ? { user: { id: result.user.id } } : {}),
       ...(result.instanceId !== undefined ? { instanceId: result.instanceId } : {}),
       ...(result.sourceRootFingerprint !== undefined ? { sourceRootFingerprint: result.sourceRootFingerprint } : {}) };

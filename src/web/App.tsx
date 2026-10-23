@@ -4,6 +4,8 @@ import type { CorrectionOverviewItem } from '../shared/correction-overview';
 import type { RelationOverviewItem } from '../shared/relation-overview';
 import type { ConceptReviewPreference, ReviewPlanResponse, ReviewPlanUpdate } from '../shared/review-plan';
 import type { AccountUser } from '../shared/accounts';
+import type { PrivacyObservation } from '../shared/answer-clearing';
+import { supportsLearningProtocol, type LearningProtocolVersion } from '../shared/learning-protocol';
 import type { PracticeCardRequest, PracticeAttemptRequest, PracticeHandlers } from '../shared/practice';
 import type {
   ApplicationRecordRequest,
@@ -14,7 +16,6 @@ import type {
   RecallRating,
   Snapshot,
   ObservationRequest,
-  Observation,
   ReviewRequest,
   RetentionRequest,
 } from '../shared/types';
@@ -258,6 +259,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const [sourceId, setSourceId] = useState('');
   const [instanceId, setInstanceId] = useState('legacy');
   const instanceIdRef = useRef('legacy');
+  const [learningProtocolVersion, setLearningProtocolVersion] = useState<LearningProtocolVersion>();
+  const protocolRef = useRef<LearningProtocolVersion | undefined>(undefined);
   const checkpointStorage = useMemo(() => instanceStorage({ getItem: (key) => window.localStorage.getItem(key),
     setItem: (key, value) => window.localStorage.setItem(key, value), removeItem: (key) => window.localStorage.removeItem(key) }, instanceId), [instanceId]);
   const readBriefReviewCheckpoint = useCallback((source: string) => readUnscopedCheckpoint(source, checkpointStorage), [checkpointStorage]);
@@ -303,7 +306,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const referenceReviewTicket = useRef(0);
   const referenceNavigationRef = useRef(0);
   const [attempt, setAttempt] = useState<RecallAttempt | null>(null);
-  const [revisionWindow, setRevisionWindow] = useState<{ observation: Observation; contextKey: string } | null>(null);
+  const [revisionWindow, setRevisionWindow] = useState<{ observation: PrivacyObservation; contextKey: string } | null>(null);
   const [revisionOpening, setRevisionOpening] = useState(false);
   const revisionOpenTicket = useRef(0);
   const [briefBudget, setBriefBudget] = useState<3 | 5>(3);
@@ -416,7 +419,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const writeLocked = demoEnabled || simulated || simulationLoading || sourceReloadPending;
   const activity = useActivity({ accountId: account?.id ?? 'local-owner', sourceId, instanceId, writeToken,
     mode: demoEnabled ? 'example' : simulated ? 'forecast' : 'real', locked: writeLocked || loading });
-  const revisions = useObservationRevisions({ accountId: account?.id ?? 'local-owner', sourceId, instanceId, writeToken,
+  const revisions = useObservationRevisions({ accountId: account?.id ?? 'local-owner', sourceId, instanceId, writeToken, learningProtocolVersion,
     mode: demoEnabled ? 'example' : simulated ? 'forecast' : 'real',
     locked: writeLocked || loading || Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft)
       || overviewOpen || reviewPlanOpen || importOpen || identityOpen || activity.open || Boolean(retentionConfirmation)
@@ -524,8 +527,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       }
       const currentSource = session.sourceId ?? 'legacy-unscoped';
       const nextInstance = session.instanceId ?? 'legacy';
-      if (sourceIdRef.current && nextInstance !== instanceIdRef.current) {
-        api.configureSessionScope(null); writeTokenRef.current = ''; setWriteToken(''); setSourceReloadPending(true);
+      if (sourceIdRef.current && (nextInstance !== instanceIdRef.current
+          || (protocolRef.current !== undefined && protocolRef.current !== session.learningProtocolVersion))) {
+        api.configureSessionScope(null); writeTokenRef.current = ''; setWriteToken(''); setLearningProtocolVersion(undefined); setSourceReloadPending(true);
         throw new ApiRequestError('实例已迁移，请保留当前草稿后重新加载页面；旧记录不会自动提交到新实例。', { code: 'INSTANCE_MISMATCH', status: 409 });
       }
       const [nextSnapshot, nextLayout] = await Promise.all([
@@ -534,6 +538,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       ]);
       if (requestId !== snapshotRequestRef.current) return null;
       api.configureSessionScope(session);
+      protocolRef.current = session.learningProtocolVersion; setLearningProtocolVersion(session.learningProtocolVersion);
       instanceIdRef.current = nextInstance; setInstanceId(nextInstance);
       sourceIdRef.current = currentSource;
       writeTokenRef.current = session.writeToken;
@@ -608,6 +613,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     writeTokenRef.current = '';
     changeUiRef.current.sourceReloadPending = true;
     setWriteToken('');
+    setLearningProtocolVersion(undefined);
     setSourceReloadPending(true);
   }, []);
 
@@ -626,6 +632,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       return;
     }
     if ((event.session.instanceId ?? 'legacy') !== instanceIdRef.current) { markSourceMismatch(event.session.sourceId); return; }
+    if (!supportsLearningProtocol(event.session.learningProtocolVersion)
+        || event.session.learningProtocolVersion !== protocolRef.current) { markSourceMismatch(event.session.sourceId); return; }
     api.configureSessionScope(event.session);
     // Credential renewal must not reload the form or alter the frozen event.
     writeTokenRef.current = event.session.writeToken;
@@ -694,7 +702,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       try {
         const session = await api.getSession();
         const nextSource = session.sourceId ?? 'legacy-unscoped';
-        if ((session.instanceId ?? 'legacy') !== instanceIdRef.current) { markSourceMismatch(nextSource); return; }
+        if ((session.instanceId ?? 'legacy') !== instanceIdRef.current
+            || session.learningProtocolVersion !== protocolRef.current) { markSourceMismatch(nextSource); return; }
         const currentSource = sourceIdRef.current;
         const sourceChanged = Boolean(currentSource && nextSource !== currentSource);
         if (sourceChanged || pendingSourceIdRef.current) {
@@ -728,11 +737,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   };
 
   useEffect(() => {
+    if (!learningProtocolVersion || !writeToken || sourceReloadPending) return;
     return subscribeToChanges({
+      learningProtocolVersion,
       onChange: (notification) => changeHandlersRef.current.onChange(notification),
       onConnected: (notification, reconnected) => changeHandlersRef.current.onConnected(notification, reconnected),
     });
-  }, []);
+  }, [sourceId, instanceId, learningProtocolVersion, writeToken, sourceReloadPending]);
 
   useEffect(() => {
     const resume = () => {
@@ -953,6 +964,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [historyFocus, sourceId, selectedId, attempt, briefSession, scenarioOpen, applicationDraft, demoEnabled]);
   const conceptHistory = useConceptHistory({
     sourceId, conceptId: selectedConcept?.id ?? '', sourceRevision: selectedConcept?.source.revision ?? '',
+    learningProtocolVersion,
     applicationEventId: focusedApplicationEventId,
   }, historyEnabled, snapshot);
   const lastRevisionConfirmation = useRef(revisions.confirmedVersion);
@@ -968,7 +980,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     setRevisionOpening(false);
     setRevisionWindow(current => current?.contextKey === revisions.contextKey ? current : null);
   }, [revisions.contextKey]);
-  const openObservationRevision = useCallback((observation: Observation) => {
+  const openObservationRevision = useCallback((observation: PrivacyObservation) => {
     if (domainBusy || writeLocked || !hasSession || !confirmCorrectionNavigation()
       || pendingWrites.some(write => write.path === '/observations' && write.eventId === observation.eventId)) return;
     setRevisionWindow({ observation, contextKey: revisions.contextKey });
@@ -2229,7 +2241,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
                 key={JSON.stringify(['same-domain-relations', sourceId, selectedConcept.id, selectedConcept.source.revision])}
                 selectedConcept={selectedConcept} relations={sameDomainRelations} disabled={domainBusy}
                 onReveal={() => markConceptSourceViewed(selectedConcept)} onNavigate={selectSearchResult} /> : null}
-              {historyEnabled ? <LearningSummaryPanel summary={conceptHistory.history?.learning} /> : null}
+              {historyEnabled ? <LearningSummaryPanel summary={conceptHistory.history?.learning} observationPrivacy={conceptHistory.history?.observationPrivacy} /> : null}
               {historyEnabled && conceptHistory.history ? <LearningProgressPanel
                 key={JSON.stringify(['learning-progress', sourceId, selectedConcept.id, selectedConcept.source.revision])}
                 progress={conceptHistory.history.progress} simulated={simulated} /> : null}
@@ -2263,7 +2275,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
       {revisionVisible && revisionWindow ? <ObservationRevisionDialog
         key={JSON.stringify([revisionWindow.contextKey, revisionWindow.observation.eventId])}
-        scopeKey={revisionWindow.contextKey} observation={revisionWindow.observation}
+        scopeKey={revisionWindow.contextKey} observation={revisionWindow.observation} learningProtocolVersion={learningProtocolVersion}
         disabledReason={writeLocked || !hasSession ? '当前知识空间不可写，请回到真实记录后重试。' : null}
         pendingRow={revisions.rows.find(row => row.state !== 'archived' && row.request.observationEventId === revisionWindow.observation.eventId)}
         loadHistory={options => revisions.channel.readHistory(revisionWindow.observation.eventId, options, revisionWindow.contextKey)}

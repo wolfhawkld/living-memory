@@ -12,7 +12,7 @@ export function useObservationRevisions(context: ObservationRevisionChannelConte
   useLayoutEffect(() => {
     channel.setContext(context);
     void channel.refresh();
-  }, [channel, context.accountId, context.sourceId, context.instanceId, context.writeToken, context.mode, context.locked]);
+  }, [channel, context.accountId, context.sourceId, context.instanceId, context.writeToken, context.mode, context.locked, context.learningProtocolVersion]);
   useLayoutEffect(() => () => channel.setContext(null), [channel]);
   useEffect(() => {
     const key = observationRevisionPendingStorageKey(context);

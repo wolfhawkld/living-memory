@@ -1,18 +1,25 @@
 import type { ConceptHistory } from '../shared/types';
+import type { PrivacyObservation } from '../shared/answer-clearing';
+import type { LearningProtocolVersion } from '../shared/learning-protocol';
+import { PrivacyResponseError, observationPrivacyVersion, rememberObservationPrivacy, validateConceptHistoryPrivacy } from './privacy-response';
+
+type PrivacyHistory = ConceptHistory<PrivacyObservation>;
 
 export interface HistoryLoadState {
-  history: ConceptHistory | null;
+  history: PrivacyHistory | null;
   loading: boolean;
   loadingMore: boolean;
   error: string | null;
 }
 
 export const EMPTY_HISTORY_STATE: HistoryLoadState = { history: null, loading: false, loadingMore: false, error: null };
-export interface HistoryScope { sourceId: string; conceptId: string; sourceRevision: string; applicationEventId?: string }
-export type HistoryFetcher = (conceptId: string, sourceId: string, options: { limit: number; cursor?: string; applicationEventId?: string; signal: AbortSignal }) => Promise<ConceptHistory>;
+export interface HistoryScope { sourceId: string; conceptId: string; sourceRevision: string; applicationEventId?: string; learningProtocolVersion?: LearningProtocolVersion }
+export type HistoryFetcher = (conceptId: string, sourceId: string, options: { limit: number; cursor?: string; applicationEventId?: string; signal: AbortSignal }) => Promise<PrivacyHistory>;
 
 /** One concept/source lifetime; late responses cannot enter a new selection or recall task. */
 export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: HistoryFetcher) {
+  const protocol = scope.learningProtocolVersion ?? 2;
+  const knownClearings = new Map<string, string>();
   let state = EMPTY_HISTORY_STATE;
   let active: AbortController | null = null;
   let refreshQueued = false;
@@ -33,8 +40,9 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
     const cursor = mode === 'more' ? before?.nextCursor ?? undefined : undefined;
     publish({ ...state, loading: mode === 'refresh', loadingMore: mode === 'more', error: null });
     try {
-      const page = await fetchHistory(scope.conceptId, scope.sourceId, { limit: 20, cursor, applicationEventId: scope.applicationEventId, signal: request.signal });
+      const response = await fetchHistory(scope.conceptId, scope.sourceId, { limit: 20, cursor, applicationEventId: scope.applicationEventId, signal: request.signal });
       if (active !== request || request.signal.aborted) return;
+      const page = validateConceptHistoryPrivacy(response, protocol);
       if (page.sourceId !== scope.sourceId || page.conceptId !== scope.conceptId || page.sourceRevision !== scope.sourceRevision) {
         publish({ ...state, history: null });
         throw new Error('知识来源或版本已变化，请刷新知识源后重新查看历史。');
@@ -50,11 +58,19 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
         publish({ ...state, history: null });
         throw new Error('未能定位指定的应用 / 总结记录，请刷新后重试，或查看全部历史。');
       }
-      const decisionsChanged = before && (page.correctionCount !== before.correctionCount || page.observationRevisionCount !== before.observationRevisionCount || page.observationAssessmentVersion !== before.observationAssessmentVersion);
+      if (protocol === 3) for (const entry of page.entries) if (entry.type === 'observation') {
+        rememberObservationPrivacy(knownClearings, entry.event);
+      }
+      const previousObservations = new Map(before?.entries.flatMap(entry => entry.type === 'observation' ? [[entry.event.eventId, entry.event] as const] : []) ?? []);
+      const privacyChanged = protocol === 3 && page.entries.some(entry => entry.type === 'observation'
+        && previousObservations.has(entry.event.eventId)
+        && observationPrivacyVersion(previousObservations.get(entry.event.eventId)!) !== observationPrivacyVersion(entry.event));
+      const decisionsChanged = before && (privacyChanged || page.correctionCount !== before.correctionCount || page.observationRevisionCount !== before.observationRevisionCount || page.observationAssessmentVersion !== before.observationAssessmentVersion);
       if (mode === 'more' && before && (page.total !== before.total || decisionsChanged)) {
         // Backdated insertions can fall on either side of the cursor. Start over
         // instead of silently presenting an incomplete history as complete.
         active = null;
+        if (protocol === 3) publish({ history: null, loading: true, loadingMore: false, error: null });
         return load('refresh');
       }
       let history = page;
@@ -75,7 +91,8 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
     } catch (error) {
       if (active !== request || request.signal.aborted) return;
       failedMode = mode;
-      publish({ ...state, loading: false, loadingMore: false, error: error instanceof Error ? error.message : '读取学习历史失败，请重试。' });
+      publish({ ...state, ...(protocol === 3 || error instanceof PrivacyResponseError ? { history: null } : {}),
+        loading: false, loadingMore: false, error: error instanceof Error ? error.message : '读取学习历史失败，请重试。' });
     } finally {
       if (active === request) {
         active = null;

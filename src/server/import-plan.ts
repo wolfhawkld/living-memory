@@ -598,7 +598,10 @@ function validateObservation(
     invalid(`observations[${index}] 无 anchorEventId 时 elapsedDays 与 decay 必须为 null。`, 'FROZEN_DECAY_MISMATCH');
   }
   const hasMarker = Object.hasOwn(record, 'answerClearing');
-  if (privacy && schemaVersion !== 3 && hasMarker) throw new AnswerClearingImportError('INVALID_IMPORT_DATA');
+  if (schemaVersion !== 3 && hasMarker) {
+    if (privacy) throw new AnswerClearingImportError('INVALID_IMPORT_DATA');
+    invalid('旧版学习 JSON 不能包含原答清除标记。', 'INVALID_ANSWER_CLEARING');
+  }
   if (typeof record.answer !== 'string' && !(schemaVersion === 3 && record.answer === null)) invalid(`observations[${index}].answer 无效。`);
   if (privacy && (record.answer === null) !== hasMarker) throw new AnswerClearingImportError('INVALID_IMPORT_DATA');
   const marker = schemaVersion === 3 && hasMarker ? parseAnswerClearingMarker(record.answerClearing) : null;

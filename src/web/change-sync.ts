@@ -1,4 +1,5 @@
 import type { ChangeNotification } from '../shared/types';
+import { supportsLearningProtocol, type LearningProtocolVersion } from '../shared/learning-protocol.js';
 
 /** The small part of EventSource that the browser subscription needs. */
 export interface ChangeEventSource {
@@ -8,6 +9,8 @@ export interface ChangeEventSource {
 }
 
 export interface ChangeSubscriptionOptions {
+  /** The version declared by the current confirmed session. No default inference. */
+  learningProtocolVersion: LearningProtocolVersion;
   url?: string;
   createEventSource?: (url: string) => ChangeEventSource;
   onChange: (notification: ChangeNotification) => void;
@@ -73,7 +76,16 @@ export function subscribeToChanges(options: ChangeSubscriptionOptions): () => vo
   });
   let eventSource: ChangeEventSource;
   try {
-    eventSource = createEventSource(options.url ?? '/api/changes?learningProtocol=2');
+    if (!supportsLearningProtocol(options.learningProtocolVersion)) throw new Error('LEARNING_PROTOCOL_REQUIRED');
+    const target = options.url ?? '/api/changes';
+    const hashAt = target.indexOf('#');
+    const fragment = hashAt < 0 ? '' : target.slice(hashAt);
+    const endpoint = hashAt < 0 ? target : target.slice(0, hashAt);
+    const queryAt = endpoint.indexOf('?');
+    const pathname = queryAt < 0 ? endpoint : endpoint.slice(0, queryAt);
+    const params = new URLSearchParams(queryAt < 0 ? '' : endpoint.slice(queryAt + 1));
+    params.set('learningProtocol', String(options.learningProtocolVersion));
+    eventSource = createEventSource(`${pathname}?${params.toString()}${fragment}`);
   } catch (error) {
     options.onError?.(error instanceof Event ? error : new Event('error'));
     return () => undefined;

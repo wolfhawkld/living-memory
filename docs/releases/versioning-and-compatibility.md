@@ -11,7 +11,7 @@
 | 记忆模型 | `time-only-v0` | 标识时间投影语义；配置 revision 标识本人修改 H 的历史，不是软件或格式版本 |
 | SQLite 学习结构 | schema 2 / minimum reader 2 | `user_version` 与单行登记须一致；完整旧结构只在新目录恢复阶段迁移 |
 | 实例 bundle | 新建 v2，接收已知 v1 / v2 | v2 声明实际学习 schema 1 或 2；恢复报告仍为 v1 |
-| 学习 HTTP 协议 | 2 | Web / CLI 握手与请求门禁，和本机存储键版本独立 |
+| 学习 HTTP 协议 | 服务 2；客户端显式兼容 2／3 | 实际服务仍拒绝 3；客户端按会话声明选择，和本机存储键版本独立 |
 
 包版本必须在 `package.json`、lockfile 顶层和 `packages[""]` 三处一致。只改项目版本时不重新解析依赖，不改变 JSON schema、模型版本或既有学习事件。`private: true` 用来防止误发 npm，不妨碍源码开源。
 
@@ -84,7 +84,9 @@ LM-014A 在学习库 `applications` 增加可空 `relation_suggestion_json` 列�
 
 路由保留 `/api/...`，新增学习协议 2 门禁。`GET /api/session` 必须返回 `learningProtocolVersion: 2`；Web / CLI 校验后才访问受保护数据。受保护 JSON 使用 `X-LM-Learning-Protocol: 2`，缺失、重复或不支持返回 426；不会按认证过期自动重放。认证后、成员 Store 懒初始化前执行门禁。新客户端连接缺少握手字段的旧服务也会拒绝。
 
-例外仅为 session、health、认证流程，以及保留原认证 / 来源 / 路径 / 版本检查的 `GET /api/concepts/:id/attachment` 二进制资源。SSE `GET /api/changes` 使用唯一查询参数 `learningProtocol=2`；若另带 header 也必须唯一为 2，其他 JSON 不能用查询参数替代 header。Web、CLI 与服务端应同步更新，仍没有 `/api/v1/...` 通用稳定接口。
+例外仅为 session、health、认证流程，以及保留原认证 / 来源 / 路径 / 版本检查的 `GET /api/concepts/:id/attachment` 二进制资源。SSE `GET /api/changes` 使用唯一查询参数 `learningProtocol=2`；若另带 header 也必须唯一为 2，其他 JSON 不能用查询参数替代 header。仍没有 `/api/v1/...` 通用稳定接口。
+
+ACLEAR-02C4A 新客户端额外准备协议 3 的隐私读取能力，但当前服务继续声明并要求 2，候选 `runtimeReady: false` 不变。Web／CLI 只使用会话明确确认的数字 2 或 3，未确认不发受保护请求／SSE；bootstrap／认证不声明默认版本。JSON、下载、账号管理和 SSE 跟随确认版本，缺失或未知声明拒绝，426 与跨协议 401 恢复不会重发原写入。Web 的版本变化失效旧请求与旧 token，完整运行入口仍待 [C4B](../design/answer-clearing.md#aclear-02c4b显式运行接线下一项) 评审；目前不能据客户端支持而启动 v3 实例。
 
 - 账号模式下要先取得有效身份和 `/api/session`；写请求携带本机 token，并核对来源。用户、namespace、资料版本和概念 ID 的边界不能由客户端过滤替代。
 - 学习事件重试保留 event ID、发生/观察时间和 payload；首次保存与完全相同重放有不同回执，换内容可能返回 `EVENT_CONFLICT`。观察、长期保持、配置、导入和身份衔接还各有版本/前序校验，不可重建一个新请求来掩盖冲突。

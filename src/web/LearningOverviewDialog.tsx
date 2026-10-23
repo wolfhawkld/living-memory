@@ -148,7 +148,7 @@ function LearningOverviewRow({ item, disabled, onSelect }: {
     <td><div className="learning-overview-metric"><span>{latestRecall(item)}</span><small>累计 {item.recall.total} 次 · 清晰 {item.recall.clear} / 模糊 {item.recall.partial} / 空白 {item.recall.blank}</small></div></td>
     <td><div className="learning-overview-metric"><span>{latestScenario(item)}</span><small>独立成功 {item.scenario.independentSuccess} · 协助 {item.scenario.assisted}</small></div></td>
     <td><div className="learning-overview-calibration">{calibrationBlock('概念', item.calibration.concept)}{calibrationBlock('场景', item.calibration.scenario)}</div></td>
-    <td><div className="learning-overview-metric"><strong>应用 {item.applications.application} · 总结 {item.applications.summary}</strong><small>当前观察 {item.evidence.currentObservations} · 既往观察 {item.evidence.previousObservations} · 既往应用 {item.evidence.previousApplications}</small><small>最近记录 {formatDate(item.evidence.latestAt ?? item.applications.latestAt)}</small></div></td>
+    <td><div className="learning-overview-metric"><strong>应用 {item.applications.application} · 总结 {item.applications.summary}</strong><small>当前观察 {item.evidence.currentObservations} · 既往观察 {item.evidence.previousObservations} · 既往应用 {item.evidence.previousApplications}</small><small>最近记录 {formatDate(item.evidence.latestAt ?? item.applications.latestAt)}</small>{item.observationPrivacy ? <small>本概念全部版本：已清除原答 {item.observationPrivacy.cleared} 条 · 采用中因隐私排除 {item.observationPrivacy.excludedFromPerformance} 条</small> : null}</div></td>
   </tr>;
 }
 
@@ -248,6 +248,7 @@ export function LearningOverviewDialog({
       </header>
 
       <div className="learning-overview-body">
+        {overview?.observationPrivacy ? <p className="learning-overview-status-note">整个知识空间 · 全部资料版本：已清除原答 {overview.observationPrivacy.cleared} 条，其中采用中的 {overview.observationPrivacy.excludedFromPerformance} 条不进入当前表现统计；筛选不改变该空间计数，评分采用与原练习消耗保留。</p> : null}
         {relationView ? <div className="learning-overview-notes learning-overview-notes-compact">
           <p>仅显示主概念、关系双端、操作与处理状态；关系描述、原建议和说明正文保留在原记录中。</p>
           <p>结构符合仍需本人核对；依据变化保留原人工决定。知识域按主概念归属，跨域关系只计一条。</p>

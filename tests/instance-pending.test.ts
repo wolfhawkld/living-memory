@@ -17,8 +17,8 @@ class StorageMemory {
   removeItem(key:string) { this.values.delete(key); }
 }
 const pending = (id:string) => ({ id, method:'PUT' as const,path:'/config',payload:{revision:1},eventId:null,conceptId:null,label:'config' });
-const old = {learningProtocolVersion:2,writeToken:'old',sourceId:'same'};
-const fresh = {learningProtocolVersion:2,writeToken:'new',sourceId:'same',instanceId:'restored'};
+const old = {learningProtocolVersion:2 as const,writeToken:'old',sourceId:'same'};
+const fresh = {learningProtocolVersion:2 as const,writeToken:'new',sourceId:'same',instanceId:'restored'};
 const ok = () => new Response(JSON.stringify({status:'accepted'}));
 async function setup(name:string) {
   const mod:typeof import('../src/web/api') = await import(new URL(`../src/web/api.ts?instance=${name}`,import.meta.url).href);
@@ -49,7 +49,7 @@ test('legacy bytes preserved and restored instance has separate queue and header
   await confirmProtocol(mod,fresh);
   assert.deepEqual(mod.getPendingWrites('same'),[]);
   let sends=0;
-  globalThis.fetch=async (_url,init) => { sends++;assert.equal((init?.headers as Record<string,string>)['x-lm-instance-id'],'restored');return ok(); };
+  globalThis.fetch=async (_url,init) => { sends++;assert.equal(new Headers(init?.headers).get('x-lm-instance-id'),'restored');return ok(); };
   assert.equal((await mod.flushPendingWrites('new','same')).sent,0);
   await mod.queuePendingWrite('same',pending('fresh'));
   assert.equal((await mod.flushPendingWrites('new','same')).sent,1);
@@ -161,9 +161,9 @@ test('same instance rotation updates credentials once without interrupting batch
   const tokens:string[]=[];
   globalThis.fetch=async(url,init)=>{
     if (String(url).endsWith('/session')) return new Response(JSON.stringify(rotated));
-    const headers=init!.headers as Record<string,string>;
-    tokens.push(headers['x-lm-token']);
-    assert.equal(headers['x-lm-instance-id'],'restored');
+    const headers=new Headers(init!.headers);
+    tokens.push(headers.get('x-lm-token')!);
+    assert.equal(headers.get('x-lm-instance-id'),'restored');
     return tokens.length===1 ? new Response(JSON.stringify({error:{code:'TOKEN_REQUIRED'}}),{status:401}) : ok();
   };
   assert.equal((await mod.flushPendingWrites('first','same')).sent,1);

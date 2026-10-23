@@ -1,6 +1,6 @@
 # 清除指定回忆的原回答
 
-更新：2026-10-23。对应 FR-11／LM-006：主动保存的回答片段应能查看与清除。**ACLEAR-02C3 已在同一个 Store 接通显式 v3 读写、历史、修订、统计与安全身份重试；默认服务仍运行 v2，删除 HTTP 接口和界面尚未开放。** 显式 v3 只打开已经初始化、含目标 namespace 和配置的完整候选，不创建或迁移数据库；它复用已有快照、SQL 仓库与事务导入协调器。产品 HTTP 协议、Web 和 CLI 仍为 2，v3 隔离候选仍为 `runtimeReady: false`，不能由当前服务启动。本轮不升级或操作运行中的私人实例及已有启动候选。
+更新：2026-10-23。对应 FR-11／LM-006：主动保存的回答片段应能查看与清除。**ACLEAR-02C4A 已补双版本客户端和隐私读取兼容；实际服务仍运行 v2，清除 HTTP 接口和操作界面尚未开放。** 内部 Store 已能显式打开既存完整 v3，但不会创建或迁移数据库。Web／CLI 按会话确认协议 2 或 3；协议 3 的读取兼容以合成响应验证，不代表产品启动已经开放。v3 隔离候选仍为 `runtimeReady: false`；本轮不操作私人实例、服务或已有启动候选。
 
 本项只处理一条已保存概念解释或场景调用 `Observation` 的 `answer`，包括数据库原字段、请求载荷中的机械副本以及当前可控的同条浏览器副本。它与[自评更正、暂不采用和恢复采用](observation-revisions.md)分开；清除原答不等于把当时的回答改成空白、不等于脑中回忆，也不撤销练习发生的事实。
 
@@ -198,6 +198,20 @@ v3 身份绑定使用[严格安全回执](../../src/server/answer-clearing-ident
 
 显式 v3 Store 的 JSON 导入直接委托 C2B 的[事务协调器](../../src/server/answer-clearing-import-coordinator.ts)，导出使用同一[快照仓库](../../src/server/learning-snapshot-repository.ts)，不再复制一套 writer。导入前回调收到真实 v3 备份，清除后旧文件和旧回执的拒绝顺序保留；外部备份文件仍不随 SQLite 回滚。私人实例、已有候选和运行服务未操作。
 
+#### ACLEAR-02C4A：双版本客户端与隐私读取兼容准备
+
+新 Web／CLI 显式接受会话声明的数字协议 2 或 3。未完成握手的受保护请求和 SSE 不连接，JSON、Blob、账号管理与 SSE 使用实际确认版本；bootstrap／认证不自称默认版本。缺失、字符串、数组或未知版本拒绝，426 不续会话或重放写入。Web 将协议纳入 scope generation，并固定 token 首次确认的版本；同一来源／实例的协议变化使旧请求失效，401 恢复不能跨版本重发。成功或错误正文解析后的身份复核阻止迟到响应影响新空间。
+
+[隐私响应验证](../../src/web/privacy-response.ts)以确认协议为输入，复用已有核心观察校验。协议 2 不接收 null 或任何 `answerClearing` 属性；协议 3 保留并核验完整 null／首次标记、父事件、清除时间与证据方式，不把 null 转为空答。新版概念历史必须带有效评分／隐私水位和范围计数。导入仍原样提交 unknown JSON，导出仍下载 Blob；不增加另一套浏览器导入规则。现行 v1／v2 导入显式拒绝夹带清除标记的观察，避免静默丢弃隐私状态。
+
+历史与修订窗口区分“原答已清除”和原本空白。历史水位变化丢弃旧分页；同一 loader 已见的首次标记不能被后续响应撤回或改写。新版读取失败隐藏旧原答，修订窗口使用新读到的父观察，新 `rechecked-original` 决定禁用；原有精确待同步请求仍可原样重试。概念和全库分别显示对应范围的隐私计数，原评分采用计数和记忆曲线含义不变。本轮只有只读提示，没有清除按钮或本机副本清理。
+
+实际服务门禁仍精确要求协议 2；Store 默认、运行入口、恢复候选 `runtimeReady: false` 与连接器隔离保持。客户端能力通过合成 v3 HTTP 响应和隔离测试验证，不是私人实例已经升级。本轮完整 1647 项 Node／HTTP 回归通过（失败、取消、跳过均为 0），含类型检查的独立构建、8 项主题与 261 个相关文档链接／锚点检查通过；精确提交的远端 CI 待提交后核对。
+
+#### ACLEAR-02C4B：显式运行接线（下一项）
+
+下一项统一处理显式 App／schema 选择、既存 v3 的受控 namespace 初始化、未访问及新成员生命周期、隐私错误映射和真实 v3 写前备份类型。Store v3 仍不得自行创建或修补坏库；新 v3 库只能显式离线建立或恢复，不能后台迁移旧库。Feishu 复用 Store 的接口、待写与重试须合成验证；运行配置、恢复报告、连接器激活与重接预览的支持语义必须一致。完成这些并再次架构审查后，才评审开放显式 opt-in v3；默认仍保留 2，并落实旧 v2 源码／构建保留。实际清除操作及跨页可控副本属于 ACLEAR-03。
+
 ## ACLEAR-03：界面与可控副本
 
 入口位于当前账号的已保存观察历史，一次明确确认列出 answer 与机械副本范围，说明其他场景和记录保留。示例／预测、未保存观察和作答期间不提供此入口。删除请求不带正文、不自动加入离线队列；失败或超时显示结果未知，按同一父观察查询状态，不能乐观声称已清除。
@@ -217,8 +231,9 @@ v3 身份绑定使用[严格安全回执](../../src/server/answer-clearing-ident
 | ACLEAR-02C1 凭证退休与准备 | 已实现独立 v3 内核的原子退休、遗留准备、只读状态与调用方事务 guard；未接产品写入方 |
 | ACLEAR-02C2A v2 导入仓库提取 | 已实现：Store 真实委托共用导入 SQL、占位与必要前置查询，要求调用方事务；该阶段提取 v2，C2B 随后扩展显式 v3 |
 | ACLEAR-02C2B v3 事务导入 | 已实现显式 v3 快照、同仓库写入、事务协调及安全语义重试；最终验证证据见本轮记录，尚未开放产品 v3 |
-| ACLEAR-02C3 显式 v3 Store 与统计闭环 | 已实现同一 Store 的显式 v3 读写、历史／修订、隐私表现门槛及安全身份重试；默认服务仍为 v2，本轮本地完整验证通过，精确提交的远端 CI 另行核对 |
-| ACLEAR-02C 后续产品接线 | 下一轮：评审产品 v3 协议、客户端握手与启动接线；当前门禁和 `runtimeReady: false` 保持 |
+| ACLEAR-02C3 显式 v3 Store 与统计闭环 | 已实现同一 Store 的显式 v3 读写、历史／修订、隐私表现门槛及安全身份重试；默认服务仍为 v2；提交 9992929 的完整本地及远端验证通过，最终架构交付审查通过 |
+| ACLEAR-02C4A 客户端兼容准备 | 已实现双版本握手、隐私读取、历史／修订只读展示与动态 SSE；1647 项本地回归、构建及 8 项主题通过；远端 CI 待核对，实际服务仍为 2 |
+| ACLEAR-02C4B 运行接线 | 下一项：显式启动与多用户 namespace 生命周期统一接线；当前门禁和 `runtimeReady: false` 保持 |
 | ACLEAR-03 API／Web 与缓存 | 待开发：权限、明确确认、结果未知恢复、水位、迟到响应、跨页队列与 checkpoint |
 | ACLEAR-04 集成与交付 | 待开发：非空 JSON／bundle 往返、跨页／多标签、已有修订链与飞书计数、远端浏览器回归；私人升级和真实删除单独安排 |
 
@@ -236,6 +251,8 @@ ACLEAR-02C2A 的[仓库测试](../../tests/learning-import-repository.test.ts)�
 
 ACLEAR-02C2B 的[快照测试](../../tests/learning-snapshot-repository.test.ts)、[v3 写入测试](../../tests/learning-import-repository-v3.test.ts)、[回执契约测试](../../tests/answer-clearing-replay-contract.test.ts)与[事务集成测试](../../tests/answer-clearing-import-coordinator.test.ts)使用合成隔离库，验证现行 v2 复用、新版完整 SQL、同连接快照、语义重试、清除保护和失败回滚。本轮完整 Node／HTTP 回归 1586 项全部通过（失败、取消、跳过均为 0），类型检查、独立构建、8 项主题检查及 18 个相关文档链接／锚点检查通过；提交 `a55e78a783895d67e1c9c44066ad50c61a46820a` 已推送 develop；[CI 39808159962](https://github.com/wolfhawkld/living-memory/actions/runs/39808159962) 全部通过：1586 项 Node／HTTP（失败、取消、跳过均为 0）、含类型检查的构建、8 项主题与 33 项远端浏览器检查。浏览器约 9.6 分钟，33 条唯一进度，无重试或 flaky；最终架构交付审查通过。私人升级与实际删除仍未执行。
 
-ACLEAR-02C3 的[表现投影测试](../../tests/observation-performance.test.ts)、[真实 Store 测试](../../tests/store-v3.test.ts)、[Store 导入与身份测试](../../tests/store-v3-import-identity.test.ts)、[身份回执契约测试](../../tests/answer-clearing-identity-replay-contract.test.ts)和[v3 修订账本测试](../../tests/observation-revision-store-v3.test.ts)使用隔离合成库。新增 33 项检查覆盖真实 Store 清除与旧请求的双进程竞争、九类占位与精确重试、14 种写入的事务所有权、隐私统计、修订分页及安全身份回执的多字节兼容边界。本轮完整 Node／HTTP 回归 1619 项全部通过（失败、取消、跳过均为 0），类型检查、独立生产构建、8 项主题检查、230 个相关文档链接／锚点及 diff 检查通过；提交前架构审查通过，本次精确提交的远端 CI 另行核对。本轮没有启动产品 v3、升级私人实例、发送真实飞书消息或执行本机浏览器验证。
+ACLEAR-02C3 的[表现投影测试](../../tests/observation-performance.test.ts)、[真实 Store 测试](../../tests/store-v3.test.ts)、[Store 导入与身份测试](../../tests/store-v3-import-identity.test.ts)、[身份回执契约测试](../../tests/answer-clearing-identity-replay-contract.test.ts)和[v3 修订账本测试](../../tests/observation-revision-store-v3.test.ts)使用隔离合成库。新增 33 项检查覆盖真实 Store 清除与旧请求的双进程竞争、九类占位与精确重试、14 种写入的事务所有权、隐私统计、修订分页及安全身份回执的多字节兼容边界。本轮完整 Node／HTTP 回归 1619 项全部通过（失败、取消、跳过均为 0），类型检查、独立生产构建、8 项主题检查、230 个相关文档链接／锚点及 diff 检查通过；提交 `99929299b1d0eaf89ca46f4138df36e5c3f2cdd4` 已推送 develop；[CI 39912885874](https://github.com/wolfhawkld/living-memory/actions/runs/39912885874) 全部通过：1619 项 Node／HTTP（失败、取消、跳过均为 0）、含类型检查的构建、8 项主题及 33 项远端浏览器检查。浏览器约 11.4 分钟，33 条唯一进度，无重试或 flaky；最终架构交付审查通过。本轮没有启动产品 v3、升级私人实例、发送真实飞书消息或执行本机浏览器验证。
 
 完整逻辑清除只保证当前应用记录及之后的受控导出；SQLite WAL、释放页、系统快照、旧归档和外部副本不是本功能已擦除的对象。软件正确性与记忆收益分别验收。
+
+ACLEAR-02C4A 的[客户端握手](../../tests/learning-protocol-client.test.ts)、[CLI](../../tests/learning-protocol-cli.test.ts)、[SSE](../../tests/change-sync.test.ts)、[隐私响应与分页](../../tests/privacy-response.test.ts)、[真实 API 包装边界](../../tests/learning-protocol-privacy-api.test.ts)和[旧格式拒绝](../../tests/import-answer-clearing-rejection.test.ts)使用合成数据，不接私人实例。本轮完整 1647 项 Node／HTTP 回归通过（失败、取消、跳过均为 0），含类型检查的独立构建、8 项主题与 261 个相关文档链接／锚点检查通过；精确提交的远端 CI 待提交后核对。未执行本机浏览器视觉验证、启动 v3 服务、迁移私人库或发送真实飞书消息。

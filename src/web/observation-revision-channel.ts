@@ -1,11 +1,14 @@
 import { observationRevisionRequestEqual, type ObservationRevisionRequest } from '../shared/observation-revisions';
-import type { ObservationRevisionHistory, ObservationRevisionReceipt } from '../shared/observation-revision-history';
+import type { ObservationRevisionHistory as IntactObservationRevisionHistory, ObservationRevisionReceipt } from '../shared/observation-revision-history';
 import { createObservationRevisionPending, type ObservationRevisionPendingOptions, type ObservationRevisionPendingRow,
   type ObservationRevisionPendingSnapshot, type ObservationRevisionPendingFlushResult } from './observation-revision-pending';
 
+import type { PrivacyObservation } from '../shared/answer-clearing';
+import type { LearningProtocolVersion } from '../shared/learning-protocol';
+type ObservationRevisionHistory = IntactObservationRevisionHistory<PrivacyObservation>;
 export interface ObservationRevisionChannelContext {
   accountId: string; sourceId: string; instanceId: string; writeToken: string;
-  mode: 'real' | 'example' | 'forecast'; locked: boolean;
+  mode: 'real' | 'example' | 'forecast'; locked: boolean; learningProtocolVersion?: LearningProtocolVersion;
 }
 export type RevisionChannelResult =
   | { status: 'confirmed'; receipt: ObservationRevisionReceipt; cleanupPending: boolean }
@@ -23,7 +26,7 @@ interface Options extends Omit<ObservationRevisionPendingOptions, 'transport'> {
   readHistory(id: string, sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal }): Promise<ObservationRevisionHistory>;
 }
 const scopeOf = (c: ObservationRevisionChannelContext) => JSON.stringify([c.accountId, c.sourceId, c.instanceId]);
-const securityOf = (c: ObservationRevisionChannelContext) => JSON.stringify([c.accountId, c.sourceId, c.instanceId, c.writeToken]);
+const securityOf = (c: ObservationRevisionChannelContext) => JSON.stringify([c.accountId, c.sourceId, c.instanceId, c.writeToken, c.learningProtocolVersion ?? 2]);
 
 /** Manual commands only. The durable queue, rather than component state, owns retries. */
 export function createObservationRevisionChannel(options: Options) {

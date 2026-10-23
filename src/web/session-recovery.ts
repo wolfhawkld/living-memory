@@ -1,7 +1,10 @@
+import type { LearningProtocolVersion } from '../shared/learning-protocol';
+
 export interface LocalSession {
   writeToken: string;
   sourceId: string;
   instanceId?: string;
+  learningProtocolVersion?: LearningProtocolVersion;
 }
 
 export interface SessionRecoveryOptions {

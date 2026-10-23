@@ -1,10 +1,14 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import type { Observation } from '../shared/types';
+import type { PrivacyObservation } from '../shared/answer-clearing';
+import type { LearningProtocolVersion } from '../shared/learning-protocol';
+import { observationPrivacyVersion } from './privacy-response';
+type Observation = PrivacyObservation;
 import { assessmentFromObservation, observationAssessmentsEqual, observationRevisionRequestEqual, parseObservationRevisionRequest,
   type ObservationAssessment, type ObservationRevisionRequest, type ObservationRevisionReason } from '../shared/observation-revisions';
-import type { ObservationRevisionHistory, ObservationRevisionReceipt } from '../shared/observation-revision-history';
+import type { ObservationRevisionHistory as IntactObservationRevisionHistory, ObservationRevisionReceipt } from '../shared/observation-revision-history';
 import type { ObservationRevisionPendingRow } from './observation-revision-pending';
 import { createObservationRevisionHistoryLoader, type RevisionHistoryLoader } from './observation-revision-history-loader';
+type ObservationRevisionHistory = IntactObservationRevisionHistory<PrivacyObservation>;
 export type RevisionSubmitResult = { status: 'confirmed'; receipt: ObservationRevisionReceipt; cleanupPending: boolean }
   | { status: 'queued' | 'rejected' | 'blocked'; persisted: true; message: string }
   | { status: 'not-saved'; persisted: false; message: string; outcomeUnknown?: true } | { status: 'context-changed' };
@@ -16,10 +20,16 @@ export function revisionPersistenceAfterResult(current: RevisionPersistenceState
   return { durable: true, uncertain: false };
 }
 export interface ObservationRevisionDialogProps {
-  scopeKey: string; observation: Observation; disabledReason: string | null; pendingRow?: ObservationRevisionPendingRow | null;
+  scopeKey: string; observation: Observation; learningProtocolVersion?: LearningProtocolVersion; disabledReason: string | null; pendingRow?: ObservationRevisionPendingRow | null;
   loadHistory: RevisionHistoryLoader; onSubmit(request: ObservationRevisionRequest): Promise<RevisionSubmitResult>;
   onRetryPending(expectedRequest: ObservationRevisionRequest): Promise<RevisionSubmitResult>; onRecheckRejected(expectedRow: ObservationRevisionPendingRow): Promise<boolean>;
   onRevealAnswer(): void; onClose(): void; onDirtyChange?(dirty: boolean): void;
+}
+export function revisionOriginalForDisplay(parent: Observation, history: ObservationRevisionHistory | null,
+  protocol: LearningProtocolVersion, error: string | null, loading = false): Observation | null {
+  if (history) return history.observation;
+  if (parent.answer === null) return parent;
+  return protocol === 2 && !error && !loading ? parent : null;
 }
 export function revisionPendingRelation(frozen: ObservationRevisionRequest | null, row: ObservationRevisionPendingRow | null | undefined): 'own' | 'foreign' | 'none' {
   if (!row || row.state === 'archived') return 'none';
@@ -33,6 +43,7 @@ export function initialRevisionDraft(history: ObservationRevisionHistory): Revis
 export function revisionDraftDisabledReason(parent: Observation, history: ObservationRevisionHistory | null, draft: RevisionDraft | null, now = new Date().toISOString()): string | null {
   if (!history || !draft) return '请先成功加载当前修订状态。';
   if (!draft.reason) return '请选择本次决定的原因。';
+  if (draft.reason === 'rechecked-original' && (parent.answer === null || history.observation.answer === null)) return '原答已清除，不能再以重新核对原答作为新决定的依据。';
   if (draft.note.length > 1000) return '说明不能超过 1000 个字符。';
   if (draft.action === 'reinstate' ? history.state.status !== 'withdrawn' : history.state.status !== 'active') return '当前采用状态已变化，请重新核对。';
   if (draft.action === 'revise' && Boolean(draft.assessment.learning) !== Boolean(parent.learning)) return '扩展判断必须保持原观察的字段结构。';
@@ -76,15 +87,21 @@ export function RevisionJudgmentFields({ draft, status, disabled, idPrefix, onEd
 }
 export function ObservationRevisionDialog(props: ObservationRevisionDialogProps) {
   // A keyed inner lifetime also isolates a parent change before effects run.
-  return <RevisionDialog key={JSON.stringify([props.scopeKey, props.observation.eventId, props.observation.conceptId, props.observation.sourceRevision])} {...props} disabledReason={props.disabledReason ?? (props.pendingRow && props.pendingRow.request.observationEventId !== props.observation.eventId ? '待同步决定与原观察不匹配，不能操作。' : null)} pendingRow={props.pendingRow?.state === 'archived' ? null : props.pendingRow} />;
+  return <RevisionDialog key={JSON.stringify([props.scopeKey, props.observation.eventId, props.observation.conceptId, props.observation.sourceRevision,
+    props.learningProtocolVersion ?? 2, observationPrivacyVersion(props.observation)])} {...props} disabledReason={props.disabledReason ?? (props.pendingRow && props.pendingRow.request.observationEventId !== props.observation.eventId ? '待同步决定与原观察不匹配，不能操作。' : null)} pendingRow={props.pendingRow?.state === 'archived' ? null : props.pendingRow} />;
 }
-function RevisionDialog({ observation, disabledReason, pendingRow, loadHistory, onSubmit, onRetryPending, onRecheckRejected, onRevealAnswer, onClose, onDirtyChange }: ObservationRevisionDialogProps) {
+function RevisionDialog({ observation, learningProtocolVersion = 2, disabledReason, pendingRow, loadHistory, onSubmit, onRetryPending, onRecheckRejected, onRevealAnswer, onClose, onDirtyChange }: ObservationRevisionDialogProps) {
   const titleId = useId(); const dialogRef = useRef<HTMLDialogElement>(null);
   const fetchRef = useRef(loadHistory); fetchRef.current = loadHistory;
-  const loader = useMemo(() => createObservationRevisionHistoryLoader(observation, options => fetchRef.current(options)), [observation.eventId, observation.conceptId, observation.sourceRevision]);
+  const loader = useMemo(() => createObservationRevisionHistoryLoader(observation, options => fetchRef.current(options), learningProtocolVersion), [observation.eventId, observation.conceptId, observation.sourceRevision, learningProtocolVersion]);
   const state = useSyncExternalStore(loader.subscribe, loader.getSnapshot, loader.getSnapshot);
+  const currentObservation = state.history?.observation ?? observation;
+  // A v3 window never falls back to a previously intact parent after a failed
+  // refresh. Only a verified response or an already-cleared prop can be shown.
+  const displayObservation = revisionOriginalForDisplay(observation, state.history, learningProtocolVersion, state.error, state.loading);
   const [draft, setDraft] = useState<RevisionDraft | null>(null); const [baseTail, setBaseTail] = useState<string | null>(pendingRow?.request.previousEventId ?? null);
   const [baseTotal, setBaseTotal] = useState<number | null>(null);
+  const [basePrivacy, setBasePrivacy] = useState<string | null>(observationPrivacyVersion(observation));
   const [dirty, setDirty] = useState(false); const [stale, setStale] = useState(false);
   const [frozen, setFrozen] = useState<ObservationRevisionRequest | null>(pendingRow?.request ?? null);
   const pendingRelation = revisionPendingRelation(frozen, pendingRow);
@@ -112,9 +129,11 @@ function RevisionDialog({ observation, disabledReason, pendingRow, loadHistory, 
       setDraft({ ...initialRevisionDraft(state.history), action: frozen.action, reason: frozen.reason, note: frozen.note ?? '',
         ...(frozen.action === 'revise' ? { assessment: frozen.assessment } : {}) });
     }
-    if (dirty || frozen) { if (baseTail !== state.history.state.latestRevisionEventId || (baseTotal !== null && baseTotal !== state.history.total)) setStale(true); }
-    else if (!draft || baseTail !== state.history.state.latestRevisionEventId || baseTotal !== state.history.total) { setDraft(initialRevisionDraft(state.history)); setBaseTail(state.history.state.latestRevisionEventId); setBaseTotal(state.history.total); }
-  }, [state.history, dirty, frozen, baseTail, baseTotal, draft]);
+    if (dirty || frozen) { if (baseTail !== state.history.state.latestRevisionEventId || (baseTotal !== null && baseTotal !== state.history.total)
+      || basePrivacy !== observationPrivacyVersion(state.history.observation)) setStale(true); }
+    else if (!draft || baseTail !== state.history.state.latestRevisionEventId || baseTotal !== state.history.total
+      || basePrivacy !== observationPrivacyVersion(state.history.observation)) { setDraft(initialRevisionDraft(state.history)); setBaseTail(state.history.state.latestRevisionEventId); setBaseTotal(state.history.total); setBasePrivacy(observationPrivacyVersion(state.history.observation)); }
+  }, [state.history, dirty, frozen, baseTail, baseTotal, basePrivacy, draft]);
   function close() { if (lock.current) return; if (dirty && !durable && !window.confirm(uncertain ? '服务结果尚未确认，关闭可能丢失本页的固定请求。确定关闭吗？' : '这份修订尚未保存，关闭会丢弃草稿。确定关闭吗？')) return; onClose(); }
   function edit(next: Partial<RevisionDraft>) { if (!draft || busy || frozen || durable) return; setDirty(true); setDraft({ ...draft, ...next }); }
   async function refreshConfirmed() {
@@ -132,12 +151,12 @@ function RevisionDialog({ observation, disabledReason, pendingRow, loadHistory, 
   }
   async function submit(retryPending = false) {
     if (lock.current || disabledReason || foreignPending || contextInvalid || confirmed) return;
-    if (!retryPending && !frozen && (stale || durable || state.loading || state.error || revisionDraftDisabledReason(observation, state.history, draft))) return;
+    if (!retryPending && !frozen && (stale || durable || state.loading || state.error || revisionDraftDisabledReason(currentObservation, state.history, draft))) return;
     lock.current = true; setBusy(true);
     try {
       if (retryPending) { if (!frozen || !ownPendingRow) return; await handleResult(await onRetryPending(frozen)); }
       else {
-        const request = frozen ?? freezeRevisionDraft(observation, state.history!, draft!, `observation-revision:${crypto.randomUUID()}`, new Date().toISOString());
+        const request = frozen ?? freezeRevisionDraft(currentObservation, state.history!, draft!, `observation-revision:${crypto.randomUUID()}`, new Date().toISOString());
         setFrozen(request); setDirty(true); await handleResult(await onSubmit(request));
       }
     } catch { if (live.current) { setPersistence(current => revisionPersistenceAfterResult(current, 'unexpected-error')); setMessage('提交结果尚未确认，请保留原请求并原样重试，不要另建决定。'); } }
@@ -150,13 +169,13 @@ function RevisionDialog({ observation, disabledReason, pendingRow, loadHistory, 
       const fresh = await loader.refresh(); if (!fresh || !live.current) return;
       if (ownPendingRow && !await onRecheckRejected(ownPendingRow)) { if (live.current) setMessage('待同步记录已变化，未解除原请求，请重新打开。'); return; }
       if (!live.current) return;
-      setFrozen(null); setPersistence({ durable: false, uncertain: false }); setStale(false); setDirty(false); setDraft(initialRevisionDraft(fresh)); setBaseTail(fresh.state.latestRevisionEventId); setBaseTotal(fresh.total);
+      setFrozen(null); setPersistence({ durable: false, uncertain: false }); setStale(false); setDirty(false); setDraft(initialRevisionDraft(fresh)); setBaseTail(fresh.state.latestRevisionEventId); setBaseTotal(fresh.total); setBasePrivacy(observationPrivacyVersion(fresh.observation));
       setMessage('已重新核对。请重新选择原因，确认后才会提交新的决定。');
     } catch { if (live.current) setMessage('重新核对未完成，原请求保持不变。'); }
     finally { lock.current = false; if (live.current) setBusy(false); }
   }
   const controlsLocked = foreignPending || contextInvalid || busy || Boolean(disabledReason) || durable || Boolean(frozen) || confirmed || stale || state.loading || Boolean(state.error) || !state.history;
-  const blocked = (foreignPending ? '另一窗口已有同一原观察的待同步决定；请关闭后从独立待同步区先处理。当前草稿保持原样。' : null) || (contextInvalid ? '原操作空间已变化，请关闭后重新打开。' : null) || disabledReason || (stale ? '决定链已变化，请明确重新核对当前状态。' : state.error || revisionDraftDisabledReason(observation, state.history, draft));
+  const blocked = (foreignPending ? '另一窗口已有同一原观察的待同步决定；请关闭后从独立待同步区先处理。当前草稿保持原样。' : null) || (contextInvalid ? '原操作空间已变化，请关闭后重新打开。' : null) || disabledReason || (stale ? '决定链或原答隐私状态已变化，请明确重新核对当前状态。' : state.error || revisionDraftDisabledReason(currentObservation, state.history, draft));
   return <dialog ref={dialogRef} className="observation-revision-dialog" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); close(); }}>
     <header><h2 id={titleId}>修订已保存的学习观察</h2><button type="button" disabled={busy} onClick={close} aria-label="关闭修订">×</button></header>
     <div className="observation-revision-scroll">
@@ -167,9 +186,13 @@ function RevisionDialog({ observation, disabledReason, pendingRow, loadHistory, 
         <section><h3>{state.error ? '上次核验的采用判断（刷新失败）' : '当前采用'}</h3>{state.history ? <><p>{state.history.state.status === 'withdrawn' ? '暂不计入统计' : '采用中'}</p><Assessment value={state.history.state.currentAssessment} /></> : <p>尚未核验</p>}</section>
         <section><h3>本次判断</h3>{draft ? <RevisionJudgmentFields draft={draft} status={state.history?.state.status ?? 'active'} disabled={controlsLocked} idPrefix={titleId} onEdit={edit} /> : <p>请先加载状态。</p>}</section>
       </div>
-      <label htmlFor={`${titleId}-reason`}>决定原因</label><select id={`${titleId}-reason`} disabled={controlsLocked} value={draft?.reason ?? ''} onChange={event => edit({ reason: event.target.value as RevisionDraft['reason'] })}><option value="">请选择原因</option>{Object.entries(reasons).map(([v, text]) => <option key={v} value={v}>{text}</option>)}</select>
+      <label htmlFor={`${titleId}-reason`}>决定原因</label><select id={`${titleId}-reason`} disabled={controlsLocked} value={draft?.reason ?? ''} onChange={event => edit({ reason: event.target.value as RevisionDraft['reason'] })}><option value="">请选择原因</option>{Object.entries(reasons).map(([v, text]) => <option key={v} value={v} disabled={v === 'rechecked-original' && currentObservation.answer === null}>{text}</option>)}</select>
       <label htmlFor={`${titleId}-note`}>说明（可选，最多 1000 字符）</label><textarea id={`${titleId}-note`} disabled={controlsLocked} maxLength={1000} value={draft?.note ?? ''} onChange={event => edit({ note: event.target.value })} />
-      {observation.evidenceMode === 'mental' ? <p>脑中回忆，未记录原答；修订后仍不计入独立成功或信心校准。</p> : revealed ? <section aria-label="原始回答"><h3>原始回答</h3>{observation.learning?.scenario ? <p>{observation.learning.scenario}</p> : null}<p>{observation.answer || '（空白回答）'}</p>{observation.learning?.applicability ? <p>{observation.learning.applicability}</p> : null}</section> : <button type="button" onClick={() => { onRevealAnswer(); setRevealed(true); }}>展开原始回答</button>}
+      {!displayObservation ? <p>原答隐私状态尚未核验，请先成功重读状态。</p>
+        : displayObservation.answer === null ? <p>原答已清除 · 首次清除 {displayObservation.answerClearing.clearedAt}。原评分继续保留，恢复采用也不会恢复原答或当前表现资格。</p>
+        : displayObservation.evidenceMode === 'mental' ? <p>脑中回忆，未记录原答；修订后仍不计入独立成功或信心校准。</p>
+        : revealed ? <section aria-label="原始回答"><h3>原始回答</h3>{displayObservation.learning?.scenario ? <p>{displayObservation.learning.scenario}</p> : null}<p>{displayObservation.answer || '（空白回答）'}</p>{displayObservation.learning?.applicability ? <p>{displayObservation.learning.applicability}</p> : null}</section>
+        : <button type="button" onClick={() => { onRevealAnswer(); setRevealed(true); }}>展开原始回答</button>}
       {state.loading ? <p role="status">正在核对修订历史…</p> : null}{state.error ? <p role="alert">{state.error}</p> : null}
       {uncertain && !confirmed ? <p role="status">提交结果尚未确认；保留原事件与内容，不允许重新核对或另建决定。可原样重试，或暂时关闭。</p> : null}{confirmed && cleanupPending ? <p role="status">服务已确认保存；本地回执仍待清理，不会另建一条决定。</p> : null}{ownPendingRow && !confirmed ? <p role="status">{ownPendingRow.state === 'rejected' ? '原请求已被拒绝；保留冻结内容，重新核对后可另作决定。' : '原决定已持久保存为待同步请求，重试不会更改其时间或内容。'}</p> : null}{durable && !confirmed && pendingRelation === 'none' ? <p role="status">本机待同步副本目前未能核实；不据此认定已保存。请只重读状态或关闭，勿另建重复决定。</p> : null}{message ? <p role="status">{message}</p> : null}{blocked && !confirmed ? <p role="status">{blocked}</p> : null}
       <h3>决定审计</h3><ol>{state.history?.events.map(event => <li key={event.eventId}><strong>{actions[event.action]} · {reasons[event.reason]}</strong>{event.action === 'revise' ? <Assessment value={event.assessment} /> : null}<p>发生 {event.occurredAt} · 保存 {event.recordedAt}</p>{event.note !== undefined ? <p className="observation-revision-note">{event.note}</p> : null}</li>)}</ol>

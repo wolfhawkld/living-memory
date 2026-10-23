@@ -1,10 +1,12 @@
 import type { LearningSummary } from '../shared/types';
+import type { ObservationPrivacySummary } from '../shared/observation-privacy';
 
-export function LearningSummaryPanel({ summary }: { summary: LearningSummary | undefined }) {
+export function LearningSummaryPanel({ summary, observationPrivacy }: { summary: LearningSummary | undefined; observationPrivacy?: ObservationPrivacySummary }) {
   if (!summary) return null;
   return <section className="learning-summary" aria-label="场景调用与信心校准">
     <h3>场景调用与信心校准</h3>
     <p>当前资料版本 · 场景记录 {summary.scenario.total} 次</p>
+    {observationPrivacy ? <p>当前概念全部资料版本中，已清除原答 {observationPrivacy.cleared} 条；其中采用中的 {observationPrivacy.excludedFromPerformance} 条因原答不可用而排除表现统计。评分采用与复习消耗分别保留。</p> : null}
     {summary.scenario.revisited ? <p>其中同场景回访 {summary.scenario.revisited} 次，计数不代表新场景迁移能力。</p> : null}
     <dl className="learning-counts">
       <div><dt>独立想起并核对适用</dt><dd>{summary.scenario.independentSuccess}</dd></div>

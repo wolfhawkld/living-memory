@@ -26,6 +26,7 @@ test('change subscription handles unnamed frames, reconnects, and closes cleanly
   const changes: unknown[] = [];
   const connections: boolean[] = [];
   const unsubscribe = subscribeToChanges({
+    learningProtocolVersion: 2,
     createEventSource: url => { assert.equal(url, '/api/changes?learningProtocol=2'); return source; },
     onChange: (notification) => changes.push(notification),
     onConnected: (_notification, reconnected) => connections.push(reconnected),
@@ -54,6 +55,24 @@ test('change subscription handles unnamed frames, reconnects, and closes cleanly
   assert.equal(source.closed, true);
   assert.equal(source.onmessage, null);
   assert.equal(source.onerror, null);
+});
+
+test('change subscriptions use only an explicitly confirmed protocol and replace stale URL declarations', () => {
+  for (const version of [2,3] as const) {
+    const source=new FakeEventSource(); const urls:string[]=[];
+    const stop=subscribeToChanges({learningProtocolVersion:version,
+      url:'/api/changes?scope=all&learningProtocol=1&learningProtocol=2#current',
+      createEventSource:url=>{urls.push(url);return source;},onChange:()=>undefined});
+    assert.deepEqual(urls,[`/api/changes?scope=all&learningProtocol=${version}#current`]);
+    stop();assert.equal(source.closed,true);
+  }
+  for (const version of [undefined,null,1,4,'2','3']) {
+    let created=0,errors=0;
+    const stop=subscribeToChanges({learningProtocolVersion:version as never,
+      url:'/api/changes?learningProtocol=3',createEventSource:()=>{created++;return new FakeEventSource();},
+      onChange:()=>undefined,onError:()=>{errors++;}});
+    assert.equal(created,0);assert.equal(errors,1);stop();
+  }
 });
 
 test('deferred change controller keeps the newest invalidation until a safe flush', () => {

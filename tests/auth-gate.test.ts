@@ -1,7 +1,15 @@
-import { authSessionHeaders } from '../src/web/AuthGate.tsx';
+import { authSessionHeaders, isAuthRequired } from '../src/web/AuthGate.tsx';
+import { ApiRequestError } from '../src/web/api.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { accountStatusKey, parseAccountStatus, validatePassword, validateUsername } from '../src/web/AuthGate.tsx';
+
+test('account management retains sign-in recovery for shared API authentication errors', () => {
+  for (const code of ['AUTH_REQUIRED', 'SESSION_EXPIRED', 'TOKEN_REQUIRED']) {
+    assert.equal(isAuthRequired(new ApiRequestError('synthetic', { code, status: 401 })), true);
+  }
+  assert.equal(isAuthRequired(new ApiRequestError('synthetic', { code: 'LEARNING_PROTOCOL_REQUIRED', status: 426 })), false);
+});
 
 test('username validation enforces the bounded ASCII account identifier', () => {
   assert.equal(validateUsername('abc'), null);
