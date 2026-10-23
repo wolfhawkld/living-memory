@@ -1132,7 +1132,7 @@ export class Accounts {
   settleFeishuReviewOperation(operationId: string, actor: FeishuActor, auth: FeishuReadAuthorization,
     result: { status: 'applied' | 'conflict'; errorCode?: string }): FeishuReviewSession | null {
     const safeCodes = ['EVENT_CONFLICT','ANCHOR_CONFLICT','CONFIG_REVISION_UNKNOWN','SOURCE_CHANGED','WRITE_FAILED','SESSION_EXPIRED',
-      'STATE_CONFLICT','CONFIG_CONFLICT','SOURCE_MISMATCH','FUTURE_OBSERVATION','FUTURE_EVENT'];
+      'STATE_CONFLICT','CONFIG_CONFLICT','SOURCE_MISMATCH','FUTURE_OBSERVATION','FUTURE_EVENT','ANSWER_CLEARED'];
     if (typeof operationId !== 'string' || !/^feishu-(?:observation|review):[a-f0-9]{32}(?::[a-f0-9]{32})?$/.test(operationId) || !result
         || !strictKeys(result,Object.hasOwn(result,'errorCode') ? ['status','errorCode'] : ['status'])
         || !['applied','conflict'].includes(result.status)) return null;
@@ -1167,15 +1167,17 @@ export class Accounts {
     return rows.map(accountUser);
   }
 
-  async createUser(username: unknown, password: unknown): Promise<AccountUser> {
+  async createUser(username: unknown, password: unknown, provision?: (user: Readonly<AccountUser>) => void): Promise<AccountUser> {
     const normalizedUsername = normalizeUsername(username);
     const validPassword = validatePassword(password);
     if (!this.hasAccounts()) throw accountError('SETUP_REQUIRED', '请先初始化第一个 owner 账户。', 409);
     const passwordHash = await this.hashPassword(validPassword);
     const now = iso(nowDate(this.now));
     const userId = randomUUID();
+    const user: AccountUser = { id: userId, username: normalizedUsername, role: 'member', enabled: true, accessRevision: 1 };
+    let ownsTransaction = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTransaction = true;
       const hasOwner = this.db.prepare('SELECT 1 AS present FROM accounts LIMIT 1').get() as { present?: number } | undefined;
       if (hasOwner?.present !== 1) throw accountError('SETUP_REQUIRED', '请先初始化第一个 owner 账户。', 409);
       const duplicate = this.db.prepare('SELECT 1 AS present FROM accounts WHERE username = ?').get(normalizedUsername) as { present?: number } | undefined;
@@ -1183,13 +1185,17 @@ export class Accounts {
       this.db.prepare(`INSERT INTO accounts(
         id, username, role, enabled, access_revision, password_hash, created_at, updated_at
       ) VALUES (?, ?, 'member', 1, 1, ?, ?, ?)`).run(userId, normalizedUsername, passwordHash, now, now);
-      this.db.exec('COMMIT');
+      // The callback is synchronous and runs before this account becomes
+      // visible. Its separate learning DB is not part of this transaction.
+      const provisioned: unknown = provision?.(Object.freeze({ ...user }));
+      if (provisioned !== undefined) throw accountError('WRITE_FAILED', '账户初始化未完成，请稍后重试。', 503);
+      this.db.exec('COMMIT'); ownsTransaction = false;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTransaction) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw accountError('WRITE_FAILED', '账户暂时无法保存，请稍后重试。', 503);
     }
-    return { id: userId, username: normalizedUsername, role: 'member', enabled: true, accessRevision: 1 };
+    return user;
   }
 
   async updateUser(id: unknown, update: unknown): Promise<AccountUser> {

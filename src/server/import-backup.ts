@@ -2,10 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ExportData } from '../shared/types.js';
+import type { ExportDataV3 } from '../shared/answer-clearing-export.js';
 import { StoreError } from './store.js';
 
 /** Paths are server-owned; a backup contains only the importing account's namespace. */
-export function saveImportBackup(dbPath: string, namespace: string, data: ExportData, purpose: 'import' | 'identity' = 'import'): string {
+export function saveImportBackup(dbPath: string, namespace: string, data: ExportData | ExportDataV3, purpose: 'import' | 'identity' = 'import'): string {
   const scope = createHash('sha256').update(namespace).digest('hex').slice(0, 24);
   const directory = join(dirname(dbPath), `${purpose}-backups`, scope);
   const name = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.json`;

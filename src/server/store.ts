@@ -86,7 +86,7 @@ import {
   type ReviewPlan,
   type ReviewPlanUpdate,
 } from '../shared/review-plan.js';
-import { DAY_MS, MODEL_VERSION } from '../shared/types.js';
+import { DAY_MS, MODEL_VERSION, DEFAULT_HALF_LIFE_DAYS } from '../shared/types.js';
 import { decayAt, isValidInstant, projectMemory } from '../core/time-model.js';
 import { summarizeLearning } from '../core/learning-evidence.js';
 import { buildLearningOverview } from '../core/learning-overview.js';
@@ -98,7 +98,6 @@ import { parsePracticeAttemptRequest, parsePracticeCardRequest } from './practic
 import { parseRelationReviewRequest as parseSharedRelationReviewRequest, validateRelationReviewBasis, relationReviewMatches, type RelationReviewRequest, type RelationReviewEvent, type RelationReviewHistory, type RelationReviewStatus } from '../shared/relation-reviews.js';
 import { parseRelationSuggestion } from '../shared/relation-suggestions.js';
 
-const DEFAULT_HALF_LIFE_DAYS = 7;
 const IDENTITY_DEFAULT_PREFERENCE: ConceptReviewPreference = { focus: false, deferUntil: null };
 
 export interface StoreOptions<V extends 2 | 3 = 2> {

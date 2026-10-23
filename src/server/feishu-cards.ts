@@ -11,7 +11,7 @@ import { reviewDayKey } from '../shared/review-plan.js';
 import { parseFeishuCardCommand } from '../integrations/feishu-card-commands.js';
 import { parseFeishuReviewCommand } from '../integrations/feishu-review-commands.js';
 import { planFeishuCardView, type FeishuCardViewPlan } from './feishu-card-view.js';
-import { createFeishuReviewController } from './feishu-review.js';
+import { createFeishuReviewController, type FeishuReviewStore } from './feishu-review.js';
 import { feishuReadOperationId } from './feishu-reading.js';
 
 export interface PreparedFeishuCardReply {
@@ -23,7 +23,10 @@ export interface PreparedFeishuCardReply {
   settle: (delivery: FeishuCardDelivery) => void;
 }
 
-interface CardContext { source: KnowledgeSource; store: Store; publish?: (reason: 'observation' | 'review') => void }
+type FeishuCardStore = FeishuReviewStore & Pick<Store<2 | 3>, 'getAnchors'> & {
+  readonly activity: Pick<Store<2 | 3>['activity'], 'getSettings' | 'append'>;
+};
+interface CardContext { source: KnowledgeSource; store: FeishuCardStore; publish?: (reason: 'observation' | 'review') => void }
 interface CardCapabilitiesOptions {
   accounts: Accounts | null;
   scope: FeishuScope | null;

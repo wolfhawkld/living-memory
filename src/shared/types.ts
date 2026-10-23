@@ -1,5 +1,6 @@
 export const MODEL_VERSION = 'time-only-v0' as const;
 export const DAY_MS = 86_400_000;
+export const DEFAULT_HALF_LIFE_DAYS = 7;
 
 export interface ModelConfig {
   modelVersion: typeof MODEL_VERSION;

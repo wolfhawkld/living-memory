@@ -14,9 +14,12 @@ import { StoreError, type Store } from './store.js';
 import { selectFeishuReviewCandidates } from './feishu-card-view.js';
 import { planFeishuReviewView, type FeishuReviewRenderInput } from './feishu-review-view.js';
 
+/** Learning capability shared by real v2 and v3 stores; no raw-answer reads. */
+export type FeishuReviewStore = Pick<Store<2 | 3>, 'namespace' | 'getStates' | 'getConfig' | 'getReviewPlan'
+  | 'getCompletedConceptIds' | 'getAnchor' | 'hasEvent' | 'getConfigAt' | 'addObservation' | 'addReview'>;
 export interface FeishuReviewContext {
   source: KnowledgeSource;
-  store: Store;
+  store: FeishuReviewStore;
   publish?: (reason: 'observation' | 'review') => void;
 }
 interface ReviewOptions {
@@ -27,7 +30,7 @@ interface ReviewOptions {
 }
 const CONFLICT_CODES = new Set(['EVENT_CONFLICT', 'ANCHOR_CONFLICT', 'CONFIG_REVISION_UNKNOWN',
   'CONFIG_CONFLICT', 'SOURCE_CHANGED', 'SOURCE_MISMATCH', 'SESSION_EXPIRED', 'STATE_CONFLICT',
-  'FUTURE_OBSERVATION', 'FUTURE_EVENT']);
+  'FUTURE_OBSERVATION', 'FUTURE_EVENT', 'ANSWER_CLEARED']);
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 
 /** Only authenticated transport calls this capability. No public write route or startup replay. */

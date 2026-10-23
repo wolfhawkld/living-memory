@@ -1,5 +1,9 @@
 import { LEARNING_PROTOCOL_VERSION, LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, isLearningProtocolExempt } from '../shared/learning-protocol.js';
 import { LearningSchemaError } from './learning-schema.js';
+import { AnswerClearingSchemaError } from './answer-clearing-schema.js';
+import { AnswerClearingStoreError } from './answer-clearing-store-error.js';
+import { AnswerClearingImportError } from '../shared/answer-clearing-export.js';
+import { assertLearningDatabaseV3Ready, ensureLearningNamespaceV3 } from './learning-namespace-v3.js';
 import { ObservationRevisionStoreError } from './observation-revision-store.js';
 import { parseObservationRevisionRequest, ObservationRevisionError } from '../shared/observation-revisions.js';
 import { randomBytes } from 'node:crypto';
@@ -49,6 +53,8 @@ import {
 } from './store.js';
 
 export interface AppOptions {
+  /** Explicit internal opt-in only; runtime launchers continue to use v2. */
+  learningSchemaVersion?: 2 | 3;
   /** The source root. Defaults to LM_KG_ROOT or fixtures/demo-kg. */
   kgRoot?: string;
   /** Alias accepted for callers which use the shorter name. */
@@ -67,9 +73,9 @@ export interface AppOptions {
   feishuTimeZone?: string;
 }
 
-export interface LivingMemoryApp extends Express {
+export interface LivingMemoryApp<V extends 2 | 3 = 2> extends Express {
   livingMemory: {
-    store: Store;
+    store: Store<V>;
     getSource: () => KnowledgeSource;
     refresh: () => KnowledgeSource;
     closeChanges: () => void;
@@ -171,7 +177,18 @@ function apiError(res: Response, error: unknown): void {
     res.status(error.status).json({ error: { code: error.code, message: error.message } });
     return;
   }
-  if (error instanceof LearningSchemaError) {
+  if (error instanceof AnswerClearingStoreError) {
+    res.status(error.status).json({ error: { code: error.code, message: error.code === 'ANSWER_CLEARED'
+      ? '原答已清除，不能再次写入原请求。' : '学习记录隐私状态不允许此操作，请重读当前状态后确认。' } });
+    return;
+  }
+  if (error instanceof AnswerClearingImportError) {
+    const status = error.code === 'INVALID_IMPORT_DATA' ? 400 : error.code === 'INVALID_IMPORT_CURRENT' ? 503 : 409;
+    res.status(status).json({ error: { code: error.code, message: status === 400
+      ? '学习数据格式或隐私标记无效。' : '学习数据与当前隐私状态不一致，请重新预览后确认。' } });
+    return;
+  }
+  if (error instanceof LearningSchemaError || error instanceof AnswerClearingSchemaError) {
     res.status(503).json({ error: { code: error.code, message: '学习数据库结构不可用，请核验版本后重新连接。' } });
     return;
   }
@@ -280,7 +297,7 @@ function parseReviewPlanTimeZone(value: unknown): string {
 
 function reviewPlanResponse(
   source: KnowledgeSource,
-  store: Store,
+  store: Store<2 | 3>,
   timeZone: string,
   asOf: string,
 ): ReviewPlanResponse {
@@ -341,13 +358,22 @@ function writeToken(req: Request): string | undefined {
 }
 
 /** Create the P0 local API. The app does not listen until index.ts calls listen(). */
-export function createApp(options: AppOptions = {}): LivingMemoryApp {
+export function createApp(options: AppOptions & { learningSchemaVersion: 3 }): LivingMemoryApp<3>;
+export function createApp(options?: AppOptions & { learningSchemaVersion?: 2 }): LivingMemoryApp<2>;
+export function createApp(options: AppOptions): LivingMemoryApp<2 | 3>;
+export function createApp(options: AppOptions = {}): LivingMemoryApp<2 | 3> {
+  const learningSchemaVersion = options.learningSchemaVersion === undefined ? LEARNING_PROTOCOL_VERSION : options.learningSchemaVersion;
+  if (learningSchemaVersion !== 2 && learningSchemaVersion !== 3) {
+    throw new StoreError('LEARNING_SCHEMA_UNSUPPORTED_VERSION', '学习数据库版本不受支持。', 503);
+  }
   const port = options.port ?? envNumber('LM_PORT', DEFAULT_PORT);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new StoreError('INVALID_PORT', 'LM_PORT 必须是有效端口。');
   const root = sourceRoot(options);
   const dataDir = options.dataDir ?? process.env.LM_DATA_DIR ?? 'data/local';
   const staticDir = options.staticDir ?? resolve(process.cwd(), 'dist');
-  assertLearningDatabaseReady(options.dbPath ?? join(dataDir, 'living-memory.sqlite'));
+  const dbPath = options.dbPath ?? join(dataDir, 'living-memory.sqlite');
+  if (learningSchemaVersion === 3) assertLearningDatabaseV3Ready(dbPath);
+  else assertLearningDatabaseReady(dbPath);
   const instanceId = readInstanceId(dataDir);
   validateStoragePaths({ root, dataDir, staticDir, accountsEnabled: Boolean(options.accountsEnabled), dbPath: options.dbPath });
   const loadSource = (physicalRoot: string, includePrefix?: string) => {
@@ -355,28 +381,44 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
     return loadKnowledgeGraph({ root: physicalRoot, limit: sourceLimit(options), includePrefix, identityHash: identity.identityHash, displayName: identity.displayName });
   };
   const initialRawSource = loadSource(root, sourceInclude(options));
-  const store = new Store({ dataDir, dbPath: options.dbPath, namespace: initialRawSource.namespace, now: options.now });
-  const initialSource = applyIdentityBindings(initialRawSource, store.getIdentityBindings());
-  store.rememberConcepts(initialSource.index.concepts);
+  const storeForNamespace = (namespace: string): Store<2 | 3> => {
+    if (learningSchemaVersion === 3) {
+      ensureLearningNamespaceV3({ dbPath, namespace, now: options.now });
+      return new Store({ dataDir, dbPath, namespace, now: options.now, schemaVersion: 3 });
+    }
+    return new Store({ dataDir, dbPath, namespace, now: options.now });
+  };
+  const store = storeForNamespace(initialRawSource.namespace);
+  let initialSource: KnowledgeSource;
+  let accounts: Accounts | null = null;
+  try {
+    initialSource = applyIdentityBindings(initialRawSource, store.getIdentityBindings());
+    store.rememberConcepts(initialSource.index.concepts);
+    accounts = options.accountsEnabled ? new Accounts({ dataDir, now: options.now }) : null;
+    if (accounts) renewOwnerDevice(accounts, dataDir, port);
+  } catch (error) { accounts?.close(); store.close(); throw error; }
   const token = options.token ?? randomBytes(32).toString('hex');
-  const accounts = options.accountsEnabled ? new Accounts({ dataDir, now: options.now }) : null;
   const feishuScope = options.feishuScope ? { ...options.feishuScope } : null;
   const feishuChannelState = options.getFeishuChannelState ?? (() => 'disabled' as const);
-  if (accounts) renewOwnerDevice(accounts, dataDir, port);
-  type KnowledgeContext = { rawSource: KnowledgeSource; source: KnowledgeSource; store: Store; changes: ReturnType<typeof createChangeFeed>; root: string; includePrefix?: string };
+  type KnowledgeContext = { rawSource: KnowledgeSource; source: KnowledgeSource; store: Store<2 | 3>; changes: ReturnType<typeof createChangeFeed>; root: string; includePrefix?: string };
   const initialContext: KnowledgeContext = { rawSource: initialRawSource, source: initialSource, store, changes: createChangeFeed(initialSource.namespace), root, includePrefix: sourceInclude(options) };
   const userContexts = new Map<string, KnowledgeContext>();
+  const preparePrivateContext = (userId: string): KnowledgeContext => {
+    const privateRoot = join(dataDir, 'users', userId, 'knowledge');
+    mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
+    const rawSource = loadSource(privateRoot);
+    const privateStore = storeForNamespace(rawSource.namespace);
+    try {
+      const privateSource = applyIdentityBindings(rawSource, privateStore.getIdentityBindings());
+      privateStore.rememberConcepts(privateSource.index.concepts);
+      return { rawSource, source: privateSource, root: privateRoot, store: privateStore, changes: createChangeFeed(privateSource.namespace) };
+    } catch (error) { privateStore.close(); throw error; }
+  };
   const contextForUser = (userId: string): KnowledgeContext => {
     if (!accounts || userId === accounts.ownerId()) return initialContext;
     const existing = userContexts.get(userId);
     if (existing) return existing;
-    const privateRoot = join(dataDir, 'users', userId, 'knowledge');
-    mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
-    const rawSource = loadSource(privateRoot);
-    const privateStore = new Store({ dataDir, dbPath: options.dbPath, namespace: rawSource.namespace, now: options.now });
-    const privateSource = applyIdentityBindings(rawSource, privateStore.getIdentityBindings());
-    privateStore.rememberConcepts(privateSource.index.concepts);
-    const context = { rawSource, source: privateSource, root: privateRoot, store: privateStore, changes: createChangeFeed(privateSource.namespace) };
+    const context = preparePrivateContext(userId);
     userContexts.set(userId, context);
     return context;
   };
@@ -395,7 +437,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   const contextOf = (req: Request) => (req as AccountRequest).knowledgeContext ?? initialContext;
   const sessionOf = (req: Request) => (req as AccountRequest).accountSession;
   const now = options.now ?? (() => new Date());
-  const app = express() as LivingMemoryApp;
+  const app = express() as LivingMemoryApp<2 | 3>;
   const jsonBody = express.json({ limit: JSON_BODY_LIMIT });
 
   app.use((req, res, next) => {
@@ -459,9 +501,9 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
       .filter(name => name.toLowerCase() === LEARNING_PROTOCOL_HEADER.toLowerCase());
     const supported = sse
       ? new URL(req.originalUrl, 'http://localhost').searchParams.getAll('learningProtocol').length === 1
-        && req.query.learningProtocol === String(LEARNING_PROTOCOL_VERSION)
-        && (protocolValues.length === 0 || (protocolValues.length === 1 && req.header(LEARNING_PROTOCOL_HEADER) === String(LEARNING_PROTOCOL_VERSION)))
-      : protocolValues.length === 1 && req.header(LEARNING_PROTOCOL_HEADER) === String(LEARNING_PROTOCOL_VERSION);
+        && req.query.learningProtocol === String(learningSchemaVersion)
+        && (protocolValues.length === 0 || (protocolValues.length === 1 && req.header(LEARNING_PROTOCOL_HEADER) === String(learningSchemaVersion)))
+      : protocolValues.length === 1 && req.header(LEARNING_PROTOCOL_HEADER) === String(learningSchemaVersion);
     if (!attachment && !isLearningProtocolExempt(req.path) && !supported) {
       next(new StoreError(LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, 426)); return;
     }
@@ -585,9 +627,25 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   };
   app.get('/api/admin/users', requireAdmin, (_req, res) => res.json({ users: accounts!.listUsers() }));
   app.post('/api/admin/users', requireAdmin, requireWrite, asyncRoute(async (req, res) => {
-    const user = await accounts!.createUser(req.body?.username, req.body?.password);
-    contextForUser(user.id);
-    res.status(201).json({ user });
+    if (learningSchemaVersion === 2) {
+      const user = await accounts!.createUser(req.body?.username, req.body?.password);
+      contextForUser(user.id);
+      res.status(201).json({ user });
+      return;
+    }
+    let prepared: KnowledgeContext | undefined;
+    try {
+      const user = await accounts!.createUser(req.body?.username, req.body?.password, candidate => {
+        prepared = preparePrivateContext(candidate.id);
+      });
+      // Only the committed account may publish this context. A late account
+      // failure may leave an empty, unauthorized learning namespace on disk.
+      userContexts.set(user.id, prepared!);
+      res.status(201).json({ user });
+    } catch (error) {
+      if (prepared) { prepared.changes.close(); prepared.store.close(); }
+      throw error;
+    }
   }));
   app.put('/api/admin/users/:id', requireAdmin, requireWrite, asyncRoute(async (req, res) => {
     const user = await accounts!.updateUser(String(req.params.id), req.body);
@@ -597,7 +655,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   app.get('/api/session', (req, res) => res.set('Cache-Control', 'no-store').json({
     writeToken: sessionOf(req)?.csrfToken ?? token, sourceId: contextOf(req).source.namespace,
     sourceRootFingerprint: sourceIdentityHash(contextOf(req).root),
-    instanceId, learningProtocolVersion: LEARNING_PROTOCOL_VERSION,
+    instanceId, learningProtocolVersion: learningSchemaVersion,
     ...(sessionOf(req) ? { user: sessionOf(req)!.user } : {}),
   }));
   app.get('/api/observations/:observationEventId/revisions', asyncRoute((req, res) => {
@@ -851,6 +909,13 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   app.post('/api/observations', requireWrite, asyncRoute((req, res) => {
     const { source, store, changes } = contextOf(req);
     const observation = parseObservationRequest(req.body);
+    if (learningSchemaVersion === 3 && store.hasEvent(observation.eventId)) {
+      // Existing identities go directly to the Store transaction. A changed
+      // clock, source or anchor cannot mask clearing or exact replay semantics.
+      const receipt = store.addObservation(observation, observation.anchorEventId);
+      res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
+      return;
+    }
     if (!store.hasEvent(observation.eventId)) {
       const concept = conceptById(source, observation.conceptId);
       if (observation.sourceRevision !== concept.source.revision) throw new StoreError('SOURCE_REVISION_MISMATCH', '概念内容已变化，请先刷新知识源后重新确认。', 409);
@@ -1059,7 +1124,7 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp {
   return app;
 }
 
-export function closeApp(app: LivingMemoryApp): void {
+export function closeApp(app: LivingMemoryApp<2 | 3>): void {
   app.livingMemory.close();
 }
 
