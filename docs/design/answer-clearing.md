@@ -274,3 +274,6 @@ ACLEAR-02C4A 的[客户端握手](../../tests/learning-protocol-client.test.ts)�
 
 
 ACLEAR-02C4B1 新增 32 项合成测试：[namespace 门禁与竞争](../../tests/learning-namespace-v3.test.ts)、[同步账号准备](../../tests/accounts-provisioning.test.ts)、[真实 v3 HTTP](../../tests/app-v3.test.ts)、[HTTP 多账号与失败资源清理](../../tests/app-v3-accounts.test.ts)、[飞书内部能力与待写恢复](../../tests/feishu-review-v3-capability.test.ts)、[真实 v3 写前备份](../../tests/import-backup-v3.test.ts)。32 项定向测试与完整 1679 项 Node／HTTP 回归通过（失败、取消、跳过均为 0），含类型检查的独立构建及 8 项主题检查通过；精确提交远端 CI 待核对。本轮不启动私人 v3 服务、不发送飞书消息、不运行本地浏览器。
+
+
+C4B1 提交 `094918c133b5adec216ea0878aaadf310ad74f6f` 的 [CI 39935365730](https://github.com/wolfhawkld/living-memory/actions/runs/39935365730) 通过 1679 项 Node／HTTP、构建与 8 项主题；浏览器在第 9 项章节引用用例停止（8 通过、1 失败、24 未运行），不算完成交付。远端 trace 与源码确认既有阅读器滚动更新当前章节时，内联导航回调变化会重建 Markdown 引用按钮，使点击可能丢失。收口修复将导航回调稳定为 `useCallback`，保留身份／版本依赖及原有 pending／epoch 行为；原用例增加滚动前后按钮 DOM 身份不变断言，再执行单次点击和原五种失败提示检查。没有增加 sleep／自动重试、放宽断言或修改超时，也未重跑旧失败 SHA。修复后 25 项相关定向与 1679 项完整 Node／HTTP 回归全部通过（失败、取消、跳过均为 0），含类型检查的独立构建、8 项主题和 252 个本地文档链接／锚点检查通过；新精确提交远端 CI 待核对。此修复不展开 C4B2。

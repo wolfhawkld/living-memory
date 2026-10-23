@@ -156,6 +156,18 @@ test('missing, ambiguous, block and unsafe references explain the failure and ke
   ]);
   const dialog = await openReader(page);
   await expect(dialog.getByRole('navigation', { name: '资料目录', exact: true })).toBeVisible();
+  const ambiguous = dialog.getByRole('button', { name: '歧义引用', exact: true });
+  const originalButton = await ambiguous.elementHandle();
+  expect(originalButton).not.toBeNull();
+  try {
+    // Scrolling changes the active section. It must not remount the link while
+    // the pointer is approaching it or between pointer down and pointer up.
+    await ambiguous.scrollIntoViewIfNeeded();
+    await expect(dialog.getByRole('navigation', { name: '资料目录', exact: true })
+      .getByRole('button', { name: '总览', exact: true })).toHaveAttribute('aria-current', 'location');
+    expect(await originalButton!.evaluate(node => node.isConnected)).toBe(true);
+    expect(await ambiguous.evaluate((node, original) => node === original, originalButton)).toBe(true);
+  } finally { await originalButton?.dispose(); }
   for (const [label, message] of [
     ['歧义引用', '引用存在多个匹配项'], ['失效笔记', '引用的知识暂未找到'],
     ['失效章节', '引用章节已变化或不存在'], ['块引用', '暂不支持 ^ 块引用定位'],

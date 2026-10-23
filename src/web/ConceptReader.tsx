@@ -83,7 +83,9 @@ export function ConceptReader({ concept, sourceId, initialSection, onClose, load
     }
   }, [identity, initialSectionId, references, renderVersion, locateSection, section]);
 
-  const navigateReference = async (reference: KnowledgeReference) => {
+  // Keep Markdown link component types stable when scrolling updates the active
+  // section; replacing a button between pointer down/up would lose its click.
+  const navigateReference = useCallback(async (reference: KnowledgeReference) => {
     if (navigationPending.current) return;
     if (!references || reference.sourceConceptId !== concept.id || reference.sourceRevision !== concept.source.revision) {
       setNavigationMessage(sectionNavigationMessage('missing-section')); return;
@@ -108,7 +110,7 @@ export function ConceptReader({ concept, sourceId, initialSection, onClose, load
         if (epoch === navigationEpoch.current) navigationPending.current = false;
       }
     } else setNavigationMessage('引用导航暂不可用，可以继续阅读当前全文。');
-  };
+  }, [references, concept.id, concept.source.revision, locateSection, onNavigateReference]);
 
   useEffect(() => {
     const dialog = dialogRef.current;

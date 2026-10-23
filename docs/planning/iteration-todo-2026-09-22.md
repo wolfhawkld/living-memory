@@ -22,6 +22,8 @@
 
 2026-10-23 接续 [ACLEAR-02C4B1](../design/answer-clearing.md#aclear-02c4b1显式-app-与多用户内部接线)：显式编程 App v3 已接真实 HTTP、多用户知识空间初始化、账号提交前准备、隐私错误、v3 写前备份和飞书内部处理。失败账号不发布，未发布 Store 会关闭；两份数据库不承诺全局原子回滚，无授权空空间可保留。新增 32 项定向测试与完整 1679 项 Node／HTTP 回归通过（失败、取消、跳过均为 0），含类型检查的独立构建及 8 项主题检查通过；精确提交远端 CI 待核对。当前日常启动、profile／env、恢复及连接器仍保持 v2 门禁，`runtimeReady: false` 不变；下一项仅推进 C4B2 运行入口与恢复契约，清除 HTTP／Web 仍为 ACLEAR-03。私人实例与真实飞书未操作。
 
+C4B1 收尾发现既有阅读器点击稳定性缺陷：`094918c`／[CI 39935365730](https://github.com/wolfhawkld/living-memory/actions/runs/39935365730) 的 Node／构建／主题通过，浏览器 8 通过、1 失败、24 未运行。滚动重绘会因回调变化替换引用按钮，已稳定回调并加强原第 9 用例的 DOM 身份断言，保持原单击与五种提示检查；没有重跑旧 SHA 或放宽测试。修复后 25 项定向与 1679 项完整 Node／HTTP 回归、含类型检查的构建、8 项主题和 252 个本地文档链接／锚点检查通过（失败、取消、跳过均为 0），新提交远端 CI 待核对。C4B1 仍等交付核验，C4B2 未开始。
+
 此前 C2A 共用写入仓库已经交付：`df9ada0`／[CI 39800046284](https://github.com/wolfhawkld/living-memory/actions/runs/39800046284) 的 1553 项 Node／HTTP、33 项远端浏览器、8 项主题与构建全部通过；最终架构交付审查通过。
 
 此前 ACLEAR-02C1 已在独立 v3 内核实现清除时原子退休同 namespace 的导入／身份绑定凭证，以及只读状态、遗留准备和操作 guard；`ready` 仅针对两类凭证，不等于运行就绪。`a046000`／[CI 39739507446](https://github.com/wolfhawkld/living-memory/actions/runs/39739507446) 的 1545 项 Node／HTTP、33 项远端浏览器、8 项主题与构建全部通过。
