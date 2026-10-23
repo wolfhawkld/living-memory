@@ -1,5 +1,6 @@
 import type { Observation } from '../shared/types.js';
 import type { PrivacyObservation } from '../shared/answer-clearing.js';
+import { isAnswerCleared } from './answer-clearing.js';
 import {
   assessmentFromObservation, observationAssessmentsEqual, observationRevisionRequestEqual,
   ObservationRevisionError, parseObservationRevision, parseObservationRevisionRequest,
@@ -283,7 +284,7 @@ export function projectObservationAssessments<T extends PrivacyObservation = Obs
  * OR-03 must repeat global idempotency and tail CAS inside its transaction.
  */
 export function prepareObservationRevision(input: {
-  observation: Observation; revisions: readonly unknown[]; request: unknown; recordedAt: string;
+  observation: PrivacyObservation; revisions: readonly unknown[]; request: unknown; recordedAt: string;
 }): { status: 'append' | 'duplicate'; event: ObservationRevision } {
   const request = parseObservationRevisionRequest(input.request);
   const parent = parentOf(input.observation);
@@ -301,6 +302,11 @@ export function prepareObservationRevision(input: {
   }
   // A known success keeps its original receipt, even after later decisions.
   if (duplicate) return { status: 'duplicate', event: duplicate };
+  // Existing decisions remain historical facts. A new decision cannot claim to
+  // recheck an original answer which the current privacy state has removed.
+  if (request.reason === 'rechecked-original' && parent.observation.answer === null && isAnswerCleared(parent.observation)) {
+    throw new ObservationRevisionError('INVALID_TRANSITION');
+  }
   let latestReceipt = parent.recorded;
   for (const event of input.revisions) latestReceipt = Math.max(latestReceipt, time(own(event, 'recordedAt')) ?? -Infinity);
   const projection = projectObservationAssessments([parent.observation], input.revisions, new Date(latestReceipt).toISOString());

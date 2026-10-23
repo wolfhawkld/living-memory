@@ -1,4 +1,4 @@
-import type { Observation } from '../shared/types.js';
+import type { PrivacyObservation } from '../shared/answer-clearing.js';
 import type { ScenarioPrompt } from '../shared/scenario-prompts.js';
 
 /** Internal row used to preserve the stable keyset ordering without exposing private fields. */
@@ -43,7 +43,7 @@ function isAfterCursor(item: ScenarioPromptCandidate, cursor: ScenarioPromptCurs
  * changes learning state or exposes answer/checking fields.
  */
 export function buildScenarioPromptPage(
-  observations: readonly Observation[],
+  observations: readonly PrivacyObservation[],
   conceptIds: ReadonlySet<string>,
   limit: number,
   cursor?: ScenarioPromptCursor,

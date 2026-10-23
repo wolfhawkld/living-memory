@@ -1,9 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Observation } from '../shared/types.js';
+import type { PrivacyObservation } from '../shared/answer-clearing.js';
 import type { ObservationRevisionHistory } from '../shared/observation-revision-history.js';
 import { ObservationRevisionError, parseObservationRevision, parseObservationRevisionRequest, observationRevisionRequestEqual,
   type ObservationRevision, type ObservationRevisionRequest } from '../shared/observation-revisions.js';
 import { prepareObservationRevision, projectObservationAssessments } from '../core/observation-revisions.js';
+import { isAnswerCleared } from '../core/answer-clearing.js';
+import { isValidInstant } from '../core/time-model.js';
+import { inspectAnswerClearingSchemaV3 } from './answer-clearing-schema.js';
 
 const TABLE = `CREATE TABLE IF NOT EXISTS observation_revisions (
   namespace TEXT NOT NULL,
@@ -37,13 +41,15 @@ export function createObservationRevisionTables(db: DatabaseSync): void {
 export class ObservationRevisionStoreError extends Error {
   constructor(readonly code: string, readonly status: number) { super(code); this.name = 'ObservationRevisionStoreError'; }
 }
-export interface ObservationRevisionStoreOptions {
+type RevisionParent<V extends 2 | 3> = V extends 3 ? PrivacyObservation : Observation;
+export interface ObservationRevisionStoreOptions<V extends 2 | 3 = 2> {
   db: DatabaseSync;
   namespace: string;
   now?: () => Date;
+  schemaVersion?: V;
   /** Both callbacks must read this same db/namespace, never write or contact external resources. */
-  getObservation(namespace: string, eventId: string): Observation | null;
-  findOtherEvent(namespace: string, eventId: string): { kind: string; requestPayload: string } | null;
+  getObservation(namespace: string, eventId: string): RevisionParent<V> | null;
+  findOtherEvent(namespace: string, eventId: string): { kind: string; requestPayload: string | null } | null;
 }
 interface Row {
   event_id: string; observation_event_id: string; previous_event_id: string | null;
@@ -88,22 +94,28 @@ export function readObservationRevisions(db: DatabaseSync, namespace: string, pa
   }
 }
 
-interface Cursor { version: 1; namespace: string; parent: string; tail: string; total: number; beforeEventId: string }
-function decodeCursor(raw: string): Cursor {
+type Cursor = { version: 1; namespace: string; parent: string; tail: string; total: number; beforeEventId: string }
+  | { version: 2; namespace: string; parent: string; tail: string; total: number; beforeEventId: string; clearedAt: string | null };
+function decodeCursor(raw: string, schemaVersion: 2 | 3): Cursor {
   try {
     if (typeof raw !== 'string' || !raw || raw.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(raw)) throw new Error();
     const decoded = Buffer.from(raw, 'base64url');
     if (decoded.toString('base64url') !== raw) throw new Error();
     const value = JSON.parse(decoded.toString('utf8')) as Cursor;
     if (!value || typeof value !== 'object' || Array.isArray(value)
-      || Object.keys(value).sort().join(',') !== 'beforeEventId,namespace,parent,tail,total,version'
-      || value.version !== 1 || typeof value.namespace !== 'string' || !value.namespace
+      || Object.keys(value).sort().join(',') !== (schemaVersion === 3
+        ? 'beforeEventId,clearedAt,namespace,parent,tail,total,version'
+        : 'beforeEventId,namespace,parent,tail,total,version')
+      || value.version !== (schemaVersion === 3 ? 2 : 1) || typeof value.namespace !== 'string' || !value.namespace
       || !Number.isSafeInteger(value.total) || value.total < 1) throw new Error();
+    if (value.version === 2 && value.clearedAt !== null
+      && (typeof value.clearedAt !== 'string' || !isValidInstant(value.clearedAt)
+        || new Date(value.clearedAt).toISOString() !== value.clearedAt)) throw new Error();
     id(value.parent); id(value.tail); id(value.beforeEventId);
     return value;
   } catch { throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_HISTORY_QUERY', 400); }
 }
-function historyOptions(input: { limit?: number; cursor?: string }): { limit: number; cursor: Cursor | null } {
+function historyOptions(input: { limit?: number; cursor?: string }, schemaVersion: 2 | 3): { limit: number; cursor: Cursor | null } {
   try {
     if (!input || typeof input !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(input))
       || Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['limit', 'cursor'].includes(key))) throw new Error();
@@ -113,22 +125,26 @@ function historyOptions(input: { limit?: number; cursor?: string }): { limit: nu
     }
     const limit = input.limit === undefined ? 20 : input.limit;
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error();
-    return { limit, cursor: input.cursor === undefined ? null : decodeCursor(input.cursor) };
+    return { limit, cursor: input.cursor === undefined ? null : decodeCursor(input.cursor, schemaVersion) };
   } catch { throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_HISTORY_QUERY', 400); }
 }
 let savepointSequence = 0;
 /** An unconnected ledger: it never opens/closes a database or migrates its schema. */
-export class ObservationRevisionStore {
+export class ObservationRevisionStore<V extends 2 | 3 = 2> {
   private readonly db: DatabaseSync;
   private readonly namespace: string;
   private readonly now: () => Date;
-  constructor(private readonly options: ObservationRevisionStoreOptions) {
+  private readonly schemaVersion: V;
+  constructor(private readonly options: ObservationRevisionStoreOptions<V>) {
     this.db = options.db; this.namespace = options.namespace; this.now = options.now ?? (() => new Date());
+    this.schemaVersion = options.schemaVersion ?? 2 as V;
     if (typeof this.namespace !== 'string' || !this.namespace || this.namespace !== this.namespace.trim()
       || /[\u0000-\u001f\u007f]/.test(this.namespace) || Buffer.byteLength(this.namespace, 'utf8') > 256) {
       throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_REQUEST', 400);
     }
     try {
+      if (this.schemaVersion !== 2 && (this.schemaVersion !== 3
+        || inspectAnswerClearingSchemaV3(this.db).kind !== 'current-v3')) throw invalid();
       if (this.db.prepare('PRAGMA foreign_keys').get()!.foreign_keys !== 1) throw invalid();
       for (const [name, expected] of [['observation_revisions', TABLE], ...Object.entries(INDEXES)]) {
         const row = this.db.prepare('SELECT sql FROM sqlite_master WHERE name=?').get(name) as { sql: string } | undefined;
@@ -139,12 +155,13 @@ export class ObservationRevisionStore {
       if (this.db.prepare('PRAGMA foreign_key_check(observation_revisions)').all().length) throw invalid();
     } catch { throw new ObservationRevisionStoreError('OBSERVATION_REVISION_SCHEMA_UNAVAILABLE', 503); }
   }
-  private parent(parentId: string): Observation {
+  private parent(parentId: string): RevisionParent<V> {
     const observation = this.options.getObservation(this.namespace, parentId);
     if (!observation) throw new ObservationRevisionStoreError('OBSERVATION_REVISION_NOT_FOUND', 404);
     try {
       const detached = structuredClone(observation);
       if (detached.eventId !== parentId) throw invalid();
+      if (this.schemaVersion === 3) isAnswerCleared(detached);
       return detached;
     } catch { throw invalid(); }
   }
@@ -197,9 +214,9 @@ export class ObservationRevisionStore {
       throw new ObservationRevisionStoreError('OBSERVATION_REVISION_WRITE_FAILED', 503);
     }
   }
-  readHistory(observationEventId: string, options: { limit?: number; cursor?: string } = {}): ObservationRevisionHistory {
+  readHistory(observationEventId: string, options: { limit?: number; cursor?: string } = {}): ObservationRevisionHistory<RevisionParent<V>> {
     id(observationEventId);
-    const { limit, cursor } = historyOptions(options);
+    const { limit, cursor } = historyOptions(options, this.schemaVersion);
     if (cursor && (cursor.namespace !== this.namespace || cursor.parent !== observationEventId)) throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_HISTORY_QUERY', 400);
     const savepoint = `lm_observation_revision_read_${++savepointSequence}`;
     let ownsSavepoint = false;
@@ -212,7 +229,9 @@ export class ObservationRevisionStore {
       const state = projection.states[0];
       if (projection.issues.length || !state || (state.status !== 'active' && state.status !== 'withdrawn') || !state.currentAssessment) throw invalid();
       const tail = state.latestRevisionEventId;
-      if (cursor && (cursor.tail !== tail || cursor.total !== events.length)) throw new ObservationRevisionStoreError('OBSERVATION_REVISION_HISTORY_CHANGED', 409);
+      const clearedAt = observation.answer === null ? observation.answerClearing.clearedAt : null;
+      if (cursor && (cursor.tail !== tail || cursor.total !== events.length
+        || cursor.version === 2 && cursor.clearedAt !== clearedAt)) throw new ObservationRevisionStoreError('OBSERVATION_REVISION_HISTORY_CHANGED', 409);
       const byId = new Map(events.map(event => [event.eventId, event]));
       let position = tail;
       if (cursor) {
@@ -226,9 +245,10 @@ export class ObservationRevisionStore {
         if (!event) throw invalid();
         page.push(event); position = event.previousEventId;
       }
-      const nextCursor = position ? Buffer.from(JSON.stringify({ version: 1, namespace: this.namespace, parent: observationEventId,
-        tail, total: events.length, beforeEventId: page.at(-1)!.eventId })).toString('base64url') : null;
-      const result: ObservationRevisionHistory = { observation, state: { status: state.status, currentAssessment: state.currentAssessment,
+      const nextCursor = position ? Buffer.from(JSON.stringify({ version: this.schemaVersion === 3 ? 2 : 1, namespace: this.namespace, parent: observationEventId,
+        tail, total: events.length, beforeEventId: page.at(-1)!.eventId,
+        ...(this.schemaVersion === 3 ? { clearedAt } : {}) })).toString('base64url') : null;
+      const result: ObservationRevisionHistory<RevisionParent<V>> = { observation, state: { status: state.status, currentAssessment: state.currentAssessment,
         latestRevisionEventId: tail, appliedRevisionCount: state.appliedRevisionCount }, events: page, total: events.length,
         observationRevisionCount: this.getRevisionCount(), nextCursor };
       this.db.exec(`RELEASE ${savepoint}`); ownsSavepoint = false;

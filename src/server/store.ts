@@ -13,6 +13,14 @@ export { StoreError } from './store-error.js';
 import { inspectLearningSchema, initializeLearningSchemaV2 } from './learning-schema.js';
 import { ObservationRevisionStore, ObservationRevisionStoreError } from './observation-revision-store.js';
 import { projectObservationAssessments } from '../core/observation-revisions.js';
+import { projectObservationPerformance, selectObservationPerformanceForConcept } from '../core/observation-performance.js';
+import type { PrivacyObservation, AnswerClearingRequest, AnswerClearingReceipt } from '../shared/answer-clearing.js';
+import type { ExportDataV3 } from '../shared/answer-clearing-export.js';
+import { AnswerClearingStore, AnswerClearingStoreError } from './answer-clearing-store.js';
+import { inspectAnswerClearingSchemaV3 } from './answer-clearing-schema.js';
+import { AnswerClearingImportCoordinator } from './answer-clearing-import-coordinator.js';
+import { SAFE_IDENTITY_CREDENTIAL, encodeSafeIdentityReceiptEnvelope, parseSafeIdentityReceiptEnvelope,
+  safeIdentityReplayMatches } from './answer-clearing-identity-replay-contract.js';
 import type { ObservationRevision } from '../shared/observation-revisions.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -93,12 +101,16 @@ import { parseRelationSuggestion } from '../shared/relation-suggestions.js';
 const DEFAULT_HALF_LIFE_DAYS = 7;
 const IDENTITY_DEFAULT_PREFERENCE: ConceptReviewPreference = { focus: false, deferUntil: null };
 
-export interface StoreOptions {
+export interface StoreOptions<V extends 2 | 3 = 2> {
   dataDir?: string;
   dbPath?: string;
   namespace: string;
   now?: () => Date;
+  schemaVersion?: V;
 }
+
+type StoreObservation<V extends 2 | 3> = V extends 3 ? PrivacyObservation : Observation;
+type StoreExport<V extends 2 | 3> = V extends 3 ? ExportDataV3 : ExportDataV2;
 
 export interface StoredObservation extends Observation {
   requestPayload?: string;
@@ -440,33 +452,50 @@ function decodeScenarioPromptCursor(value: string): ScenarioPromptStoreCursor {
   };
 }
 
-export class Store {
+export class Store<V extends 2 | 3 = 2> {
   readonly namespace: string;
   readonly dbPath: string;
   readonly activity: ActivityStore;
-  readonly observationRevisions: ObservationRevisionStore;
+  readonly observationRevisions: ObservationRevisionStore<V>;
   private readonly now: () => Date;
   private readonly db: DatabaseSync;
-  private readonly snapshotRepository: LearningSnapshotRepository<2>;
-  private readonly importRepository: LearningImportRepository;
+  private readonly snapshotRepository: LearningSnapshotRepository<V>;
+  private readonly importRepository: LearningImportRepository<V>;
+  private readonly schemaVersion: V;
+  private readonly answerPrivacy: AnswerClearingStore | null;
+  private readonly v3Import: AnswerClearingImportCoordinator | null;
   private readSequence = 0;
 
-  constructor(options: StoreOptions) {
+  constructor(options: StoreOptions<V> & (V extends 3 ? { schemaVersion: 3 } : unknown)) {
     this.namespace = options.namespace;
     this.now = options.now ?? (() => new Date());
     this.dbPath = options.dbPath ?? join(options.dataDir ?? 'data/local', 'living-memory.sqlite');
-    mkdirSync(dirname(this.dbPath), { recursive: true });
+    this.schemaVersion = options.schemaVersion === undefined ? 2 as V : options.schemaVersion;
+    if (this.schemaVersion !== 2 && this.schemaVersion !== 3) throw new StoreError('LEARNING_SCHEMA_UNSUPPORTED_VERSION', 'LEARNING_SCHEMA_UNSUPPORTED_VERSION', 503);
+    if (this.schemaVersion === 3) {
+      if (!existsSync(this.dbPath)) throw new StoreError('LEARNING_SCHEMA_UNSUPPORTED_VERSION', 'LEARNING_SCHEMA_UNSUPPORTED_VERSION', 503);
+    } else mkdirSync(dirname(this.dbPath), { recursive: true });
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
     try {
-      const schema = inspectLearningSchema(this.db);
-      if (schema.kind === 'legacy-v1') throw new StoreError('LEARNING_SCHEMA_UPGRADE_REQUIRED', '请先离线备份并恢复到新目录，完成学习数据库升级。', 503);
-      if (schema.kind === 'empty') initializeLearningSchemaV2(this.db, { recordedAt: iso(this.now()) });
-      this.initialize();
-      this.snapshotRepository = new LearningSnapshotRepository({ db: this.db, namespace: this.namespace, now: this.now });
-      this.importRepository = new LearningImportRepository({ db: this.db, namespace: this.namespace, now: this.now });
+      if (this.schemaVersion === 3) {
+        if (inspectAnswerClearingSchemaV3(this.db).kind !== 'current-v3') throw new StoreError('LEARNING_SCHEMA_UNSUPPORTED_VERSION', 'LEARNING_SCHEMA_UNSUPPORTED_VERSION', 503);
+        const ready = this.db.prepare(`SELECT 1 AS ready FROM main.namespaces n JOIN main.config_history c
+          ON c.namespace=n.namespace WHERE n.namespace=? LIMIT 1`).get(this.namespace);
+        if (!ready) throw new StoreError('LEARNING_NAMESPACE_UNAVAILABLE', 'LEARNING_NAMESPACE_UNAVAILABLE', 503);
+      } else {
+        const schema = inspectLearningSchema(this.db);
+        if (schema.kind === 'legacy-v1') throw new StoreError('LEARNING_SCHEMA_UPGRADE_REQUIRED', '请先离线备份并恢复到新目录，完成学习数据库升级。', 503);
+        if (schema.kind === 'empty') initializeLearningSchemaV2(this.db, { recordedAt: iso(this.now()) });
+        this.initialize();
+      }
+      const repositoryOptions = { db: this.db, namespace: this.namespace, now: this.now, schemaVersion: this.schemaVersion };
+      this.snapshotRepository = new LearningSnapshotRepository(repositoryOptions);
+      this.importRepository = new LearningImportRepository(repositoryOptions);
+      this.answerPrivacy = this.schemaVersion === 3 ? new AnswerClearingStore(repositoryOptions) : null;
+      this.v3Import = this.schemaVersion === 3 ? new AnswerClearingImportCoordinator(repositoryOptions) : null;
       this.activity = new ActivityStore({ db: this.db, namespace: this.namespace, now: this.now });
-      this.observationRevisions = new ObservationRevisionStore({ db: this.db, namespace: this.namespace, now: this.now,
+      this.observationRevisions = new ObservationRevisionStore({ ...repositoryOptions,
         getObservation: (_namespace, eventId) => this.getObservationsStrict().find(event => event.eventId === eventId) ?? null,
         findOtherEvent: (_namespace, eventId) => {
           const event = this.findEvent(eventId);
@@ -528,8 +557,9 @@ export class Store {
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || expectedRevision >= Number.MAX_SAFE_INTEGER) {
       throw new StoreError('INVALID_REVISION', 'revision 必须是可安全递增的正整数。');
     }
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
       const current = this.getConfig();
       if (expectedRevision !== current.revision) {
         // A config request describes one exact transition: expected -> expected+1.
@@ -543,7 +573,7 @@ export class Store {
           this.namespace, expectedRevision, MODEL_VERSION, MODEL_VERSION,
         ) as { revision: number; model_version: string; half_life_days: number } | undefined;
         if (expectedRevision < current.revision && applied?.half_life_days === halfLifeDays) {
-          this.db.exec('COMMIT');
+          this.db.exec('COMMIT'); ownsTxn = false;
           return { modelVersion: MODEL_VERSION, halfLifeDays, revision: applied.revision,
             status: 'duplicate', currentConfig: current };
         }
@@ -552,18 +582,32 @@ export class Store {
       const next = current.revision + 1;
       const recordedAt = iso(this.now());
       this.db.prepare('INSERT INTO config_history(namespace, revision, model_version, half_life_days, recorded_at) VALUES (?, ?, ?, ?, ?)').run(this.namespace, next, MODEL_VERSION, halfLifeDays, recordedAt);
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
       const config: ModelConfig = { modelVersion: MODEL_VERSION, halfLifeDays, revision: next };
       return { ...config, status: 'accepted', currentConfig: config };
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
   }
 
-  private findEvent(eventId: string): { kind: 'anchor' | 'observation' | 'retention' | 'application' | 'correction' | 'relation-review' | 'observation-revision' | PracticeEventKind; payload: string } | null {
+  private findEvent(eventId: string) {
     return this.importRepository.findEvent(eventId);
+  }
+
+  /** Explicit v3 API for authorized callers; the product HTTP surface is enabled separately. */
+  clearObservationAnswer(request: AnswerClearingRequest): AnswerClearingReceipt {
+    if (!this.answerPrivacy) throw new StoreError('LEARNING_SCHEMA_UNSUPPORTED_VERSION', 'LEARNING_SCHEMA_UNSUPPORTED_VERSION', 503);
+    return this.answerPrivacy.clear(request);
+  }
+
+  private assertObservationReplayAllowed(eventId: string): void {
+    try { this.answerPrivacy?.assertReplayAllowed(eventId); }
+    catch (error) {
+      if (error instanceof AnswerClearingStoreError) throw new StoreError(error.code, error.code, error.status);
+      throw error;
+    }
   }
 
   hasEvent(eventId: string): boolean {
@@ -587,22 +631,26 @@ export class Store {
       ...(providedOccurredAt ? { occurredAt: providedOccurredAt } : {}),
     };
     const requestPayload = canonicalJson(request);
-    const existing = this.findEvent(input.eventId);
-    if (existing) {
-      if (existing.kind !== 'anchor' || existing.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
-      return { status: 'duplicate', eventId: input.eventId };
-    }
-    const now = this.now();
-    const nowMs = now.getTime();
-    if (input.kind === 'estimated' && !providedOccurredAt) {
-      throw new StoreError('INVALID_OCCURRED_AT', 'estimated 事件必须提供 occurredAt。');
-    }
-    const occurredAt = providedOccurredAt ?? iso(now);
-    if (parseDate(occurredAt) > nowMs) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
-    const recordedAt = iso(now);
     let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      if (this.schemaVersion === 3) {
+        this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      }
+      const existing = this.findEvent(input.eventId);
+      if (existing) {
+        if (existing.kind !== 'anchor' || existing.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        if (ownsTxn) { this.db.exec('COMMIT'); ownsTxn = false; }
+        return { status: 'duplicate', eventId: input.eventId };
+      }
+      const now = this.now();
+      const nowMs = now.getTime();
+      if (input.kind === 'estimated' && !providedOccurredAt) {
+        throw new StoreError('INVALID_OCCURRED_AT', 'estimated 事件必须提供 occurredAt。');
+      }
+      const occurredAt = providedOccurredAt ?? iso(now);
+      if (parseDate(occurredAt) > nowMs) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
+      const recordedAt = iso(now);
+      if (!ownsTxn) { this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true; }
       const concurrent = this.findEvent(input.eventId);
       if (concurrent) {
         if (concurrent.kind !== 'anchor' || concurrent.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用。', 409);
@@ -641,33 +689,38 @@ export class Store {
       ...(evidenceMode ? { evidenceMode } : {}),
     };
     const requestPayload = canonicalJson(request);
-    const existing = this.findEvent(input.eventId);
-    if (existing) {
-      if (existing.kind !== 'observation' || existing.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
-      return { status: 'duplicate', eventId: input.eventId };
-    }
-    if (input.anchorEventId !== expectedAnchorEventId) {
-      throw new StoreError('ANCHOR_CONFLICT', '回忆观察对应的时间起点已变化，请重新读取快照后重试。', 409);
-    }
-    const config = this.getConfigAt(input.configRevision);
-    if (!config) throw new StoreError('CONFIG_REVISION_UNKNOWN', '提交时使用的模型配置版本不存在，请重新读取快照。', 409);
-    const nowMs = this.now().getTime();
-    if (parseDate(observedAt) > nowMs) throw new StoreError('FUTURE_OBSERVATION', '观察时间不能晚于服务当前时间。');
-    const anchor = expectedAnchorEventId ? this.getAnchorById(expectedAnchorEventId) : null;
-    if (expectedAnchorEventId && !anchor) {
-      throw new StoreError('ANCHOR_CONFLICT', '回忆观察引用的时间起点不存在，请重新读取快照后重试。', 409);
-    }
-    if (anchor && (anchor.conceptId !== input.conceptId || anchor.sourceRevision !== input.sourceRevision)) {
-      throw new StoreError('ANCHOR_CONFLICT', '回忆观察引用的时间起点与概念版本不匹配，请先确认当前来源。', 409);
-    }
-    if (anchor && parseDate(anchor.occurredAt) > parseDate(observedAt)) {
-      throw new StoreError('ANCHOR_CONFLICT', '回忆观察时间早于引用的时间起点，请重新读取快照后重试。', 409);
-    }
-    const computed = computeDecay(anchor?.occurredAt ?? null, config.halfLifeDays, observedAt);
-    const recordedAt = iso(this.now());
     let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      if (this.schemaVersion === 3) {
+        this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+        this.assertObservationReplayAllowed(input.eventId);
+      }
+      const existing = this.findEvent(input.eventId);
+      if (existing) {
+        if (existing.kind !== 'observation' || existing.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        if (ownsTxn) { this.db.exec('COMMIT'); ownsTxn = false; }
+        return { status: 'duplicate', eventId: input.eventId };
+      }
+      if (input.anchorEventId !== expectedAnchorEventId) {
+        throw new StoreError('ANCHOR_CONFLICT', '回忆观察对应的时间起点已变化，请重新读取快照后重试。', 409);
+      }
+      const config = this.getConfigAt(input.configRevision);
+      if (!config) throw new StoreError('CONFIG_REVISION_UNKNOWN', '提交时使用的模型配置版本不存在，请重新读取快照。', 409);
+      const nowMs = this.now().getTime();
+      if (parseDate(observedAt) > nowMs) throw new StoreError('FUTURE_OBSERVATION', '观察时间不能晚于服务当前时间。');
+      const anchor = expectedAnchorEventId ? this.getAnchorById(expectedAnchorEventId) : null;
+      if (expectedAnchorEventId && !anchor) {
+        throw new StoreError('ANCHOR_CONFLICT', '回忆观察引用的时间起点不存在，请重新读取快照后重试。', 409);
+      }
+      if (anchor && (anchor.conceptId !== input.conceptId || anchor.sourceRevision !== input.sourceRevision)) {
+        throw new StoreError('ANCHOR_CONFLICT', '回忆观察引用的时间起点与概念版本不匹配，请先确认当前来源。', 409);
+      }
+      if (anchor && parseDate(anchor.occurredAt) > parseDate(observedAt)) {
+        throw new StoreError('ANCHOR_CONFLICT', '回忆观察时间早于引用的时间起点，请重新读取快照后重试。', 409);
+      }
+      const computed = computeDecay(anchor?.occurredAt ?? null, config.halfLifeDays, observedAt);
+      const recordedAt = iso(this.now());
+      if (!ownsTxn) { this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true; }
       const concurrent = this.findEvent(input.eventId);
       if (concurrent) {
         if (concurrent.kind !== 'observation' || concurrent.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用。', 409);
@@ -721,17 +774,21 @@ export class Store {
       previousEventId,
     };
     const requestPayload = canonicalJson(request);
-    const existing = this.findEvent(input.eventId);
-    if (existing) {
-      if (existing.kind !== 'retention' || existing.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
-      return { status: 'duplicate', eventId: input.eventId };
-    }
-    const now = this.now();
-    if (parseDate(occurredAt) > now.getTime()) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
-    const recordedAt = iso(now);
     let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      if (this.schemaVersion === 3) {
+        this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      }
+      const existing = this.findEvent(input.eventId);
+      if (existing) {
+        if (existing.kind !== 'retention' || existing.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        if (ownsTxn) { this.db.exec('COMMIT'); ownsTxn = false; }
+        return { status: 'duplicate', eventId: input.eventId };
+      }
+      const now = this.now();
+      if (parseDate(occurredAt) > now.getTime()) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
+      const recordedAt = iso(now);
+      if (!ownsTxn) { this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true; }
       const concurrent = this.findEvent(input.eventId);
       if (concurrent) {
         if (concurrent.kind !== 'retention' || concurrent.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用。', 409);
@@ -774,21 +831,25 @@ export class Store {
     const request = normalizeApplicationRequest(input);
     this.ensureEventId(request.eventId);
     const requestPayload = canonicalJson(request);
-    const existing = this.findEvent(request.eventId);
-    if (existing) {
-      if (existing.kind !== 'application' || existing.payload !== requestPayload) {
-        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
-      }
-      return { status: 'duplicate', eventId: request.eventId };
-    }
-    const now = this.now();
-    if (parseDate(request.occurredAt) > now.getTime()) {
-      throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
-    }
-    const recordedAt = iso(now);
     let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      if (this.schemaVersion === 3) {
+        this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      }
+      const existing = this.findEvent(request.eventId);
+      if (existing) {
+        if (existing.kind !== 'application' || existing.payload !== requestPayload) {
+          throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        }
+        if (ownsTxn) { this.db.exec('COMMIT'); ownsTxn = false; }
+        return { status: 'duplicate', eventId: request.eventId };
+      }
+      const now = this.now();
+      if (parseDate(request.occurredAt) > now.getTime()) {
+        throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
+      }
+      const recordedAt = iso(now);
+      if (!ownsTxn) { this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true; }
       const concurrent = this.findEvent(request.eventId);
       if (concurrent) {
         if (concurrent.kind !== 'application' || concurrent.payload !== requestPayload) throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用。', 409);
@@ -936,27 +997,32 @@ export class Store {
     const request = parsePracticeCardRequest(input);
     this.ensureEventId(request.eventId);
     const requestPayload = canonicalJson(request);
-    const existing = this.findEvent(request.eventId);
-    if (existing) {
-      if (existing.kind !== 'practice-card' || existing.payload !== requestPayload) {
-        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
-      }
-      return { status: 'duplicate', eventId: request.eventId };
-    }
-    this.assertPracticeSourcesCurrent(request.sources, concepts);
-    const now = this.now();
-    if (parseDate(request.occurredAt) > now.getTime()) {
-      throw new StoreError('FUTURE_PRACTICE_CARD', '练习卡发生时间不能晚于服务当前时间。');
-    }
-    const recordedAt = iso(now);
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      if (this.schemaVersion === 3) {
+        this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      }
+      const existing = this.findEvent(request.eventId);
+      if (existing) {
+        if (existing.kind !== 'practice-card' || existing.payload !== requestPayload) {
+          throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        }
+        if (ownsTxn) { this.db.exec('COMMIT'); ownsTxn = false; }
+        return { status: 'duplicate', eventId: request.eventId };
+      }
+      this.assertPracticeSourcesCurrent(request.sources, concepts);
+      const now = this.now();
+      if (parseDate(request.occurredAt) > now.getTime()) {
+        throw new StoreError('FUTURE_PRACTICE_CARD', '练习卡发生时间不能晚于服务当前时间。');
+      }
+      const recordedAt = iso(now);
+      if (!ownsTxn) { this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true; }
       const concurrent = this.findEvent(request.eventId);
       if (concurrent) {
         if (concurrent.kind !== 'practice-card' || concurrent.payload !== requestPayload) {
           throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
         }
-        this.db.exec('COMMIT');
+        this.db.exec('COMMIT'); ownsTxn = false;
         return { status: 'duplicate', eventId: request.eventId };
       }
       const tail = this.latestPracticeCardRow(request.cardId);
@@ -1000,10 +1066,10 @@ export class Store {
           this.namespace, request.eventId, request.cardId, source.conceptId, source.sourceRevision,
         );
       }
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
       return { status: 'accepted', eventId: request.eventId };
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
@@ -1013,26 +1079,31 @@ export class Store {
     const request = parsePracticeAttemptRequest(input);
     this.ensureEventId(request.eventId);
     const requestPayload = canonicalJson(request);
-    const existing = this.findEvent(request.eventId);
-    if (existing) {
-      if (existing.kind !== 'practice-attempt' || existing.payload !== requestPayload) {
-        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
-      }
-      return { status: 'duplicate', eventId: request.eventId };
-    }
-    const now = this.now();
-    if (parseDate(request.answeredAt) > now.getTime()) {
-      throw new StoreError('FUTURE_PRACTICE_ATTEMPT', '答题时间不能晚于服务当前时间。');
-    }
-    const recordedAt = iso(now);
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      if (this.schemaVersion === 3) {
+        this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      }
+      const existing = this.findEvent(request.eventId);
+      if (existing) {
+        if (existing.kind !== 'practice-attempt' || existing.payload !== requestPayload) {
+          throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        }
+        if (ownsTxn) { this.db.exec('COMMIT'); ownsTxn = false; }
+        return { status: 'duplicate', eventId: request.eventId };
+      }
+      const now = this.now();
+      if (parseDate(request.answeredAt) > now.getTime()) {
+        throw new StoreError('FUTURE_PRACTICE_ATTEMPT', '答题时间不能晚于服务当前时间。');
+      }
+      const recordedAt = iso(now);
+      if (!ownsTxn) { this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true; }
       const concurrent = this.findEvent(request.eventId);
       if (concurrent) {
         if (concurrent.kind !== 'practice-attempt' || concurrent.payload !== requestPayload) {
           throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
         }
-        this.db.exec('COMMIT');
+        this.db.exec('COMMIT'); ownsTxn = false;
         return { status: 'duplicate', eventId: request.eventId };
       }
       const tailRow = this.latestPracticeCardRow(request.cardId);
@@ -1069,10 +1140,10 @@ export class Store {
         request.scenario ? canonicalJson(request.scenario) : null,
         requestPayload,
       );
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
       return { status: 'accepted', eventId: request.eventId };
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
@@ -1163,19 +1234,20 @@ export class Store {
     return this.snapshotRepository.getIdentityAcceptedPaths();
   }
 
-  getObservations(conceptId?: string, sourceRevision?: string, strict = false): Observation[] {
+  getObservations(conceptId?: string, sourceRevision?: string, strict = false): StoreObservation<V>[] {
     return this.snapshotRepository.getObservations(conceptId, sourceRevision, strict);
   }
 
-  /** Strict rows for revision parents, effective statistics and complete V2 backups. */
-  private getObservationsStrict(conceptId?: string): Observation[] {
+  /** Strict raw rows retain clearing markers for parents, history and complete backups. */
+  private getObservationsStrict(conceptId?: string): StoreObservation<V>[] {
     return this.snapshotRepository.getObservationsStrict(conceptId);
   }
 
   getLearningOverview(sourceId: string, concepts: Concept[], links: GraphLink[], asOf: string) {
     return this.readSnapshot(() => {
       const raw = this.getObservationsStrict();
-      const projection = projectObservationAssessments(raw, this.observationRevisions.getRevisions(), asOf);
+      const performance = this.getPerformanceProjection(asOf);
+      const projection = performance.assessments;
       const observationAssessments = {
         raw: raw.length, effective: projection.effective.length,
         withdrawn: projection.states.filter(item => item.status === 'withdrawn').length,
@@ -1183,15 +1255,31 @@ export class Store {
         notYetRecorded: projection.states.filter(item => item.status === 'not-yet-recorded').length,
         revisionCount: this.observationRevisions.getRevisionCount(),
       };
-      return { ...buildLearningOverview({ sourceId, asOf, concepts, states: this.getStates(concepts, asOf),
-        observations: projection.effective.map(item => item.observation), applications: this.getApplications(),
-        corrections: this.getCorrections(), relationData: { links, reviews: this.getRelationReviews() }, anchors: this.getAnchors() }),
-        observationAssessments };
+      const overview = buildLearningOverview({ sourceId, asOf, concepts, states: this.getStates(concepts, asOf),
+        observations: performance.observations, applications: this.getApplications(),
+        corrections: this.getCorrections(), relationData: { links, reviews: this.getRelationReviews() }, anchors: this.getAnchors() });
+      const result = { ...overview, observationAssessments };
+      if (this.schemaVersion !== 3) return result;
+      return { ...result, observationPrivacy: performance.privacy,
+        items: result.items.map(item => ({ ...item, observationPrivacy:
+          selectObservationPerformanceForConcept(performance, raw, item.conceptId).privacy })) };
     });
   }
 
   getEffectiveObservations(asOf: string, conceptId?: string): Observation[] {
-    return this.readSnapshot(() => this.getObservationProjection(asOf, conceptId).effective.map(item => item.observation));
+    return this.readSnapshot(() => this.getPerformanceProjection(asOf, conceptId).observations);
+  }
+
+  private getPerformanceProjection(asOf: string, conceptId?: string) {
+    if (this.schemaVersion === 3) {
+      const raw = this.getObservationsStrict();
+      const complete = projectObservationPerformance(raw, this.observationRevisions.getRevisions(), asOf);
+      return conceptId === undefined ? complete : selectObservationPerformanceForConcept(complete, raw, conceptId);
+    }
+    const assessments = this.getObservationProjection(asOf, conceptId);
+    // The default schema 2 repository only returns intact string-answer rows.
+    return { assessments, observations: assessments.effective.map(item => item.observation) as Observation[],
+      privacy: { cleared: 0, excludedFromPerformance: 0 } };
   }
 
   private getObservationProjection(asOf: string, conceptId?: string) {
@@ -1305,20 +1393,25 @@ export class Store {
     const request = normalizeCorrectionRequest(input);
     this.ensureEventId(request.eventId);
     const requestPayload = this.correctionRequestPayload(request);
-    const existing = this.findEvent(request.eventId);
-    if (existing) {
-      if (existing.kind !== 'correction' || existing.payload !== requestPayload) {
-        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
-      }
-      return { status: 'duplicate', eventId: request.eventId };
-    }
-
-    const now = this.now();
-    const nowMs = now.getTime();
-    if (parseDate(request.occurredAt) > nowMs) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
-    const recordedAt = iso(now);
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      if (this.schemaVersion === 3) {
+        this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      }
+      const existing = this.findEvent(request.eventId);
+      if (existing) {
+        if (existing.kind !== 'correction' || existing.payload !== requestPayload) {
+          throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        }
+        if (ownsTxn) { this.db.exec('COMMIT'); ownsTxn = false; }
+        return { status: 'duplicate', eventId: request.eventId };
+      }
+
+      const now = this.now();
+      const nowMs = now.getTime();
+      if (parseDate(request.occurredAt) > nowMs) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
+      const recordedAt = iso(now);
+      if (!ownsTxn) { this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true; }
       // Re-check under the write lock. A concurrent writer may have claimed
       // this event ID after the optimistic duplicate check above.
       const concurrent = this.findEvent(request.eventId);
@@ -1326,7 +1419,7 @@ export class Store {
         if (concurrent.kind !== 'correction' || concurrent.payload !== requestPayload) {
           throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
         }
-        this.db.exec('COMMIT');
+        this.db.exec('COMMIT'); ownsTxn = false;
         return { status: 'duplicate', eventId: request.eventId };
       }
 
@@ -1373,9 +1466,9 @@ export class Store {
         request.note,
         requestPayload,
       );
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
@@ -1452,20 +1545,25 @@ export class Store {
     const request = parseRelationReviewRequest(input);
     this.ensureEventId(request.eventId);
     const requestPayload = this.relationReviewRequestPayload(request);
-    const existing = this.findEvent(request.eventId);
-    if (existing) {
-      if (existing.kind !== 'relation-review' || existing.payload !== requestPayload) {
-        throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
-      }
-      return { status: 'duplicate', eventId: request.eventId };
-    }
-
-    const now = this.now();
-    const nowMs = now.getTime();
-    if (parseDate(request.occurredAt) > nowMs) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
-    const recordedAt = iso(now);
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      if (this.schemaVersion === 3) {
+        this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      }
+      const existing = this.findEvent(request.eventId);
+      if (existing) {
+        if (existing.kind !== 'relation-review' || existing.payload !== requestPayload) {
+          throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
+        }
+        if (ownsTxn) { this.db.exec('COMMIT'); ownsTxn = false; }
+        return { status: 'duplicate', eventId: request.eventId };
+      }
+
+      const now = this.now();
+      const nowMs = now.getTime();
+      if (parseDate(request.occurredAt) > nowMs) throw new StoreError('FUTURE_EVENT', '发生时间不能晚于服务当前时间。');
+      const recordedAt = iso(now);
+      if (!ownsTxn) { this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true; }
       // Re-check under the write lock. A concurrent writer may have claimed
       // this event ID after the optimistic duplicate check above.
       const concurrent = this.findEvent(request.eventId);
@@ -1473,7 +1571,7 @@ export class Store {
         if (concurrent.kind !== 'relation-review' || concurrent.payload !== requestPayload) {
           throw new StoreError('EVENT_CONFLICT', 'eventId 已被其他事件使用，不能覆盖已有记录。', 409);
         }
-        this.db.exec('COMMIT');
+        this.db.exec('COMMIT'); ownsTxn = false;
         return { status: 'duplicate', eventId: request.eventId };
       }
 
@@ -1513,9 +1611,9 @@ export class Store {
         request.note,
         requestPayload,
       );
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
@@ -1533,7 +1631,7 @@ export class Store {
     limit: number,
     rawCursor?: string,
     applicationEventId?: string,
-  ): ConceptHistory {
+  ): ConceptHistory<StoreObservation<V>> {
     return this.readSnapshot(() => this.readConceptHistory(concept, asOf, limit, rawCursor, applicationEventId));
   }
 
@@ -1543,7 +1641,7 @@ export class Store {
     limit: number,
     rawCursor?: string,
     applicationEventId?: string,
-  ): ConceptHistory {
+  ): ConceptHistory<StoreObservation<V>> {
     const normalizedAsOf = normalizeDate(asOf, 'INVALID_HISTORY_AS_OF');
     const cursor = rawCursor === undefined ? null : decodeHistoryCursor(rawCursor);
     if (cursor && (cursor.namespace !== this.namespace || cursor.conceptId !== concept.id)) invalidHistoryCursor();
@@ -1705,7 +1803,9 @@ export class Store {
 
     const hasNext = rows.length > limit;
     const page = hasNext ? rows.slice(0, limit) : rows;
-    const entries: ConceptHistoryEntry[] = page.map((row) => {
+    const privacyObservations = this.schemaVersion === 3 ? this.getObservationsStrict(concept.id) : [];
+    const privacyById = new Map(privacyObservations.map(event => [event.eventId, event]));
+    const entries: ConceptHistoryEntry<StoreObservation<V>>[] = page.map((row) => {
       if (row.event_type === 'anchor') {
         return {
           type: 'anchor',
@@ -1756,6 +1856,11 @@ export class Store {
           },
         };
       }
+      if (this.schemaVersion === 3) {
+        const event = privacyById.get(row.event_id);
+        if (!event) throw new StoreError('ANSWER_CLEARING_DATA_INVALID', 'ANSWER_CLEARING_DATA_INVALID', 503);
+        return { type: 'observation', event };
+      }
       const learning = parseStoredLearning(row.learning_json);
       return {
         type: 'observation',
@@ -1776,7 +1881,7 @@ export class Store {
           observedExposure: Boolean(row.observed_exposure),
           ...(learning ? { learning } : {}),
           ...(row.evidence_mode !== null ? { evidenceMode: normalizeObservationEvidenceMode(row.evidence_mode, row.answer) } : {}),
-        },
+        } as StoreObservation<V>,
       };
     });
     const last = page.at(-1);
@@ -1796,8 +1901,14 @@ export class Store {
         corrections[entry.event_id] = this.getCorrectionHistory(entry.event_id);
       }
     }
-    const assessmentProjection = this.getObservationProjection(normalizedAsOf, concept.id);
-    const conceptObservations = assessmentProjection.effective.map(item => item.observation);
+    const performance = this.getPerformanceProjection(normalizedAsOf, concept.id);
+    const assessmentProjection = performance.assessments;
+    const conceptObservations = performance.observations;
+    const assessmentVersionData = this.schemaVersion === 3 ? {
+      states: assessmentProjection.states,
+      answerClearings: privacyObservations.flatMap(event => event.answer === null ? [event.answerClearing] : [])
+        .sort((left, right) => left.observationEventId.localeCompare(right.observationEventId)),
+    } : assessmentProjection.states;
     return {
       sourceId: this.namespace,
       conceptId: concept.id,
@@ -1814,7 +1925,8 @@ export class Store {
       corrections,
       correctionCount: correctionCountRow.count,
       observationRevisionCount: this.observationRevisions.getRevisionCount(),
-      observationAssessmentVersion: createHash('sha256').update(canonicalJson(assessmentProjection.states)).digest('hex'),
+      observationAssessmentVersion: createHash('sha256').update(canonicalJson(assessmentVersionData)).digest('hex'),
+      ...(this.schemaVersion === 3 ? { observationPrivacy: performance.privacy } : {}),
       observationAssessments: Object.fromEntries(assessmentProjection.states
         .filter(item => entries.some(entry => entry.type === 'observation' && entry.event.eventId === item.observationEventId))
         .map(({ audit: _audit, ...item }) => [item.observationEventId, item])),
@@ -1885,8 +1997,9 @@ export class Store {
       ? { dailyBudget: validateReviewBudget((input as { dailyBudget: unknown }).dailyBudget) }
       : { concept: normalizeReviewPlanConcept((input as { concept: unknown }).concept, this.now()) };
 
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
       const current = this.getReviewPlanInTransaction();
       const nextConcepts = { ...current.concepts };
       let nextBudget = current.dailyBudget;
@@ -1903,7 +2016,7 @@ export class Store {
       const unchanged = nextBudget === current.dailyBudget
         && canonicalJson(nextConcepts) === canonicalJson(current.concepts);
       if (unchanged) {
-        this.db.exec('COMMIT');
+        this.db.exec('COMMIT'); ownsTxn = false;
         return current;
       }
       if (revision !== current.revision) {
@@ -1927,10 +2040,10 @@ export class Store {
         canonicalJson(next.concepts),
         iso(this.now()),
       );
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
       return next;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
@@ -1977,13 +2090,14 @@ export class Store {
   setLayout(layout: Layout): Layout {
     const recordedAt = iso(this.now());
     const json = canonicalJson(layout);
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
       this.db.prepare(`INSERT INTO layouts(namespace, layout_json, recorded_at) VALUES (?, ?, ?)
         ON CONFLICT(namespace) DO UPDATE SET layout_json = excluded.layout_json, recorded_at = excluded.recorded_at`).run(this.namespace, json, recordedAt);
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
     return layout;
@@ -2004,8 +2118,9 @@ export class Store {
       return { id, title, path, revision };
     });
     if (rows.length === 0) return;
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
       for (const row of rows) {
         this.db.prepare(`INSERT INTO identity_catalog(namespace, concept_id, title, source_path, source_revision)
           VALUES (?, ?, ?, ?, ?)
@@ -2016,9 +2131,9 @@ export class Store {
           this.namespace, row.id, row.title, row.path, row.revision,
         );
       }
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
       if (error instanceof StoreError) throw error;
       throw new StoreError('WRITE_FAILED', safeSqliteMessage(error), 503);
     }
@@ -2169,6 +2284,14 @@ export class Store {
     source: ExportData['source'],
     concepts: Concept[],
   ): IdentityLinkPreview {
+    return this.readSnapshot(() => this.readIdentityLinkPreview(request, source, concepts));
+  }
+
+  private readIdentityLinkPreview(
+    request: IdentityLinkRequest,
+    source: ExportData['source'],
+    concepts: Concept[],
+  ): IdentityLinkPreview {
     if (!request || typeof request !== 'object' || Array.isArray(request)) {
       throw new StoreError('INVALID_BODY', '身份关联请求必须是 JSON 对象。');
     }
@@ -2228,7 +2351,7 @@ export class Store {
     request: IdentityLinkCommit,
     source: ExportData['source'],
     concepts: Concept[],
-    beforeWrite: (backup: ExportData) => string,
+    beforeWrite: (backup: StoreExport<V>) => string,
   ): import('../shared/identity.js').IdentityLinkReceipt {
     if (!request || typeof request !== 'object' || Array.isArray(request)) {
       throw new StoreError('INVALID_BODY', '身份关联提交请求必须是 JSON 对象。');
@@ -2243,21 +2366,51 @@ export class Store {
       previewToken: identityId(request.previewToken, 'previewToken'),
       confirmed: true,
     };
-    const requestHash = createHash('sha256').update(canonicalJson(normalizedRequest), 'utf8').digest('hex');
+    const requestHash = this.schemaVersion === 2
+      ? createHash('sha256').update(canonicalJson(normalizedRequest), 'utf8').digest('hex')
+      : SAFE_IDENTITY_CREDENTIAL;
+    let ownsTxn = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
-      const existing = this.db.prepare(`SELECT request_hash, receipt_json
-        FROM identity_bindings WHERE namespace = ? AND operation_id = ?`).get(this.namespace, operationId) as {
-          request_hash: string; receipt_json: string;
-        } | undefined;
-      if (existing) {
-        if (existing.request_hash !== requestHash) throw new StoreError('IDENTITY_CONFLICT', 'operationId 已被其他身份关联请求使用。', 409);
-        let original: import('../shared/identity.js').IdentityLinkReceipt;
-        try { original = JSON.parse(existing.receipt_json) as import('../shared/identity.js').IdentityLinkReceipt; } catch {
-          throw new StoreError('IDENTITY_RECEIPT_CORRUPT', '身份关联收据数据无效，请检查本地数据。', 500);
+      this.db.exec('BEGIN IMMEDIATE'); ownsTxn = true;
+      this.answerPrivacy?.assertOperationReplayAllowed('identity', operationId);
+      if (this.schemaVersion === 3) {
+        const existing = this.db.prepare(`SELECT request_hash=? AS safe, receipt_json,
+          operation_id,raw_concept_id,concept_id,from_path,to_path,source_revision,confirmed_at,backup_id
+          FROM main.identity_bindings WHERE namespace=? AND operation_id=?`)
+          .get(SAFE_IDENTITY_CREDENTIAL, this.namespace, operationId) as {
+            safe: number; receipt_json: string; operation_id: string; raw_concept_id: string; concept_id: string;
+            from_path: string | null; to_path: string; source_revision: string; confirmed_at: string; backup_id: string;
+          } | undefined;
+        if (existing) {
+          if (existing.safe !== 1) throw new StoreError('IDENTITY_LEGACY_OPERATION', 'IDENTITY_LEGACY_OPERATION', 409);
+          let parsed: unknown;
+          try { parsed = JSON.parse(existing.receipt_json); }
+          catch { throw new StoreError('IDENTITY_RECEIPT_CORRUPT', 'IDENTITY_RECEIPT_CORRUPT', 503); }
+          const saved = parseSafeIdentityReceiptEnvelope(parsed, { namespace: this.namespace, operationId });
+          const binding: IdentityBinding = { operationId: existing.operation_id, rawConceptId: existing.raw_concept_id,
+            conceptId: existing.concept_id, fromPath: existing.from_path, toPath: existing.to_path,
+            sourceRevision: existing.source_revision, confirmedAt: existing.confirmed_at, backupId: existing.backup_id };
+          if (!safeIdentityReplayMatches(saved,
+            { fromConceptId: normalizedRequest.fromConceptId, toConceptId: normalizedRequest.toConceptId }, binding)) {
+            throw new StoreError('IDENTITY_CONFLICT', 'IDENTITY_CONFLICT', 409);
+          }
+          this.db.exec('COMMIT'); ownsTxn = false;
+          return { ...saved.receipt, status: 'duplicate' };
         }
-        this.db.exec('COMMIT');
-        return { ...original, status: 'duplicate' };
+      } else {
+        const existing = this.db.prepare(`SELECT request_hash, receipt_json
+          FROM identity_bindings WHERE namespace = ? AND operation_id = ?`).get(this.namespace, operationId) as {
+            request_hash: string; receipt_json: string;
+          } | undefined;
+        if (existing) {
+          if (existing.request_hash !== requestHash) throw new StoreError('IDENTITY_CONFLICT', 'operationId 已被其他身份关联请求使用。', 409);
+          let original: import('../shared/identity.js').IdentityLinkReceipt;
+          try { original = JSON.parse(existing.receipt_json) as import('../shared/identity.js').IdentityLinkReceipt; } catch {
+            throw new StoreError('IDENTITY_RECEIPT_CORRUPT', '身份关联收据数据无效，请检查本地数据。', 500);
+          }
+          this.db.exec('COMMIT'); ownsTxn = false;
+          return { ...original, status: 'duplicate' };
+        }
       }
 
       const current = this.exportData(source, concepts);
@@ -2305,7 +2458,10 @@ export class Store {
         binding.confirmedAt,
         binding.backupId,
         requestHash,
-        canonicalJson(receipt),
+        this.schemaVersion === 3 ? encodeSafeIdentityReceiptEnvelope(receipt, {
+          namespace: this.namespace, operationId, fromConceptId: normalizedRequest.fromConceptId,
+          toConceptId: normalizedRequest.toConceptId,
+        }) : canonicalJson(receipt),
       );
       this.db.prepare(`INSERT INTO identity_catalog(namespace, concept_id, title, source_path, source_revision)
         VALUES (?, ?, ?, ?, ?)
@@ -2334,10 +2490,11 @@ export class Store {
         );
       }
 
-      this.db.exec('COMMIT');
+      this.db.exec('COMMIT'); ownsTxn = false;
       return receipt;
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      if (ownsTxn) { try { this.db.exec('ROLLBACK'); } catch { /* preserve original error */ } }
+      if (error instanceof AnswerClearingStoreError) throw error;
       if (error instanceof StoreError) throw error;
       throw new StoreError('IDENTITY_FAILED', safeSqliteMessage(error), 503);
     }
@@ -2350,7 +2507,7 @@ export class Store {
     concepts: Concept[],
     current?: ExportData,
   ): PreparedImport {
-    const currentExport = current ?? this.exportData(source, concepts);
+    const currentExport = current ?? this.exportData(source, concepts) as ExportDataV2;
     const importOptions = normalizeImportOptions(options);
     return buildImportPlan({
       data,
@@ -2369,6 +2526,7 @@ export class Store {
     source: ExportData['source'],
     concepts: Concept[],
   ): ImportPreview {
+    if (this.v3Import) return this.v3Import.previewImport(data, normalizeImportOptions(options), source, concepts);
     return this.buildPreparedImport(data, options, source, concepts).preview;
   }
 
@@ -2376,8 +2534,10 @@ export class Store {
     request: ImportCommitRequest,
     source: ExportData['source'],
     concepts: Concept[],
-    beforeWrite: (backup: ExportData) => string,
+    beforeWrite: (backup: StoreExport<V>) => string,
   ): ImportReceipt {
+    if (this.v3Import) return this.v3Import.commitImport(request, source, concepts,
+      backup => beforeWrite(backup as StoreExport<V>));
     if (!request || typeof request !== 'object' || Array.isArray(request)) {
       throw new StoreError('INVALID_BODY', '导入提交请求必须是 JSON 对象。');
     }
@@ -2404,7 +2564,7 @@ export class Store {
       }
 
       const current = this.exportData(source, concepts);
-      const prepared = this.buildPreparedImport(request.data, request.options, source, concepts, current);
+      const prepared = this.buildPreparedImport(request.data, request.options, source, concepts, current as ExportDataV2);
       if (prepared.preview.sourceId !== this.namespace || prepared.preview.token !== request.previewToken) {
         throw new StoreError('IMPORT_STALE', '导入预览已过期，请重新生成预览。', 409);
       }
@@ -2416,7 +2576,7 @@ export class Store {
         throw new StoreError('IMPORT_BACKUP_FAILED', '导入前备份未返回有效标识。', 503);
       }
 
-      this.importRepository.applyPreparedImport(prepared, normalizeImportOptions(request.options));
+      (this.importRepository as LearningImportRepository<2>).applyPreparedImport(prepared, normalizeImportOptions(request.options));
 
       const accepted: ImportReceipt = {
         status: 'accepted',
@@ -2437,7 +2597,7 @@ export class Store {
     }
   }
 
-  exportData(source: ExportData['source'], concepts: Concept[]): ExportDataV2 {
+  exportData(source: ExportData['source'], concepts: Concept[]): StoreExport<V> {
     return this.snapshotRepository.exportData(source, concepts);
   }
 

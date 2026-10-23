@@ -155,20 +155,20 @@ export interface ApplicationRecordRequest {
 
 export interface ApplicationRecord extends ApplicationRecordRequest { recordedAt: string }
 
-export type ConceptHistoryEntry =
+export type ConceptHistoryEntry<T extends import('./answer-clearing.js').PrivacyObservation = Observation> =
   | { type: 'anchor'; event: AnchorEvent }
   | { type: 'retention'; event: RetentionEvent }
   | { type: 'application'; event: ApplicationRecord }
-  | { type: 'observation'; event: Observation };
+  | { type: 'observation'; event: T };
 
 /** Real persisted history, ordered by event time, recorded time, then event ID descending. */
-export interface ConceptHistory {
+export interface ConceptHistory<T extends import('./answer-clearing.js').PrivacyObservation = Observation> {
   sourceId: string;
   conceptId: string;
   sourceRevision: string;
   asOf: string;
   state: MemoryState;
-  entries: ConceptHistoryEntry[];
+  entries: ConceptHistoryEntry<T>[];
   total: number;
   nextCursor: string | null;
   learning?: LearningSummary;
@@ -184,6 +184,8 @@ export interface ConceptHistory {
   /** Deterministic effective-state version; also changes when asOf crosses a stored receipt. */
   observationAssessmentVersion?: string;
   observationAssessments?: Record<string, Omit<import('../core/observation-revisions.js').ObservationAssessmentState, 'audit'>>;
+  /** Current privacy exclusions, scoped to this concept across all source versions. */
+  observationPrivacy?: import('./observation-privacy.js').ObservationPrivacySummary;
 }
 
 export interface KnowledgeGraph {

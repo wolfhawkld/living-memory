@@ -7,6 +7,7 @@ import { inspectAnswerClearingSchemaV3 } from './answer-clearing-schema.js';
 import { AnswerClearingStoreError } from './answer-clearing-store-error.js';
 export { AnswerClearingStoreError } from './answer-clearing-store-error.js';
 import { SAFE_IMPORT_CREDENTIAL } from './answer-clearing-replay-contract.js';
+import { SAFE_IDENTITY_CREDENTIAL } from './answer-clearing-identity-replay-contract.js';
 import { decodeAnswerClearingObservation } from './answer-clearing-observation-codec.js';
 export interface AnswerClearingStoreOptions {
   db: DatabaseSync;
@@ -22,6 +23,7 @@ export interface ReplayPrivacyStatus {
   activeImportCredentials: number;
   safeImportCredentials: number;
   activeIdentityCredentials: number;
+  safeIdentityCredentials: number;
   retiredImportCredentials: number;
   retiredIdentityCredentials: number;
 }
@@ -77,12 +79,14 @@ export class AnswerClearingStore {
         (SELECT COUNT(*) FROM main.observations WHERE namespace=? AND answer_cleared_at IS NOT NULL) AS clearedObservations,
         (SELECT COUNT(*) FROM main.import_receipts WHERE namespace=? AND request_hash NOT IN (?,?)) AS activeImportCredentials,
         (SELECT COUNT(*) FROM main.import_receipts WHERE namespace=? AND request_hash=?) AS safeImportCredentials,
-        (SELECT COUNT(*) FROM main.identity_bindings WHERE namespace=? AND request_hash<>?) AS activeIdentityCredentials,
+        (SELECT COUNT(*) FROM main.identity_bindings WHERE namespace=? AND request_hash NOT IN (?,?)) AS activeIdentityCredentials,
+        (SELECT COUNT(*) FROM main.identity_bindings WHERE namespace=? AND request_hash=?) AS safeIdentityCredentials,
         (SELECT COUNT(*) FROM main.import_receipts WHERE namespace=? AND request_hash=?) AS retiredImportCredentials,
         (SELECT COUNT(*) FROM main.identity_bindings WHERE namespace=? AND request_hash=?) AS retiredIdentityCredentials`).get(
         this.namespace, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL, SAFE_IMPORT_CREDENTIAL,
         this.namespace, SAFE_IMPORT_CREDENTIAL,
-        this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
+        this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL, SAFE_IDENTITY_CREDENTIAL,
+        this.namespace, SAFE_IDENTITY_CREDENTIAL,
         this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
         this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL,
       )!;
@@ -94,7 +98,8 @@ export class AnswerClearingStore {
       const counts = {
         clearedObservations: count('clearedObservations'), activeImportCredentials: count('activeImportCredentials'),
         safeImportCredentials: count('safeImportCredentials'),
-        activeIdentityCredentials: count('activeIdentityCredentials'), retiredImportCredentials: count('retiredImportCredentials'),
+        activeIdentityCredentials: count('activeIdentityCredentials'), safeIdentityCredentials: count('safeIdentityCredentials'),
+        retiredImportCredentials: count('retiredImportCredentials'),
         retiredIdentityCredentials: count('retiredIdentityCredentials'),
       };
       return Object.freeze({ status: counts.clearedObservations > 0
@@ -110,14 +115,14 @@ export class AnswerClearingStore {
       .run(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL);
     return { retiredImportCredentials: Number(imports.changes), retiredIdentityCredentials: Number(identities.changes) };
   }
-  /** Retire legacy unsafe credentials inside the import caller's transaction, without retiring safe imports. */
+  /** Retire unsafe credentials inside the caller's transaction, preserving safe operations. */
   retireLegacyReplayCredentials(): Pick<ReplayPrivacyPreparation, 'retiredImportCredentials' | 'retiredIdentityCredentials'> {
     try {
       if (!this.db.isTransaction) throw failure('TRANSACTION_REQUIRED');
       const imports = this.db.prepare(`UPDATE main.import_receipts SET request_hash=? WHERE namespace=? AND request_hash NOT IN (?,?)`)
         .run(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL, SAFE_IMPORT_CREDENTIAL);
-      const identities = this.db.prepare(`UPDATE main.identity_bindings SET request_hash=? WHERE namespace=? AND request_hash<>?`)
-        .run(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL);
+      const identities = this.db.prepare(`UPDATE main.identity_bindings SET request_hash=? WHERE namespace=? AND request_hash NOT IN (?,?)`)
+        .run(ANSWER_CLEARING_RETIRED_CREDENTIAL, this.namespace, ANSWER_CLEARING_RETIRED_CREDENTIAL, SAFE_IDENTITY_CREDENTIAL);
       return { retiredImportCredentials: Number(imports.changes), retiredIdentityCredentials: Number(identities.changes) };
     } catch (error) {
       if (error instanceof AnswerClearingStoreError) throw error;

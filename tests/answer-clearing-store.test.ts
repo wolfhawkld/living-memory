@@ -285,7 +285,7 @@ test('two ready processes racing to clear accept once and return one shared firs
         records.map(record=>({...record,request_hash:ANSWER_CLEARING_RETIRED_CREDENTIAL})));
       const clearing=new AnswerClearingStore({db:reader,namespace});
       assert.deepEqual(clearing.getReplayPrivacyStatus(),{status:'ready',clearedObservations:1,activeImportCredentials:0,safeImportCredentials:0,
-        activeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:1});
+        activeIdentityCredentials:0,safeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:1});
     } finally {reader.close();}
   } finally { for(const child of children) if(child.exitCode===null) child.kill(); rmSync(base,{recursive:true,force:true}); }
 });

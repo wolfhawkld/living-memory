@@ -136,18 +136,18 @@ test('readiness snapshot and explicit preparation repair old cleared instances w
   const {db}=fixture();
   try {
     const store=new AnswerClearingStore({db,namespace,now:()=>{throw new Error('privacy preparation clock forbidden');}});
-    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:0,safeImportCredentials:0,activeImportCredentials:2,activeIdentityCredentials:2,retiredImportCredentials:0,retiredIdentityCredentials:0});
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:0,safeImportCredentials:0,activeImportCredentials:2,activeIdentityCredentials:2,safeIdentityCredentials:0,retiredImportCredentials:0,retiredIdentityCredentials:0});
     const before=snapshot(db);
     assert.deepEqual(store.prepareReplayPrivacy(),{status:'already-ready',retiredImportCredentials:0,retiredIdentityCredentials:0});
     assert.deepEqual(snapshot(db),before);
     db.prepare('UPDATE observations SET answer=NULL,request_payload=NULL,answer_cleared_at=? WHERE namespace=? AND event_id=?').run(clearedAt,namespace,'observation-1');
-    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'repair-required',clearedObservations:1,safeImportCredentials:0,activeImportCredentials:2,activeIdentityCredentials:2,retiredImportCredentials:0,retiredIdentityCredentials:0});
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'repair-required',clearedObservations:1,safeImportCredentials:0,activeImportCredentials:2,activeIdentityCredentials:2,safeIdentityCredentials:0,retiredImportCredentials:0,retiredIdentityCredentials:0});
     assert.deepEqual(store.prepareReplayPrivacy(),{status:'prepared',retiredImportCredentials:2,retiredIdentityCredentials:2});
     assertOnlyClearingAndRetirement(before,snapshot(db));
-    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:1,safeImportCredentials:0,activeImportCredentials:0,activeIdentityCredentials:0,retiredImportCredentials:2,retiredIdentityCredentials:2});
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:1,safeImportCredentials:0,activeImportCredentials:0,activeIdentityCredentials:0,safeIdentityCredentials:0,retiredImportCredentials:2,retiredIdentityCredentials:2});
     assert.deepEqual(store.prepareReplayPrivacy(),{status:'already-ready',retiredImportCredentials:0,retiredIdentityCredentials:0});
     db.prepare('UPDATE import_receipts SET request_hash=? WHERE namespace=? AND import_id=?').run(digest({oldWriter:answer}),namespace,'import-0');
-    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'repair-required',clearedObservations:1,safeImportCredentials:0,activeImportCredentials:1,activeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:2});
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'repair-required',clearedObservations:1,safeImportCredentials:0,activeImportCredentials:1,activeIdentityCredentials:0,safeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:2});
     db.exec('BEGIN IMMEDIATE');
     assert.throws(()=>store.assertOperationReplayAllowed('identity','binding-0'),{code:'ANSWER_CLEARING_REPLAY_PREPARATION_REQUIRED'});
     assert.equal(db.isTransaction,true);db.exec('ROLLBACK');
@@ -218,7 +218,7 @@ test('safe imports are counted separately, allowed after imported markers, and r
     db.prepare('UPDATE import_receipts SET request_hash=? WHERE namespace=? AND import_id=?').run(SAFE_IMPORT_CREDENTIAL,namespace,'import-0');
     db.prepare('UPDATE import_receipts SET request_hash=? WHERE namespace=? AND import_id=?').run(ANSWER_CLEARING_RETIRED_CREDENTIAL,namespace,'import-1');
     db.prepare('UPDATE identity_bindings SET request_hash=? WHERE namespace=?').run(ANSWER_CLEARING_RETIRED_CREDENTIAL,namespace);
-    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:0,safeImportCredentials:1,activeImportCredentials:0,activeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:2});
+    assert.deepEqual(store.getReplayPrivacyStatus(),{status:'ready',clearedObservations:0,safeImportCredentials:1,activeImportCredentials:0,activeIdentityCredentials:0,safeIdentityCredentials:0,retiredImportCredentials:1,retiredIdentityCredentials:2});
     // Model importing a new cleared marker: original local answers stay intact.
     seedObservation(db,namespace,'imported-cleared');
     db.prepare('UPDATE observations SET answer=NULL,request_payload=NULL,answer_cleared_at=? WHERE namespace=? AND event_id=?').run(clearedAt,namespace,'imported-cleared');

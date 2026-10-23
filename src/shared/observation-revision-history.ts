@@ -1,4 +1,5 @@
 import type { Observation } from './types.js';
+import type { PrivacyObservation } from './answer-clearing.js';
 import type { ObservationAssessment, ObservationRevision } from './observation-revisions.js';
 
 export interface ObservationRevisionReceipt {
@@ -21,8 +22,8 @@ export interface ObservationRevisionHistoryState {
  * Events run from the current tail toward the root and are bounded per page.
  * The full original observation is private and must remain authorization-scoped.
  */
-export interface ObservationRevisionHistory {
-  observation: Observation;
+export interface ObservationRevisionHistory<T extends PrivacyObservation = Observation> {
+  observation: T;
   state: ObservationRevisionHistoryState;
   events: ObservationRevision[];
   /** All revisions of this parent, including decisions outside the page. */

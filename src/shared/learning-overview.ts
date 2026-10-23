@@ -28,6 +28,8 @@ export interface LearningOverviewItem {
   evidence: { currentObservations: number; previousObservations: number; previousApplications: number; latestAt: string | null };
   /** Optional for clients talking to an older service; unknown is not an empty result. */
   timeRecall?: import('./time-recall.js').TimeRecallSummary;
+  /** Current privacy exclusions for this concept across all source versions. */
+  observationPrivacy?: import('./observation-privacy.js').ObservationPrivacySummary;
 }
 
 export interface LearningOverview {
@@ -37,6 +39,8 @@ export interface LearningOverview {
   /** Namespace-scoped counts; raw consumption and effective evidence remain distinct. */
   observationAssessments?: { raw: number; effective: number; withdrawn: number; unresolved: number;
     notYetRecorded: number; revisionCount: number };
+  /** Current privacy exclusions across the complete authorized namespace. */
+  observationPrivacy?: import('./observation-privacy.js').ObservationPrivacySummary;
   /** Absent on older services; absence must not be displayed as zero suggestions. */
   corrections?: import('./correction-overview.js').CorrectionOverview;
   /** Relation maintenance is independent of text corrections; absent on older services. */
