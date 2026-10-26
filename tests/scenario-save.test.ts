@@ -64,7 +64,8 @@ test('a failed application follow-up can retry with the retained request without
     },
     onContinueApplication: async (candidate) => {
       continueCount += 1;
-      assert.strictEqual(candidate, request);
+      assert.deepEqual(candidate, { conceptId: request.conceptId, sourceRevision: request.sourceRevision, learning: request.learning });
+      assert.equal(Object.hasOwn(candidate, 'answer'), false, 'independent handoff never receives the original answer');
       if (continueCount === 1) throw new Error('知识空间暂时不可用');
     },
   }, { observationSaved: false, continueToApplication: true });
@@ -78,7 +79,8 @@ test('a failed application follow-up can retry with the retained request without
     onSave: async () => { saveCount += 1; return true; },
     onContinueApplication: async (candidate) => {
       continueCount += 1;
-      assert.strictEqual(candidate, request);
+      assert.deepEqual(candidate, { conceptId: request.conceptId, sourceRevision: request.sourceRevision, learning: request.learning });
+      assert.equal(Object.hasOwn(candidate, 'answer'), false, 'independent handoff never receives the original answer');
     },
   }, { observationSaved: true, continueToApplication: true });
 

@@ -25,7 +25,7 @@ export function initializeAppV3(dbPath: string) {
   } finally { db.close(); }
 }
 export type ApiReply = { status: number; body: any; text: string; cookie: string; headers: Record<string, unknown> };
-export type ApiOptions = { method?: string; body?: unknown; cookie?: string; headers?: Record<string, string | string[]>; protocol?: string | string[] | null; firstFrame?: boolean };
+export type ApiOptions = { method?: string; body?: unknown; rawBody?: string; cookie?: string; headers?: Record<string, string | string[]>; protocol?: string | string[] | null; firstFrame?: boolean };
 export async function appV3Fixture(options: Omit<AppOptions, 'learningSchemaVersion'> = {}) {
   const files = appV3Files(); initializeAppV3(files.dbPath);
   let clock = new Date(V3_NOW);
@@ -47,7 +47,9 @@ export async function appV3Fixture(options: Omit<AppOptions, 'learningSchemaVers
       res.on('end', finish);
     });
     req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('synthetic HTTP timeout')));
-    if (options.body !== undefined) req.write(JSON.stringify(options.body)); req.end();
+    if (options.rawBody !== undefined) req.write(options.rawBody);
+    else if (options.body !== undefined) req.write(JSON.stringify(options.body));
+    req.end();
   });
   return { ...files, send, get app() { return app; }, setClock(value: string) { clock = new Date(value); },
     restart() { closeApp(app); app = createApp({ ...base, learningSchemaVersion: 3 }); },

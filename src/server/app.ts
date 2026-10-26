@@ -521,8 +521,15 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp<2 | 3> {
   // Authenticate and negotiate before parsing application bodies or making writes.
   // Bulk imports retain their separate, later parser and larger bounded limit.
   app.use('/api', (req, res, next) => /^\/import\/(preview|commit)\/?$/i.test(req.path)
+    || (learningSchemaVersion === 3 && /^\/observations\/[^/]+\/answer-clearing\/?$/i.test(req.path))
     ? next() : jsonBody(req, res, next));
 
+  const requireInstance = (req: Request, res: Response, next: NextFunction): void => {
+    if (req.header('x-lm-instance-id') !== instanceId) {
+      res.status(409).json({ error: { code: 'INSTANCE_MISMATCH', message: '实例已经迁移，请重新连接并核对旧浏览器待同步记录。旧请求不会自动写入新实例。' } }); return;
+    }
+    next();
+  };
   const requireWrite = (req: Request, res: Response, next: NextFunction): void => {
     if ((req.header('x-lm-instance-id') ?? 'legacy') !== instanceId) {
       res.status(409).json({ error: { code: 'INSTANCE_MISMATCH', message: '实例已经迁移，请重新连接并核对旧浏览器待同步记录。旧请求不会自动写入新实例。' } }); return;
@@ -658,6 +665,39 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp<2 | 3> {
     instanceId, learningProtocolVersion: learningSchemaVersion,
     ...(sessionOf(req) ? { user: sessionOf(req)!.user } : {}),
   }));
+  if (learningSchemaVersion === 3) {
+    // Do not parse, retain or accept a clearing payload. Header checks alone are
+    // insufficient for chunked bodies, so also reject the first actual byte.
+    const requireEmptyClearingBody = (req: Request, _res: Response, next: NextFunction): void => {
+      const invalid = () => new AnswerClearingStoreError('ANSWER_CLEARING_INVALID_REQUEST', 400);
+      if (Object.keys(req.query).length > 0 || (req.header('content-length') !== undefined && req.header('content-length') !== '0')) {
+        req.resume(); next(invalid()); return;
+      }
+      if (req.readableEnded) { next(); return; }
+      let finished = false;
+      const finish = (error?: Error) => {
+        if (finished) return;
+        finished = true;
+        req.removeListener('data', nonempty); req.removeListener('end', ended); req.removeListener('error', failed);
+        if (error) req.resume();
+        next(error);
+      };
+      const nonempty = (chunk: Buffer) => { if (chunk.length) finish(invalid()); };
+      const ended = () => finish();
+      const failed = () => finish(invalid());
+      req.on('data', nonempty); req.once('end', ended); req.once('error', failed);
+    };
+    const path = '/api/observations/:observationEventId/answer-clearing';
+    app.get(path, requireSourceHeader, requireInstance, requireEmptyClearingBody, asyncRoute((req, res) => {
+      res.json(contextOf(req).store.getObservationAnswerClearingState({ observationEventId: String(req.params.observationEventId) }));
+    }));
+    app.post(path, requireSourceHeader, requireInstance, requireWrite, requireEmptyClearingBody, asyncRoute((req, res) => {
+      const { store, changes } = contextOf(req);
+      const receipt = store.clearObservationAnswer({ observationEventId: String(req.params.observationEventId) });
+      if (receipt.status === 'accepted') changes.publish('observation');
+      res.status(receipt.status === 'accepted' ? 201 : 200).json(receipt);
+    }));
+  }
   app.get('/api/observations/:observationEventId/revisions', asyncRoute((req, res) => {
     if (Object.keys(req.query).some(key => !['limit', 'cursor'].includes(key))) {
       throw new ObservationRevisionStoreError('OBSERVATION_REVISION_INVALID_HISTORY_QUERY', 400);

@@ -1,3 +1,4 @@
+import { projectPrivateObservation, type AnswerPrivacyGuard } from './answer-privacy-projection';
 import { parseObservationRevision, parseObservationRevisionRequest } from '../shared/observation-revisions';
 import type { PrivacyObservation } from '../shared/answer-clearing';
 import type { ObservationRevisionHistory } from '../shared/observation-revision-history';
@@ -26,7 +27,7 @@ export function validateRevisionHistory(parent: PrivacyObservation, history: Pri
     if(event.observationEventId !== parent.eventId || event.conceptId !== parent.conceptId || event.sourceRevision !== parent.sourceRevision) throw new Error('修订审计与原观察不匹配。');
   }
 }
-export function createObservationRevisionHistoryLoader(parent: PrivacyObservation, fetchPage: RevisionHistoryLoader, protocol: LearningProtocolVersion = 2) {
+export function createObservationRevisionHistoryLoader(parent: PrivacyObservation, fetchPage: RevisionHistoryLoader, protocol: LearningProtocolVersion = 2, privacy?: AnswerPrivacyGuard) {
   const knownClearings = new Map<string, string>();
   if (protocol === 3) rememberObservationPrivacy(knownClearings, validateObservationPrivacy(parent, protocol));
   let state: RevisionHistoryLoadState = { history: null, loading: false, error: null };
@@ -39,9 +40,12 @@ export function createObservationRevisionHistoryLoader(parent: PrivacyObservatio
     const before = state.history;
     publish({ history: before, loading: true, error: null });
     try {
-      const page = await fetchPage({ limit: 20, ...(more ? { cursor: before!.nextCursor! } : {}), signal: controller.signal });
+      const response = await fetchPage({ limit: 20, ...(more ? { cursor: before!.nextCursor! } : {}), signal: controller.signal });
       if (disposed || active !== controller || controller.signal.aborted) return null;
-      validateRevisionHistory(parent, page, protocol);
+      validateRevisionHistory(parent, response, protocol);
+      const observation = projectPrivateObservation(response.observation, privacy);
+      if (!observation) throw new Error('原答清除结果尚未确认，原文暂时隐藏。');
+      const page = { ...response, observation };
       if (protocol === 3) rememberObservationPrivacy(knownClearings, page.observation);
       if (more && before && (page.total !== before.total || page.state.latestRevisionEventId !== before.state.latestRevisionEventId
         || (protocol === 3 && observationPrivacyVersion(page.observation) !== observationPrivacyVersion(before.observation)))) {
@@ -58,6 +62,13 @@ export function createObservationRevisionHistoryLoader(parent: PrivacyObservatio
         loading: false, error: error instanceof Error ? error.message : '修订历史暂不可用，请重试。' }); return null;
     } finally { if (active === controller) active = null; }
   }
-  return { getSnapshot: () => state, subscribe(fn: () => void) { listeners.add(fn); return () => { listeners.delete(fn); }; },
-    refresh: () => load(), loadMore: () => load(true), activate() { disposed = false; }, dispose() { disposed = true; active?.abort(); active = null; listeners.clear(); } };
+  return { invalidatePrivacy() {
+    active?.abort(); active = null;
+    try {
+      parent = projectPrivateObservation(parent, privacy) ?? parent;
+      const observation = state.history && projectPrivateObservation(state.history.observation, privacy);
+      publish({ history: state.history && observation ? { ...state.history, observation } : null, loading: false, error: null });
+    } catch { publish({ history: null, loading: false, error: '原答隐私状态需要重新核对。' }); }
+  }, getSnapshot: () => state, subscribe(fn: () => void) { listeners.add(fn); return () => { listeners.delete(fn); }; },
+    refresh: () => load(), loadMore: () => load(true), activate() { disposed = false; }, dispose() { disposed = true; active?.abort(); active = null; state = { history: null, loading: false, error: null }; listeners.clear(); } };
 }

@@ -234,7 +234,7 @@ v3 新恢复报告仍为 v1，额外写 `startup.learningSchemaVersion: 3` 与 c
 
 改动前已保留 `62101a01f35141405cae485e680fa09c1592017f` 源码归档、对应完整 v2 网页及 lockfile／文件 SHA-256 清单，位于本机忽略目录 `local/runtime-baselines/v2-62101a0/`；168 个文件哈希独立核对通过。仅保存软件材料，不包含私人数据，不覆盖现用 `dist`，未执行真实切换或回退。完整使用与限制见[日常启动](../development/instance-runtime.md#显式启动-v3)和[离线迁移](../development/instance-migration.md#学习结构-v3-的隔离候选)。
 
-实际清除操作及跨页可控副本仍属于下一项 ACLEAR-03。本轮不迁移私人实例、不重启现有服务、不发送真实飞书消息，也不执行本机浏览器验证。
+实际清除操作及跨页可控副本在下述合并交付 ACLEAR-03／04 接续。本轮不迁移私人实例、不重启现有服务、不发送真实飞书消息，也不执行本机浏览器验证。
 
 ## ACLEAR-03：界面与可控副本
 
@@ -246,7 +246,7 @@ v3 新恢复报告仍为 v1，额外写 `startup.learningSchemaVersion: 3` 与 c
 
 ## 开发顺序与验收门槛
 
-下表保留各阶段交付时的范围；当前运行能力以 C4B2 为准，私人实例状态与软件能力分别记录。
+下表保留各阶段交付时的范围；当前 API／界面能力由 ACLEAR-03／04 接续，私人实例状态与软件能力分别记录。
 
 | 阶段 | 本轮状态／完成门槛 |
 | --- | --- |
@@ -260,9 +260,9 @@ v3 新恢复报告仍为 v1，额外写 `startup.learningSchemaVersion: 3` 与 c
 | ACLEAR-02C3 显式 v3 Store 与统计闭环 | 已实现同一 Store 的显式 v3 读写、历史／修订、隐私表现门槛及安全身份重试；默认服务仍为 v2；提交 9992929 的完整本地及远端验证通过，最终架构交付审查通过 |
 | ACLEAR-02C4A 客户端兼容准备 | 已实现双版本握手、隐私读取、历史／修订只读展示与动态 SSE；提交 f4a597e 的 1647 项本地及远端回归、构建、8 项主题与 33 项远端浏览器全部通过，最终交付审查通过；该阶段交付时服务仍为 2，显式启动由 B2 接续 |
 | ACLEAR-02C4B1 内部运行接线 | 已交付：显式 App v3、多用户初始化、HTTP 与飞书内部链路；62101a0 的 1679 项回归、构建、8 项主题和 33 项远端浏览器通过 |
-| ACLEAR-02C4B2 启动与恢复契约 | 已实现显式启动、profile／env、构建匹配和恢复／激活／重接契约；集中验证中；默认 2，私人升级未执行 |
-| ACLEAR-03 API／Web 与缓存 | 待开发：权限、明确确认、结果未知恢复、水位、迟到响应、跨页队列与 checkpoint |
-| ACLEAR-04 集成与交付 | 待开发：非空 JSON／bundle 往返、跨页／多标签、已有修订链与飞书计数、远端浏览器回归；私人升级和真实删除单独安排 |
+| ACLEAR-02C4B2 启动与恢复契约 | 已交付；6af2e53 的 1697 项 Node／HTTP、8 主题、33 远端浏览器通过；默认 2，私人升级未执行 |
+| ACLEAR-03 API／Web 与缓存 | 已实现，统一交付验证中：授权无正文请求、确认／未知恢复、持久隐私标记、跨页队列与 checkpoint、历史／修订／场景内存失效 |
+| ACLEAR-04 集成与交付 | 与 03 合并验证中：HTTP→非空 JSON／bundle、飞书计数、独立 v3 多标签页及既有 v2 远端回归；私人升级和真实删除单独安排 |
 
 ACLEAR-01 的[合成测试](../../tests/answer-clearing.test.ts)覆盖严格解析、不泄露原答／哈希、原字段保留、深拷贝、首次与重复清除、错误父目标／时间／状态、空答与脑中回忆，以及隐私门槛。测试中的序列化往返只证明纯对象语义，不等于已实现学习 JSON 导入、API 历史时间查询或旧队列防恢复。本轮未调用真实清除接口、修改私人数据、重启服务或执行本机浏览器。
 
@@ -291,4 +291,19 @@ ACLEAR-02C4B1 新增 32 项合成测试：[namespace 门禁与竞争](../../test
 C4B1 提交 `094918c133b5adec216ea0878aaadf310ad74f6f` 的 [CI 39935365730](https://github.com/wolfhawkld/living-memory/actions/runs/39935365730) 通过 1679 项 Node／HTTP、构建与 8 项主题；浏览器在第 9 项章节引用用例停止（8 通过、1 失败、24 未运行），不算完成交付。远端 trace 与源码确认既有阅读器滚动更新当前章节时，内联导航回调变化会重建 Markdown 引用按钮，使点击可能丢失。收口修复将导航回调稳定为 `useCallback`，保留身份／版本依赖及原有 pending／epoch 行为；原用例增加滚动前后按钮 DOM 身份不变断言，再执行单次点击和原五种失败提示检查。没有增加 sleep／自动重试、放宽断言或修改超时，也未重跑旧失败 SHA。修复后 25 项相关定向与 1679 项完整 Node／HTTP 回归全部通过（失败、取消、跳过均为 0），含类型检查的独立构建、8 项主题和 252 个本地文档链接／锚点检查通过；最终修复提交 `62101a01f35141405cae485e680fa09c1592017f` 已推送 develop；[CI 39937456266](https://github.com/wolfhawkld/living-memory/actions/runs/39937456266) 首次运行全部通过：1679 项 Node／HTTP（失败、取消、跳过均为 0）、构建、8 项主题及 33 项远端浏览器检查。浏览器约 10.8 分钟，33 条唯一进度，无用例重试或 flaky；原第 9 项引用用例通过，最终架构交付审查通过。此修复交付时未展开 C4B2。
 
 
-C4B2 验证使用[静态构建](../../tests/static-build-compatibility.test.ts)、[profile 元数据](../../tests/instance-runtime.test.ts)、[既有 CLI](../../tests/instance-runtime-cli.test.ts)、[真实 v3 子进程启动](../../tests/instance-runtime-v3.test.ts)、[完整实例往返](../../tests/answer-clearing-bundle.test.ts)、[备份 CLI](../../tests/instance-backup-cli.test.ts)、[重接预览](../../tests/source-reconnect-preview.test.ts)、[离线扫描](../../tests/instance-backup.test.ts)及[真实旧版兼容](../../tests/instance-backup-compat.test.ts)。定向共 90 项及完整 1697 项 Node／HTTP 回归全部通过（失败、取消、跳过均为 0），含类型检查的独立生产构建、实际标记／入口哈希和 8 项主题检查通过；精确提交远端 CI 待核对。首次新启动夹具漏传 Store 的 anchor 参数，按架构诊断补齐 `null` 后 5 项真实子进程检查通过，未修改产品规则或放宽断言。
+C4B2 验证使用[静态构建](../../tests/static-build-compatibility.test.ts)、[profile 元数据](../../tests/instance-runtime.test.ts)、[既有 CLI](../../tests/instance-runtime-cli.test.ts)、[真实 v3 子进程启动](../../tests/instance-runtime-v3.test.ts)、[完整实例往返](../../tests/answer-clearing-bundle.test.ts)、[备份 CLI](../../tests/instance-backup-cli.test.ts)、[重接预览](../../tests/source-reconnect-preview.test.ts)、[离线扫描](../../tests/instance-backup.test.ts)及[真实旧版兼容](../../tests/instance-backup-compat.test.ts)。定向共 90 项及完整 1697 项 Node／HTTP 回归全部通过（失败、取消、跳过均为 0），含类型检查的独立生产构建、实际标记／入口哈希和 8 项主题检查通过；提交 `6af2e535106bde51de7bfdfcbc7b2dd3bc09ad71` 已推送 develop；[CI 40278452677](https://github.com/wolfhawkld/living-memory/actions/runs/40278452677) 首次运行全部通过：1697 项 Node／HTTP、构建、8 项主题及 33 项远端浏览器。浏览器约 11.0 分钟，33 条唯一进度，无用例重试或 flaky；最终架构交付审查通过。首次新启动夹具漏传 Store 的 anchor 参数，按架构诊断补齐 `null` 后 5 项真实子进程检查通过，未修改产品规则或放宽断言。
+
+
+## ACLEAR-03／04 合并软件交付（2026-10-26）
+
+用户要求将关联小任务并为一个 [goal](../planning/answer-clearing-delivery-goal.md)，连续完成软件后统一验收。
+
+显式 v3 提供 `GET /api/observations/:id/answer-clearing` 与同路径无正文 `POST`。两者绑定当前账号、协议、知识来源和实例，POST 另验写令牌；非零正文直接拒绝。GET 仅返回事件 ID 和 `saved`／`empty`／`cleared`，已清除时带首次时间。POST 首次 201、重复 200；原空答 409、未知 ID 404。v2 不注册入口。旧资料版本或已归档概念的保存记录仍可按原事件处理。
+
+真实历史中的「清除这条原答」打开确认窗口，窗口不复制原文。只有用户确认或明确重试才发 POST；请求不进入普通离线队列。超时／回执丢失后保留仅含 ID 的未决意图，页面刷新、重新联网或用户点击核对时 GET 同一记录；只有已验证的首次清除标记才表示服务端完成。
+
+浏览器在同来源与实例登记单调的首次标记，先撤下当前内存原文，再在原待同步存储锁内写标记、精确移除目标观察队列、清理对应 brief checkpoint 的 answer 与 submittedPayload。后续 enqueue、发送和 v3 checkpoint autosave 同样过门禁；未知结果只隐藏／阻止重放，不提前删除断点。确认清除后保留短复习完成事实，不新增观察或再次消费预算。其它事件、应用／总结、练习与修订说明不清除。
+
+历史／修订读取在每次异步返回和分页合并前检查作用域水位；已展开内容、修订父观察、场景与查询回忆的机械副本即时失效。修订草稿和场景题面／适用性保留。跨页由存储通知与可用的 BroadcastChannel 协调，重新可见时核对；旧版或离线设备没有远程擦除保证。存储损坏、无协调能力或部分写入失败显示待处理，服务端成功与本地清理完成分别报告。
+
+验收使用隔离合成资料：新增授权 HTTP、浏览器状态与锁竞争、投影／迟到响应、真实 HTTP 清除后的非空导出恢复与飞书结算；远端新增独立 v3 浏览器作业，既有 v2 作业保持。本地完整 1734 项 Node／HTTP 全通过，随后两处读取作用域门禁补充经 17 项定向、隔离构建和 8 主题验证；精确提交远端两作业与最终架构结论随 goal 交付报告。[人工验收清单](../development/answer-clearing-acceptance.md)用于之后集中验证，不表示私人服务已升级。

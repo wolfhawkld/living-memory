@@ -14,7 +14,7 @@ import { inspectLearningSchema, initializeLearningSchemaV2 } from './learning-sc
 import { ObservationRevisionStore, ObservationRevisionStoreError } from './observation-revision-store.js';
 import { projectObservationAssessments } from '../core/observation-revisions.js';
 import { projectObservationPerformance, selectObservationPerformanceForConcept } from '../core/observation-performance.js';
-import type { PrivacyObservation, AnswerClearingRequest, AnswerClearingReceipt } from '../shared/answer-clearing.js';
+import type { PrivacyObservation, AnswerClearingRequest, AnswerClearingReceipt, AnswerClearingState } from '../shared/answer-clearing.js';
 import type { ExportDataV3 } from '../shared/answer-clearing-export.js';
 import { AnswerClearingStore, AnswerClearingStoreError } from './answer-clearing-store.js';
 import { inspectAnswerClearingSchemaV3 } from './answer-clearing-schema.js';
@@ -599,6 +599,10 @@ export class Store<V extends 2 | 3 = 2> {
   clearObservationAnswer(request: AnswerClearingRequest): AnswerClearingReceipt {
     if (!this.answerPrivacy) throw new StoreError('LEARNING_SCHEMA_UNSUPPORTED_VERSION', 'LEARNING_SCHEMA_UNSUPPORTED_VERSION', 503);
     return this.answerPrivacy.clear(request);
+  }
+  getObservationAnswerClearingState(request: AnswerClearingRequest): AnswerClearingState {
+    if (!this.answerPrivacy) throw new StoreError('LEARNING_SCHEMA_UNSUPPORTED_VERSION', 'LEARNING_SCHEMA_UNSUPPORTED_VERSION', 503);
+    return this.answerPrivacy.getObservationAnswerClearingState(request);
   }
 
   private assertObservationReplayAllowed(eventId: string): void {

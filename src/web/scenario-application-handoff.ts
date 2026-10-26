@@ -1,8 +1,10 @@
 import type { Concept, ObservationRequest, Snapshot } from '../shared/types';
 import { createApplicationRecordDraft, type ApplicationRecordDraft } from './application-record';
 
+export type ScenarioApplicationSource = Pick<ObservationRequest, 'conceptId' | 'sourceRevision' | 'learning'>;
+
 /** A recall check is a summary draft, never proof of a real application. */
-export function buildScenarioApplicationDraft(request: ObservationRequest): ApplicationRecordDraft {
+export function buildScenarioApplicationDraft<T extends ScenarioApplicationSource>(request: T): ApplicationRecordDraft {
   if (request.learning?.task !== 'scenario' || !request.learning.scenario?.trim()) {
     throw new Error('这条记录不是完整的场景观察。');
   }
@@ -16,7 +18,7 @@ export function buildScenarioApplicationDraft(request: ObservationRequest): Appl
 
 /** Never carry a draft into another account or silently attach it to newer content. */
 export function resolveScenarioApplicationConcept(
-  request: ObservationRequest,
+  request: ScenarioApplicationSource,
   sourceAtPractice: string,
   currentSource: string,
   snapshot: Snapshot,

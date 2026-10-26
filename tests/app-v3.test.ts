@@ -93,7 +93,8 @@ test('real App3 history, revisions and JSON keep cleared answers while legacy re
     assert.equal((await send('/api/observations', request)).status, 201);
     const raw = (await f.send('/api/export')).body;
     const state = f.app.livingMemory.store.getStates(f.app.livingMemory.getSource().index.concepts, V3_NOW);
-    const receipt = f.app.livingMemory.store.clearObservationAnswer({ observationEventId: request.eventId });
+    const cleared = await f.send(`/api/observations/${request.eventId}/answer-clearing`, { method: 'POST', headers: headers(session) });
+    assert.equal(cleared.status, 201); const receipt = cleared.body;
     f.setClock('2026-10-19T00:00:00.000Z');
     const replay = await send('/api/observations', request);
     assert.equal(replay.status, 409); assert.equal(replay.body.error.code, 'ANSWER_CLEARED'); assert.doesNotMatch(replay.text, /SYNTHETIC_SAVED_ANSWER/);
@@ -143,7 +144,7 @@ test('App3 import and identity endpoints write real schema3 backups and preserve
     let session = (await f.send('/api/session')).body;
     const request = observation(f); const source = f.app.livingMemory.getSource();
     f.app.livingMemory.store.addObservation(request, null);
-    f.app.livingMemory.store.clearObservationAnswer({ observationEventId: request.eventId });
+    assert.equal((await f.send(`/api/observations/${request.eventId}/answer-clearing`, { method: 'POST', headers: headers(session) })).status, 201);
     f.app.livingMemory.store.updateConfig(12, 1);
     const data = (await f.send('/api/export')).body;
     const options = { restoreLayout: false, restoreReviewPlan: false };

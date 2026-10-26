@@ -44,6 +44,7 @@ export interface ConceptHistoryPanelProps {
   relationReview?: RelationReviewIntegration;
   focusedApplicationEventId?: string;
   onClearFocus?: () => void;
+  answerClearing?: { disabled: boolean; onOpen(eventId: string): void };
   observationRevision?: {
     disabled: boolean;
     pendingObservationEventIds: readonly string[];
@@ -208,11 +209,13 @@ function ObservationEntry({
   history,
   onRevealAnswer,
   observationRevision,
+  answerClearing,
 }: {
   entry: Extract<ConceptHistoryEntry, { type: 'observation' }>;
   history: ConceptHistory;
   onRevealAnswer: () => void;
   observationRevision?: ConceptHistoryPanelProps['observationRevision'];
+  answerClearing?: ConceptHistoryPanelProps['answerClearing'];
 }): ReactElement {
   const event = entry.event;
   const oldRevision = oldRevisionLabel(event, history);
@@ -247,6 +250,9 @@ function ObservationEntry({
           <div>{event.evidenceMode === 'mental' ? '自报提示方式' : '作答方式'}：{{ independent: '独立作答', hinted: '借助提示', lookup: '查阅后作答', unknown: '不确定' }[event.learning.cue]}</div>
           <div>{event.evidenceMode === 'mental' ? '自报结果' : '核对结果'}：{{ success: '成功', partial: '部分成功', failure: '未成功', unverified: '尚未核对' }[event.learning.outcome]} · {{ 'self-check': '自己对照资料', application: '实际应用核对', unknown: '依据未记录' }[event.learning.basis]}</div>
         </div> : null}
+        {answerClearing && typeof event.answer === 'string' && event.answer.length > 0 ? <button type="button"
+          className="concept-history-answer-toggle" disabled={answerClearing.disabled}
+          onClick={() => answerClearing.onOpen(event.eventId)}>清除这条原答</button> : null}
         <HistoryObservationAnswer event={event} onRevealAnswer={onRevealAnswer} />
         {observationRevision ? <button type="button" className="concept-history-answer-toggle"
           disabled={observationRevision.disabled || observationRevision.pendingObservationEventIds.includes(event.eventId)}
@@ -320,7 +326,7 @@ function ApplicationEntry({ event, history, concept, onRevealAnswer, correctionH
   </li>;
 }
 
-function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrection, onRefreshHistory, correctionDisabled, pendingCorrectionApplications, onCorrectionEditingChange, correctionRecoveryVersions, relationReview, observationRevision }: {
+function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrection, onRefreshHistory, correctionDisabled, pendingCorrectionApplications, onCorrectionEditingChange, correctionRecoveryVersions, relationReview, observationRevision, answerClearing }: {
   entry: ConceptHistoryEntry;
   history: ConceptHistory;
   concept?: Concept;
@@ -332,6 +338,7 @@ function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrectio
   correctionRecoveryVersions: Readonly<Record<string, number>>;
   relationReview?: RelationReviewIntegration;
   observationRevision?: ConceptHistoryPanelProps['observationRevision'];
+  answerClearing?: ConceptHistoryPanelProps['answerClearing'];
   onCorrectionEditingChange?: (applicationEventId: string, editing: boolean) => void;
 }): ReactElement {
   if (entry.type === 'application') {
@@ -367,7 +374,7 @@ function HistoryEntry({ entry, history, concept, onRevealAnswer, onSaveCorrectio
   </li>;
   return entry.type === 'anchor'
     ? <AnchorEntry entry={entry} history={history} />
-    : <ObservationEntry entry={entry} history={history} onRevealAnswer={onRevealAnswer} observationRevision={observationRevision} />;
+    : <ObservationEntry entry={entry} history={history} onRevealAnswer={onRevealAnswer} observationRevision={observationRevision} answerClearing={answerClearing} />;
 }
 
 function PendingNotice({ count }: { count: number }): ReactElement | null {
@@ -395,6 +402,7 @@ export function ConceptHistoryPanel({
   onClearFocus,
   onCorrectionEditingChange,
   observationRevision,
+  answerClearing,
 }: ConceptHistoryPanelProps) {
   const sectionRef = useRef<HTMLElement>(null);
   const resolvedFocus = history?.focusedApplicationEventId;
@@ -460,6 +468,7 @@ export function ConceptHistoryPanel({
                   pendingCorrectionApplications={pendingCorrectionApplications}
                   correctionRecoveryVersions={correctionRecoveryVersions}
                   relationReview={relationReview}
+                  answerClearing={answerClearing ? { ...answerClearing, disabled: answerClearing.disabled || loading || loadingMore || Boolean(error) } : undefined}
                   observationRevision={observationRevision ? { ...observationRevision, disabled: observationRevision.disabled || loading || loadingMore || Boolean(error) } : undefined}
                   onCorrectionEditingChange={onCorrectionEditingChange}
                 />

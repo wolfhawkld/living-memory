@@ -1,0 +1,14 @@
+.answer-clearing-dialog { width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 0; color: var(--text); background: var(--panel); border: 1px solid var(--line-strong); border-radius: 18px; overflow: auto; box-shadow: 0 22px 80px #0008; }
+.answer-clearing-dialog::backdrop { background: #0009; }
+.answer-clearing-dialog header, .answer-clearing-dialog footer { display: flex; gap: 12px; align-items: center; padding: 20px 24px; flex-wrap: wrap; }
+.answer-clearing-dialog header { justify-content: space-between; border-bottom: 1px solid var(--line); }
+.answer-clearing-dialog h2 { margin: 0; font-size: 1.15rem; }
+.answer-clearing-content { padding: 4px 24px; line-height: 1.7; }
+.answer-clearing-id { overflow-wrap: anywhere; font-size: .85rem; }
+.answer-clearing-dialog footer { justify-content: flex-end; }
+.answer-clearing-dialog button, .answer-clearing-recovery button { color: inherit; background: var(--panel-raised); border: 1px solid var(--line-strong); border-radius: 8px; padding: 9px 12px; cursor: pointer; }
+.answer-clearing-dialog button:focus-visible, .answer-clearing-recovery button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.answer-clearing-dialog .answer-clearing-confirm { border-color: #c87569; }
+.answer-clearing-recovery { padding: 12px; margin: 12px 0; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel-raised); font-size: .85rem; }
+.answer-clearing-recovery p { margin: 0 0 8px; }
+.answer-clearing-recovery button { margin: 3px; overflow-wrap: anywhere; max-width: 100%; }

@@ -1,8 +1,9 @@
+import type { ScenarioApplicationSource } from './scenario-application-handoff';
 import type { ObservationRequest } from '../shared/types';
 
 export interface ScenarioSaveHandlers {
   onSave: (request: ObservationRequest) => Promise<boolean>;
-  onContinueApplication?: (request: ObservationRequest) => void | Promise<void>;
+  onContinueApplication?: (request: ScenarioApplicationSource) => void | Promise<void>;
 }
 
 export interface ScenarioSaveOptions {
@@ -73,7 +74,7 @@ export async function saveScenarioRequest(
     };
   }
   try {
-    await handlers.onContinueApplication(request);
+    await handlers.onContinueApplication({ conceptId: request.conceptId, sourceRevision: request.sourceRevision, learning: request.learning });
     return { request, saved: true, continued: true, saveError: null, continuationError: null };
   } catch (error: unknown) {
     return {

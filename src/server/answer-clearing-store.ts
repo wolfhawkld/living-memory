@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { planAnswerClearing } from '../core/answer-clearing.js';
 import { AnswerClearingError, parseAnswerClearingRequest,
-  type AnswerClearingReceipt, type PrivacyObservation } from '../shared/answer-clearing.js';
+  type AnswerClearingReceipt, type AnswerClearingState, type PrivacyObservation } from '../shared/answer-clearing.js';
 import { inspectAnswerClearingSchemaV3 } from './answer-clearing-schema.js';
 
 import { AnswerClearingStoreError } from './answer-clearing-store-error.js';
@@ -45,7 +45,7 @@ function target(value: unknown): string {
 }
 /**
  * Explicit schema 3 kernel, shared by the isolated v3 import coordinator.
- * Product runtime/API remain v2. Never opens or closes a database.
+ * Never opens or closes a database. Default runtime/API remain v2.
  */
 export class AnswerClearingStore {
   private readonly db: DatabaseSync;
@@ -71,6 +71,19 @@ export class AnswerClearingStore {
     const eventId = target(observationEventId);
     try { return this.read(eventId); }
     catch (error) { if (error instanceof AnswerClearingStoreError) throw error; throw invalid(); }
+  }
+  /** Current namespace-scoped status only; does not depend on a live knowledge concept. */
+  getObservationAnswerClearingState(input: unknown): AnswerClearingState {
+    let eventId: string;
+    try { eventId = parseAnswerClearingRequest(input).observationEventId; }
+    catch { throw failure('INVALID_REQUEST', 400); }
+    try {
+      const parent = this.read(eventId);
+      if (!parent) throw failure('NOT_FOUND', 404);
+      return Object.freeze(parent.answer === null
+        ? { observationEventId: eventId, status: 'cleared', clearedAt: parent.answerClearing.clearedAt }
+        : { observationEventId: eventId, status: parent.answer === '' ? 'empty' : 'saved' });
+    } catch (error) { if (error instanceof AnswerClearingStoreError) throw error; throw invalid(); }
   }
   /** All counts come from one SQL snapshot; never reads or returns old credential text. */
   getReplayPrivacyStatus(): ReplayPrivacyStatus {

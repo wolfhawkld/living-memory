@@ -383,3 +383,20 @@ export function writeBriefReviewCheckpoint(sourceId: string, checkpoint: BriefRe
 export function clearBriefReviewCheckpoint(sourceId: string, storage?: BriefReviewCheckpointStorage): void {
   storageFor(storage).removeItem(briefReviewCheckpointKey(sourceId));
 }
+
+/** Remove only the mechanical copy of one saved observation, keeping progress. */
+export function scrubBriefReviewCheckpoint(checkpoint: BriefReviewCheckpoint, observationEventId: string): BriefReviewCheckpoint {
+  const attempt = checkpoint.attempt;
+  if (!attempt) return checkpoint;
+  const id = attempt.eventId, payloadId = attempt.submittedPayload?.eventId;
+  if (id !== observationEventId && payloadId !== observationEventId) return checkpoint;
+  if (id !== observationEventId || (payloadId !== undefined && payloadId !== observationEventId)) {
+    throw new Error('复习断点的观察标识不一致，原数据已保留。');
+  }
+  const result = checkpoint.session.results[attempt.conceptId];
+  if (result !== undefined && result !== 'saved' && result !== 'queued') {
+    throw new Error('复习断点进度与已保存观察冲突，原数据已保留。');
+  }
+  return { ...checkpoint, attempt: null, session: { ...checkpoint.session,
+    results: { ...checkpoint.session.results, [attempt.conceptId]: 'saved' } } };
+}

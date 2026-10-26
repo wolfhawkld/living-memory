@@ -1,3 +1,9 @@
+import { useAnswerClearing } from './useAnswerClearing';
+import { AnswerClearingDialog } from './AnswerClearingDialog';
+import { projectPrivateObservation } from './answer-privacy-projection';
+import { readPrivateBriefReviewCheckpoint, writePrivateBriefReviewCheckpoint, clearPrivateBriefReviewCheckpoint } from './answer-clearing-checkpoint';
+import type { ScenarioApplicationSource } from './scenario-application-handoff';
+import './answer-clearing.css';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { LearningOverviewItem } from '../shared/learning-overview';
 import type { CorrectionOverviewItem } from '../shared/correction-overview';
@@ -53,7 +59,7 @@ import { createPendingWriteBarrier } from './pending-write-barrier';
 import { reviewAllowance } from './review-allowance';
 import { briefReviewCheckpointKey as unscopedCheckpointKey, clearBriefReviewCheckpoint as clearUnscopedCheckpoint,
   readBriefReviewCheckpoint as readUnscopedCheckpoint, writeBriefReviewCheckpoint as writeUnscopedCheckpoint,
-  type BriefRecallAttempt as RecallAttempt, type BriefReviewCheckpoint } from './brief-review-checkpoint';
+  scrubBriefReviewCheckpoint, type BriefRecallAttempt as RecallAttempt, type BriefReviewCheckpoint } from './brief-review-checkpoint';
 import { briefReviewConfirmationSuperseded, prepareBriefReviewResume } from './brief-review-resume';
 import { selectBriefReviewCandidates } from '../core/brief-review';
 import { advanceBriefReview, briefReviewCounts, completeBriefReviewItem, resolveBriefReviewItem, type BriefReviewSession } from './brief-review-session';
@@ -263,9 +269,24 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const protocolRef = useRef<LearningProtocolVersion | undefined>(undefined);
   const checkpointStorage = useMemo(() => instanceStorage({ getItem: (key) => window.localStorage.getItem(key),
     setItem: (key, value) => window.localStorage.setItem(key, value), removeItem: (key) => window.localStorage.removeItem(key) }, instanceId), [instanceId]);
-  const readBriefReviewCheckpoint = useCallback((source: string) => readUnscopedCheckpoint(source, checkpointStorage), [checkpointStorage]);
-  const writeBriefReviewCheckpoint = useCallback((source: string, value: BriefReviewCheckpoint) => writeUnscopedCheckpoint(source, value, checkpointStorage), [checkpointStorage]);
-  const clearBriefReviewCheckpoint = useCallback((source: string) => clearUnscopedCheckpoint(source, checkpointStorage), [checkpointStorage]);
+  const clearing = useAnswerClearing({ accountId: account?.id ?? 'local-owner', sourceId, instanceId, protocol: learningProtocolVersion, writeToken });
+  const privacyScopeKey = JSON.stringify([account?.id, sourceId, instanceId, learningProtocolVersion]);
+  const privacyEpochRef = useRef({ key: privacyScopeKey, value: 0 });
+  if (privacyEpochRef.current.key !== privacyScopeKey) privacyEpochRef.current = { key: privacyScopeKey, value: privacyEpochRef.current.value + 1 };
+  const privacyEpoch = privacyEpochRef.current.value;
+  const isCurrentPrivacyScope = useCallback(() => privacyEpochRef.current.value === privacyEpoch, [privacyEpoch]);
+  const briefPersistenceRef = useRef(0);
+  const readBriefReviewCheckpoint = useCallback((source: string) => learningProtocolVersion === 3
+    ? readPrivateBriefReviewCheckpoint({ sourceId: source, instanceId }) : readUnscopedCheckpoint(source, checkpointStorage), [checkpointStorage, learningProtocolVersion, instanceId]);
+  const writeBriefReviewCheckpoint = useCallback(async (source: string, value: BriefReviewCheckpoint) => {
+    if (learningProtocolVersion === 3) return writePrivateBriefReviewCheckpoint({ sourceId: source, instanceId }, value);
+    writeUnscopedCheckpoint(source, value, checkpointStorage); return value;
+  }, [checkpointStorage, learningProtocolVersion, instanceId]);
+  const clearBriefReviewCheckpoint = useCallback(async (source: string) => {
+    ++briefPersistenceRef.current;
+    if (learningProtocolVersion === 3) await clearPrivateBriefReviewCheckpoint({ sourceId: source, instanceId });
+    else clearUnscopedCheckpoint(source, checkpointStorage);
+  }, [checkpointStorage, learningProtocolVersion, instanceId]);
   const briefReviewCheckpointKey = useCallback((source: string) => instanceStorageKey(unscopedCheckpointKey(source), instanceId), [instanceId]);
   const graphPreferenceKey = useMemo(() => graphDisplayPreferenceKey(account?.id, sourceId), [account?.id, sourceId]);
   const [graphPreference, setGraphPreference] = useState<{ key: string | null; value: GraphLimitPreference }>({ key: null, value: 'server' });
@@ -438,13 +459,44 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     simulated,
     attempt: Boolean(attempt) || scenarioOpen || practiceOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen,
     reviewDialogOpen: reviewDialogOpen || Boolean(retentionConfirmation),
-    configOpen: configOpen || reviewPlanOpen || importOpen || identityOpen || activity.open || revisionVisible || revisionOpening || revisions.busy,
+    configOpen: Boolean(clearing.state) || configOpen || reviewPlanOpen || importOpen || identityOpen || activity.open || revisionVisible || revisionOpening || revisions.busy,
     busyAction,
     refreshing,
     simulationLoading,
     sourceReloadPending,
     readerOpen: Boolean(readerRequest) || Boolean(activityReader) || Boolean(referenceReview),
   };
+
+  useEffect(() => {
+    const privacy = clearing.channel;
+    if (!privacy) return;
+    setAttempt(current => {
+      if (!current?.eventId || !privacy.getMarker(current.eventId)) return current;
+      if (briefSessionRef.current) setBriefSession(session => session ? completeBriefReviewItem(session, session.id, current.conceptId, 'saved') : session);
+      return null;
+    });
+    setBriefSuspended(current => {
+      if (!current) return current;
+      try {
+        let next = current;
+        for (const record of clearing.records) if (record.status === 'cleared') next = scrubBriefReviewCheckpoint(next, record.observationEventId);
+        return next;
+      } catch {
+        setBriefStorageError('复习断点与已保存观察的进度不一致，原答已隐藏；请先处理原答清除的本地清理提示。');
+        return { ...current, attempt: null };
+      }
+    });
+    setRevisionWindow(current => {
+      if (!current || !privacy.getMarker(current.observation.eventId)) return current;
+      const observation = projectPrivateObservation(current.observation, privacy);
+      return observation ? { ...current, observation } : current;
+    });
+  }, [clearing.channel, clearing.records]);
+
+  useEffect(() => {
+    learningWriteRef.current = false; briefActionRef.current = false;
+    setBusyAction(null);
+  }, [privacyEpoch]);
 
   const refreshPendingState = useCallback(() => setPendingWrites(getPendingWrites(sourceId)), [sourceId]);
 
@@ -454,15 +506,19 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     if (next) noticeTimer.current = window.setTimeout(() => setNotice(null), 5_000);
   }, []);
 
-  const persistBrief = useCallback((session: BriefReviewSession, draft: RecallAttempt | null, reviewRequest?: ReviewRequest) => {
+  const persistBrief = useCallback(async (session: BriefReviewSession, draft: RecallAttempt | null, reviewRequest?: ReviewRequest) => {
     if (briefStorageConflictRef.current) throw new Error('另一标签页已修改未完成记录，当前草稿仍在本页，请复制后重新加载。');
     const checkpoint: BriefReviewCheckpoint = { version: 1, savedAt: new Date().toISOString(), session, attempt: draft,
       ...(reviewRequest ? { reviewRequest } : {}) };
-    writeBriefReviewCheckpoint(session.sourceId, checkpoint);
-    setBriefSuspended(checkpoint);
-    setBriefStorageError(null);
-    return checkpoint;
-  }, [writeBriefReviewCheckpoint]);
+    const ticket = ++briefPersistenceRef.current;
+    const next = await writeBriefReviewCheckpoint(session.sourceId, checkpoint);
+    if (!isCurrentPrivacyScope()) throw new Error('知识空间已变化，旧复习回调已忽略。');
+    if (isCurrentPrivacyScope() && ticket === briefPersistenceRef.current) {
+      setBriefSuspended(next);
+      setBriefStorageError(null);
+    }
+    return next;
+  }, [writeBriefReviewCheckpoint, isCurrentPrivacyScope]);
 
   useEffect(() => {
     if (!sourceId) return;
@@ -486,18 +542,19 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
   useEffect(() => {
     if (!briefSession || briefSession.sourceId !== sourceId) return;
-    const save = () => {
+    const save = async () => {
       try {
         const item = briefSession.items[briefSession.index];
         const review = reviewEventRef.current;
-        persistBrief(briefSession, attempt, review?.conceptId === item.conceptId
+        await persistBrief(briefSession, attempt, review?.conceptId === item.conceptId
           ? { ...review, sourceRevision: item.sourceRevision } : undefined);
-      } catch (cause) { setBriefStorageError(`复习草稿未自动保存：${errorMessage(cause)}`); }
+      } catch (cause) { if (!isCurrentPrivacyScope()) return; setBriefStorageError(`复习草稿未自动保存：${errorMessage(cause)}`); }
     };
-    save();
+    void save();
+    // Best effort only: pagehide cannot wait for a Web Lock or promise.
     window.addEventListener('pagehide', save);
     return () => window.removeEventListener('pagehide', save);
-  }, [attempt, briefSession, persistBrief, sourceId]);
+  }, [attempt, briefSession, persistBrief, sourceId, isCurrentPrivacyScope]);
 
   const loadSnapshot = useCallback(async (requestedAsOf?: string, expectedSourceId?: string, canApply?: () => boolean) => {
     const requestId = snapshotRequestRef.current + 1;
@@ -731,8 +788,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [canApplyChange, markSourceMismatch, showNotice, sourceReloadPending]);
 
   changeHandlersRef.current = {
-    onChange: handleChange,
-    onConnected: handleConnected,
+    onChange: (notification) => { void clearing.reconcile(); handleChange(notification); },
+    onConnected: (notification, reconnected) => { void clearing.reconcile(); handleConnected(notification, reconnected); },
     flush: flushDeferredChanges,
   };
 
@@ -877,7 +934,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     ? summarizeDomainVisibility(displaySnapshot, viewSnapshot, domainId) : null, [displaySnapshot, viewSnapshot, domainId]);
   const visibleIds = useMemo(() => viewSnapshot?.concepts.map((concept) => concept.id) ?? [], [viewSnapshot]);
   const visibleExpandedIds = useMemo(() => viewSnapshot?.concepts.filter((concept) => domainIdOf(concept) !== domainId).map((concept) => concept.id) ?? [], [domainId, viewSnapshot]);
-  const domainBusy = activity.open || revisionVisible || revisionOpening || revisions.busy || Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
+  const domainBusy = Boolean(clearing.state) || activity.open || revisionVisible || revisionOpening || revisions.busy || Boolean(attempt) || Boolean(briefSession) || scenarioOpen || practiceOpen || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen || Boolean(retentionConfirmation) || Boolean(readerRequest) || reviewDialogOpen || configOpen || Boolean(busyAction) || refreshing || loading || simulationLoading || sourceReloadPending;
   const changeGraphLimit = useCallback((value: GraphLimitPreference) => {
     if (domainBusy || listMode || !graphPreferenceKey) return;
     setGraphPreference({ key: graphPreferenceKey, value });
@@ -912,7 +969,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   const briefProgressLock = sourceReloadPending || (briefSession && briefSession.sourceId !== sourceId)
     ? '知识源已变化，请结束本轮后重新加载。' : writeLocked || !hasSession ? '当前无法写入真实记录，请结束本轮后重试。'
     : briefStorageConflictRef.current ? briefStorageError : null;
-  const learningOverlayOpen = activity.open || revisionVisible || revisionOpening || Boolean(attempt) || scenarioOpen || practiceOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen;
+  const learningOverlayOpen = Boolean(clearing.state) || activity.open || revisionVisible || revisionOpening || Boolean(attempt) || scenarioOpen || practiceOpen || Boolean(briefSession) || Boolean(applicationDraft) || overviewOpen || reviewPlanOpen || importOpen || identityOpen;
 
   // Source refreshes may remove a domain or a relation. Reconcile only when no
   // answer/dialog is active, and never turn a view change into a learning event.
@@ -966,7 +1023,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     sourceId, conceptId: selectedConcept?.id ?? '', sourceRevision: selectedConcept?.source.revision ?? '',
     learningProtocolVersion,
     applicationEventId: focusedApplicationEventId,
-  }, historyEnabled, snapshot);
+  }, historyEnabled, snapshot, clearing.channel);
+  const clearingVersion = clearing.records.filter(record => record.status === 'cleared').map(record => `${record.observationEventId}:${record.clearedAt}`).join('|');
+  useEffect(() => {
+    if (!clearingVersion || writeLocked || !hasSession) return;
+    void loadSnapshot(undefined, sourceId).catch(() => undefined);
+    void reviewPlan.refresh().catch(() => undefined);
+  }, [clearingVersion, sourceId, writeLocked, hasSession, loadSnapshot, reviewPlan.refresh]);
   const lastRevisionConfirmation = useRef(revisions.confirmedVersion);
   useEffect(() => {
     if (lastRevisionConfirmation.current === revisions.confirmedVersion) return;
@@ -1344,9 +1407,10 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         occurredAt: stableEvent.occurredAt,
       };
       if (briefSession) {
-        try { persistBrief(briefSession, null, payload); }
-        catch (cause) { setBriefStorageError(`重温尚未提交：${errorMessage(cause)}`); return; }
+        try { await persistBrief(briefSession, null, payload); }
+        catch (cause) { if (!isCurrentPrivacyScope()) return; setBriefStorageError(`重温尚未提交：${errorMessage(cause)}`); return; }
       }
+      if (!isCurrentPrivacyScope()) return;
       setBusyAction('review');
       const result = await writeWithRetry({
         path: '/reviews',
@@ -1357,6 +1421,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         label: kind === 'estimated' ? '补记重温' : '确认重温',
         send: () => api.postReview(payload, writeToken, sourceId),
       });
+      if (!isCurrentPrivacyScope()) return;
       if (result.ok || result.queued) setReviewDialogOpen(false);
       if (briefSession && (result.ok || result.queued)) {
         setBriefSession((current) => current?.id === briefSession.id
@@ -1368,10 +1433,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         await reloadRealSnapshot();
       }
     } finally {
-      learningWriteRef.current = false;
-      setBusyAction(null);
+      if (isCurrentPrivacyScope()) { learningWriteRef.current = false; setBusyAction(null); }
     }
-  }, [briefProgressLock, briefReviewDisabledReason, briefSession, persistBrief, reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
+  }, [briefProgressLock, briefReviewDisabledReason, briefSession, persistBrief, reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry, isCurrentPrivacyScope]);
 
   const beginRecall = useCallback((concept: Concept, state: MemoryState) => {
     const viewed = sourceViewedKeys.includes(sourceExposureKey(sourceId, concept));
@@ -1436,7 +1500,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       const existing = readBriefReviewCheckpoint(sourceId);
       if (existing) { setBriefSuspended(existing); return; }
       const [latest, arrangement] = await Promise.all([loadSnapshot(undefined, sourceId), reviewPlan.refresh()]);
-      if (!latest || !arrangement || writeLockedRef.current || sourceIdRef.current !== sourceId) return;
+      if (!isCurrentPrivacyScope() || !latest || !arrangement || writeLockedRef.current || sourceIdRef.current !== sourceId) return;
       const allowance = reviewAllowance(arrangement, getPendingWrites(sourceId));
       const candidates = selectBriefReviewCandidates(latest, domainId, {
         limit: Math.min(briefBudget, allowance.remaining), excludedIds: briefExclusions(arrangement),
@@ -1455,57 +1519,68 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       if (!first) return;
       const concurrent = readBriefReviewCheckpoint(sourceId);
       if (concurrent) { setBriefSuspended(concurrent); showNotice({ tone: 'info', text: '另一标签页已开始复习，请先继续已有的一轮。' }); return; }
-      persistBrief(session, null);
+      await persistBrief(session, null);
+      if (!isCurrentPrivacyScope()) return;
       setBriefSession(session);
       beginRecall(first.concept, first.state);
     } catch (startError) {
+      if (!isCurrentPrivacyScope()) return;
       showNotice({ tone: 'error', text: `暂时无法开始复习：${errorMessage(startError)}` });
     } finally {
-      briefActionRef.current = false;
-      setBusyAction(null);
+      if (isCurrentPrivacyScope()) { briefActionRef.current = false; setBusyAction(null); }
     }
-  }, [beginRecall, briefBudget, briefDisabledReason, briefExclusions, briefSuspended, domainId, loadSnapshot, persistBrief, reviewPlan.refresh, showNotice, sourceId]);
+  }, [beginRecall, briefBudget, briefDisabledReason, briefExclusions, briefSuspended, domainId, loadSnapshot, persistBrief, reviewPlan.refresh, showNotice, sourceId, isCurrentPrivacyScope]);
 
-  const endBriefReview = useCallback(() => {
+  const endBriefReview = useCallback(async () => {
     if (!briefSession || busyAction || briefActionRef.current || learningWriteRef.current) return;
-    const counts = briefReviewCounts(briefSession);
+    briefActionRef.current = true; setBusyAction('brief-review');
     try {
-      if (!briefStorageConflictRef.current) clearBriefReviewCheckpoint(sourceId);
+      const counts = briefReviewCounts(briefSession);
+      if (!briefStorageConflictRef.current) await clearBriefReviewCheckpoint(sourceId);
+      if (!isCurrentPrivacyScope() || briefSessionRef.current?.id !== briefSession.id) return;
       setBriefSuspended(briefStorageConflictRef.current ? readBriefReviewCheckpoint(sourceId) : null);
       briefStorageConflictRef.current = false;
       setBriefStorageError(null);
       setBriefResumeError(null);
-    } catch (cause) { showNotice({ tone: 'error', text: `尚未结束：${errorMessage(cause)}` }); return; }
-    setReaderRequest(null);
-    setAttempt(null);
-    setBriefSession(null);
-    reviewEventRef.current = null;
-    showNotice({ tone: 'info', text: `本轮已结束：保存 ${counts.saved} 条观察，另有 ${counts.queued} 条进入待同步队列，跳过 ${counts.skipped} 条。未提交的作答不会保存。` });
-  }, [briefSession, busyAction, showNotice, sourceId]);
+      setReaderRequest(null);
+      setAttempt(null);
+      setBriefSession(null);
+      reviewEventRef.current = null;
+      showNotice({ tone: 'info', text: `本轮已结束：保存 ${counts.saved} 条观察，另有 ${counts.queued} 条进入待同步队列，跳过 ${counts.skipped} 条。未提交的作答不会保存。` });
+    } catch (cause) {
+      if (isCurrentPrivacyScope()) showNotice({ tone: 'error', text: `尚未结束：${errorMessage(cause)}` });
+    } finally { if (isCurrentPrivacyScope()) { briefActionRef.current = false; setBusyAction(null); } }
+  }, [briefSession, busyAction, showNotice, sourceId, isCurrentPrivacyScope, clearBriefReviewCheckpoint, readBriefReviewCheckpoint]);
 
-  const pauseBriefReview = useCallback(() => {
+  const pauseBriefReview = useCallback(async () => {
     if (!briefSession || busyAction || briefActionRef.current || learningWriteRef.current) return;
+    briefActionRef.current = true; setBusyAction('brief-review');
     try {
       const review = reviewEventRef.current;
-      persistBrief(briefSession, attempt, review ? { ...review, sourceRevision: briefSession.items[briefSession.index].sourceRevision } : undefined);
+      await persistBrief(briefSession, attempt, review ? { ...review, sourceRevision: briefSession.items[briefSession.index].sourceRevision } : undefined);
+      if (!isCurrentPrivacyScope() || briefSessionRef.current?.id !== briefSession.id) return;
       setReaderRequest(null);
       setAttempt(null);
       setBriefSession(null);
       showNotice({ tone: 'info', text: '已暂停；作答与进度保存在当前浏览器，可稍后继续。' });
-    } catch (cause) { setBriefStorageError(`尚未暂停：${errorMessage(cause)}`); }
-  }, [attempt, briefSession, busyAction, persistBrief, showNotice]);
+    } catch (cause) { if (isCurrentPrivacyScope()) setBriefStorageError(`尚未暂停：${errorMessage(cause)}`); }
+    finally { if (isCurrentPrivacyScope()) { briefActionRef.current = false; setBusyAction(null); } }
+  }, [attempt, briefSession, busyAction, persistBrief, showNotice, isCurrentPrivacyScope]);
 
-  const discardSuspendedBrief = useCallback(() => {
+  const discardSuspendedBrief = useCallback(async () => {
     if (briefSession || busyAction || briefActionRef.current) return;
+    briefActionRef.current = true; setBusyAction('brief-review');
     try {
       const current = readBriefReviewCheckpoint(sourceId);
       if (current?.session.id !== briefSuspended?.session.id) { setBriefSuspended(current); return; }
-      clearBriefReviewCheckpoint(sourceId);
+      await clearBriefReviewCheckpoint(sourceId);
+      if (!isCurrentPrivacyScope() || briefSessionRef.current) return;
       setBriefSuspended(null);
       setBriefResumeError(null);
       setBriefStorageError(null);
-    } catch (cause) { setBriefResumeError(errorMessage(cause)); }
-  }, [briefSession, briefSuspended, busyAction, sourceId]);
+    } catch (cause) { if (isCurrentPrivacyScope()) setBriefResumeError(errorMessage(cause)); }
+    finally { if (isCurrentPrivacyScope()) { briefActionRef.current = false; setBusyAction(null); } }
+  }, [briefSession, briefSuspended, busyAction, sourceId, isCurrentPrivacyScope, clearBriefReviewCheckpoint, readBriefReviewCheckpoint]);
 
   const resumeBriefReview = useCallback(async () => {
     if (briefDisabledReason || briefActionRef.current || briefSession) return;
@@ -1517,7 +1592,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       if (!checkpoint) { setBriefSuspended(null); return; }
       setBriefSuspended(checkpoint);
       const [latest, arrangement] = await Promise.all([loadSnapshot(undefined, sourceId), reviewPlan.refresh()]);
-      if (!latest || !arrangement || sourceIdRef.current !== sourceId || writeLockedRef.current) return;
+      if (!isCurrentPrivacyScope() || !latest || !arrangement || sourceIdRef.current !== sourceId || writeLockedRef.current) return;
       const currentCheckpoint = readBriefReviewCheckpoint(sourceId);
       if (!currentCheckpoint || currentCheckpoint.session.id !== checkpoint.session.id || currentCheckpoint.savedAt !== checkpoint.savedAt) {
         setBriefSuspended(currentCheckpoint);
@@ -1539,9 +1614,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       else setAttempt(null);
       reviewEventRef.current = checkpoint.reviewRequest ? { ...checkpoint.reviewRequest, occurredAt: checkpoint.reviewRequest.occurredAt! } : null;
       try { window.localStorage.setItem(`living-memory.domain.v1.${sourceId}`, restored.session.domainId); } catch { /* The session still controls its domain. */ }
-    } catch (cause) { setBriefResumeError(errorMessage(cause)); }
-    finally { briefActionRef.current = false; setBusyAction(null); }
-  }, [beginRecall, briefDisabledReason, briefSession, loadSnapshot, markSourceViewed, reviewPlan.refresh, sourceId, sourceViewedKeys]);
+    } catch (cause) { if (!isCurrentPrivacyScope()) return; setBriefResumeError(errorMessage(cause)); }
+    finally { if (isCurrentPrivacyScope()) { briefActionRef.current = false; setBusyAction(null); } }
+  }, [beginRecall, briefDisabledReason, briefSession, loadSnapshot, markSourceViewed, reviewPlan.refresh, sourceId, sourceViewedKeys, isCurrentPrivacyScope]);
 
   const skipBriefItem = useCallback(() => {
     if (!briefSession || !attempt || busyAction || learningWriteRef.current) return;
@@ -1588,6 +1663,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [attempt, markSourceViewed, snapshot]);
 
   const saveObservation = useCallback(async () => {
+    if (attempt?.eventId && clearing.channel?.isBlocked(attempt.eventId)) return;
     if (!attempt || !selectedConcept || selectedConcept.id !== attempt.conceptId || !snapshot || !writeToken || writeLocked
       || learningWriteRef.current || (briefSession && briefProgressLock) || attempt.stage !== 'feedback' || !attempt.rating || !attempt.observedAt) return;
     learningWriteRef.current = true;
@@ -1606,11 +1682,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         observedExposure: attempt.sourceViewedBefore,
         learning: attempt.learning,
       };
+      if (clearing.channel?.isBlocked(eventId)) return;
       setAttempt({ ...attempt, eventId, submittedPayload: payload });
       if (briefSession) {
-        try { persistBrief(briefSession, { ...attempt, eventId, submittedPayload: payload }); }
-        catch (cause) { setBriefStorageError(`观察尚未提交：${errorMessage(cause)}`); return; }
+        try { await persistBrief(briefSession, { ...attempt, eventId, submittedPayload: payload }); }
+        catch (cause) { if (!isCurrentPrivacyScope()) return; setBriefStorageError(`观察尚未提交：${errorMessage(cause)}`); return; }
       }
+      if (clearing.channel?.isBlocked(eventId) || !isCurrentPrivacyScope()) return;
       setBusyAction('observation');
       const result = await writeWithRetry({
         path: '/observations',
@@ -1621,7 +1699,8 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         label: '回忆观察',
         send: () => api.postObservation(payload, writeToken, sourceId),
       });
-      if (!result.ok && !result.queued) setAttempt({ ...attempt, eventId, submittedPayload: payload });
+      if (!isCurrentPrivacyScope()) return;
+      if (!result.ok && !result.queued && !clearing.channel?.isBlocked(eventId)) setAttempt({ ...attempt, eventId, submittedPayload: payload });
       if (result.ok || result.queued) {
         if (briefSession) setBriefSession((current) => completeBriefReviewItem(current, briefSession.id, attempt.conceptId, result.ok ? 'saved' : 'queued'));
         setReaderRequest(null);
@@ -1632,10 +1711,9 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         await reloadRealSnapshot();
       }
     } finally {
-      learningWriteRef.current = false;
-      setBusyAction(null);
+      if (isCurrentPrivacyScope()) { learningWriteRef.current = false; setBusyAction(null); }
     }
-  }, [attempt, briefProgressLock, briefSession, persistBrief, reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
+  }, [attempt, briefProgressLock, briefSession, persistBrief, reloadRealSnapshot, selectedConcept, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry, clearing.channel, isCurrentPrivacyScope]);
 
   const saveConfig = useCallback(async () => {
     if (!snapshot || !writeToken || writeLocked || attempt || briefSession || briefActionRef.current || busyAction) return;
@@ -1659,10 +1737,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
   }, [attempt, briefSession, busyAction, halfLifeDraft, reloadRealSnapshot, showNotice, snapshot, sourceId, writeLocked, writeToken, writeWithRetry]);
 
   const saveScenarioObservation = async (payload: ObservationRequest): Promise<boolean> => {
+    if (clearing.channel?.isBlocked(payload.eventId)) return false;
     if (sourceReloadPending && sourceId) {
       const queued = await queuePendingWrite(sourceId, { path: '/observations', method: 'POST', payload,
         eventId: payload.eventId, conceptId: payload.conceptId, label: '场景调用观察（等待原知识源）' });
       if (!queued) throw new Error('知识源已变化，浏览器也未允许保存记录。请保留当前页面和回答后重试。');
+      if (!isCurrentPrivacyScope()) return false;
       refreshPendingState();
       showNotice({ tone: 'info', text: '场景记录已保存在原知识源的待同步队列；重新连接原知识源后可重试。' });
       return true;
@@ -1674,14 +1754,14 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
       const result = await writeWithRetry({ path: '/observations', method: 'POST', payload,
         eventId: payload.eventId, conceptId: payload.conceptId, label: '场景调用观察',
         send: () => api.postObservation(payload, writeToken, sourceId) });
+      if (!isCurrentPrivacyScope()) return false;
       if (result.ok) {
         showNotice({ tone: 'success', text: '场景调用与事前信心已保存，可在关联节点的学习历史中查看。' });
         await reloadRealSnapshot();
       }
       return result.ok || Boolean(result.queued);
     } finally {
-      learningWriteRef.current = false;
-      setBusyAction(null);
+      if (isCurrentPrivacyScope()) { learningWriteRef.current = false; setBusyAction(null); }
     }
   };
 
@@ -1717,12 +1797,12 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
     }
   };
 
-  const continueScenarioApplication = async (payload: ObservationRequest) => {
+  const continueScenarioApplication = async (payload: ScenarioApplicationSource) => {
     if (writeLockedRef.current || sourceIdRef.current !== sourceId) {
       throw new Error('场景观察已保留，但当前知识空间无法继续写入。请回到原知识空间，从节点入口记录应用 / 总结。');
     }
     const latest = await loadSnapshot(undefined, sourceId);
-    if (!latest || writeLockedRef.current) {
+    if (!isCurrentPrivacyScope() || !latest || writeLockedRef.current) {
       throw new Error('场景观察已保留，但应用 / 总结草稿未打开。请恢复实时记录后重试。');
     }
     const concept = resolveScenarioApplicationConcept(payload, sourceId, sourceIdRef.current, latest);
@@ -2219,6 +2299,11 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         </section>
 
         <aside className="right-panel">
+          {clearing.records.some(record => record.status === 'pending' || record.cleanup !== 'complete') ? <section className="answer-clearing-recovery" aria-label="原答清除待处理">
+            <p>有原答清除结果或本地副本需要核对。已确认的原答不会重新显示。</p>
+            {clearing.records.filter(record => record.status === 'pending' || record.cleanup !== 'complete').map(record => <button type="button" key={record.observationEventId}
+              onClick={() => clearing.open(record.observationEventId)}>{record.status === 'pending' ? '核对清除结果' : '重试本地清理'} · {record.observationEventId}</button>)}
+          </section> : null}
           {selectedConcept && selectedState ? (
             <>
               <div className="detail-head"><div className="detail-domain">{domainLabel(domainIdOf(selectedConcept))}</div><h2>{selectedConcept.title}</h2><div className="alias-row">{selectedConcept.aliases.slice(0, 3).map((alias) => <span key={alias}>{alias}</span>)}</div></div>
@@ -2262,6 +2347,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
                   setHistoryFocus(null);
                 }}
                 onRevealAnswer={() => markSourceViewed(selectedConcept.id)}
+                answerClearing={clearing.channel && !writeLocked ? { disabled: domainBusy || !hasSession, onOpen: clearing.open } : undefined}
                 observationRevision={{ disabled: writeLocked || domainBusy || !hasSession,
                   pendingObservationEventIds: pendingWrites.filter(write => write.path === '/observations' && write.eventId).map(write => write.eventId!),
                   pendingRevisionParentIds: revisions.rows.filter(row => row.state !== 'archived').map(row => row.request.observationEventId),
@@ -2273,9 +2359,13 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         </aside>
       </main>
 
+      {clearing.state && clearing.operation ? <AnswerClearingDialog state={clearing.state}
+        onConfirm={() => void clearing.operation!.submit()} onCheck={() => void clearing.operation!.check()}
+        onCleanup={() => void clearing.operation!.retryCleanup()} onClose={() => clearing.operation!.close()} /> : null}
+
       {revisionVisible && revisionWindow ? <ObservationRevisionDialog
         key={JSON.stringify([revisionWindow.contextKey, revisionWindow.observation.eventId])}
-        scopeKey={revisionWindow.contextKey} observation={revisionWindow.observation} learningProtocolVersion={learningProtocolVersion}
+        privacy={clearing.channel} scopeKey={revisionWindow.contextKey} observation={revisionWindow.observation} learningProtocolVersion={learningProtocolVersion}
         disabledReason={writeLocked || !hasSession ? '当前知识空间不可写，请回到真实记录后重试。' : null}
         pendingRow={revisions.rows.find(row => row.state !== 'archived' && row.request.observationEventId === revisionWindow.observation.eventId)}
         loadHistory={options => revisions.channel.readHistory(revisionWindow.observation.eventId, options, revisionWindow.contextKey)}
@@ -2288,7 +2378,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
 
       {reviewDialogOpen && selectedConcept ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setReviewDialogOpen(false); }}><div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="review-dialog-title"><div className="modal-kicker">补记历史 · 估计时间</div><h2 id="review-dialog-title">你大约在什么时候重温过？</h2><p>这条记录会标记为估计事件，只作为时间起点参考，不会伪装成精确测量。</p><label htmlFor="estimated-date">日期</label><input id="estimated-date" type="date" value={estimatedDate} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setEstimatedDate(event.target.value)} /><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setReviewDialogOpen(false)}>取消</button><button type="button" className="primary-button" onClick={() => void submitReview('estimated', estimatedDate)} disabled={writeLocked || !estimatedDate || busyAction === 'review'}>保存估计记录</button></div></div></div> : null}
 
-      {attempt && selectedConcept && selectedConcept.id === attempt.conceptId ? <div className="recall-overlay"><div className="recall-card" role="dialog" aria-modal="true" aria-labelledby="recall-title">
+      {attempt && !(attempt.eventId && clearing.channel?.isBlocked(attempt.eventId)) && selectedConcept && selectedConcept.id === attempt.conceptId ? <div className="recall-overlay"><div className="recall-card" role="dialog" aria-modal="true" aria-labelledby="recall-title">
         <div className="recall-topline"><span className="eyebrow">{briefSession ? `少量复习 · ${briefSession.index + 1}/${briefSession.items.length}` : '主动回忆'} · {attempt.stage === 'prediction' ? '事前预测' : attempt.stage === 'answer' ? '先回答' : '核对与自评'}</span>
           {briefSession ? <div className="brief-review-task-actions"><button type="button" className="quiet-button" disabled={Boolean(busyAction)} onClick={skipBriefItem}>跳过本条</button><button type="button" className="quiet-button" disabled={Boolean(busyAction)} onClick={pauseBriefReview}>暂停，稍后继续</button><button type="button" className="quiet-button" disabled={Boolean(busyAction)} onClick={endBriefReview}>结束本轮</button></div>
             : <button type="button" className="icon-button" disabled={busyAction === 'observation'} onClick={() => setAttempt(null)} aria-label="取消回忆">×</button>}
@@ -2353,7 +2443,7 @@ export default function App({ account, onLogout, onManageAccounts }: { account?:
         concept={applicationDraft.concept} concepts={snapshot.concepts} links={snapshot.links} initialDraft={applicationDraft.initialDraft} busy={busyAction === 'application'} onSave={saveApplication}
         onClose={() => setApplicationDraft(null)} /> : null}
 
-      {scenarioOpen ? <ScenarioPractice key={sourceId} snapshot={snapshot} sourceId={sourceId} busy={busyAction === 'scenario'}
+      {scenarioOpen ? <ScenarioPractice privacy={clearing.channel} key={privacyScopeKey} snapshot={snapshot} sourceId={sourceId} busy={busyAction === 'scenario'}
         variant={queryReflection ? 'query' : 'scenario'} initialScenario={queryReflection?.query ?? ''}
         nameHintedConceptIds={queryReflection?.nameHintedConceptIds}
         onClose={() => { referenceNavigationRef.current += 1; setReferenceReaders([]); setScenarioOpen(false); setQueryReflection(null); setScenarioReader(null); }} onSave={saveScenarioObservation}

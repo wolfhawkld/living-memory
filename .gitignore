@@ -25,6 +25,7 @@ node_modules/
 dist/
 coverage/
 test-results/
+test-results-v3/
 playwright-report/
 .playwright/
 .venv/

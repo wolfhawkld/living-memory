@@ -1,3 +1,4 @@
+import { projectPrivateObservation, type AnswerPrivacyGuard } from './answer-privacy-projection';
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { PrivacyObservation } from '../shared/answer-clearing';
 import type { LearningProtocolVersion } from '../shared/learning-protocol';
@@ -20,7 +21,7 @@ export function revisionPersistenceAfterResult(current: RevisionPersistenceState
   return { durable: true, uncertain: false };
 }
 export interface ObservationRevisionDialogProps {
-  scopeKey: string; observation: Observation; learningProtocolVersion?: LearningProtocolVersion; disabledReason: string | null; pendingRow?: ObservationRevisionPendingRow | null;
+  privacy?: AnswerPrivacyGuard; scopeKey: string; observation: Observation; learningProtocolVersion?: LearningProtocolVersion; disabledReason: string | null; pendingRow?: ObservationRevisionPendingRow | null;
   loadHistory: RevisionHistoryLoader; onSubmit(request: ObservationRevisionRequest): Promise<RevisionSubmitResult>;
   onRetryPending(expectedRequest: ObservationRevisionRequest): Promise<RevisionSubmitResult>; onRecheckRejected(expectedRow: ObservationRevisionPendingRow): Promise<boolean>;
   onRevealAnswer(): void; onClose(): void; onDirtyChange?(dirty: boolean): void;
@@ -88,17 +89,18 @@ export function RevisionJudgmentFields({ draft, status, disabled, idPrefix, onEd
 export function ObservationRevisionDialog(props: ObservationRevisionDialogProps) {
   // A keyed inner lifetime also isolates a parent change before effects run.
   return <RevisionDialog key={JSON.stringify([props.scopeKey, props.observation.eventId, props.observation.conceptId, props.observation.sourceRevision,
-    props.learningProtocolVersion ?? 2, observationPrivacyVersion(props.observation)])} {...props} disabledReason={props.disabledReason ?? (props.pendingRow && props.pendingRow.request.observationEventId !== props.observation.eventId ? '待同步决定与原观察不匹配，不能操作。' : null)} pendingRow={props.pendingRow?.state === 'archived' ? null : props.pendingRow} />;
+    props.learningProtocolVersion ?? 2])} {...props} disabledReason={props.disabledReason ?? (props.pendingRow && props.pendingRow.request.observationEventId !== props.observation.eventId ? '待同步决定与原观察不匹配，不能操作。' : null)} pendingRow={props.pendingRow?.state === 'archived' ? null : props.pendingRow} />;
 }
-function RevisionDialog({ observation, learningProtocolVersion = 2, disabledReason, pendingRow, loadHistory, onSubmit, onRetryPending, onRecheckRejected, onRevealAnswer, onClose, onDirtyChange }: ObservationRevisionDialogProps) {
+function RevisionDialog({ privacy, observation, learningProtocolVersion = 2, disabledReason, pendingRow, loadHistory, onSubmit, onRetryPending, onRecheckRejected, onRevealAnswer, onClose, onDirtyChange }: ObservationRevisionDialogProps) {
   const titleId = useId(); const dialogRef = useRef<HTMLDialogElement>(null);
   const fetchRef = useRef(loadHistory); fetchRef.current = loadHistory;
-  const loader = useMemo(() => createObservationRevisionHistoryLoader(observation, options => fetchRef.current(options), learningProtocolVersion), [observation.eventId, observation.conceptId, observation.sourceRevision, learningProtocolVersion]);
+  const loader = useMemo(() => createObservationRevisionHistoryLoader(observation, options => fetchRef.current(options), learningProtocolVersion, privacy), [observation.eventId, observation.conceptId, observation.sourceRevision, learningProtocolVersion, privacy]);
   const state = useSyncExternalStore(loader.subscribe, loader.getSnapshot, loader.getSnapshot);
-  const currentObservation = state.history?.observation ?? observation;
+  const currentObservation = projectPrivateObservation(state.history?.observation ?? observation, privacy) ?? observation;
   // A v3 window never falls back to a previously intact parent after a failed
   // refresh. Only a verified response or an already-cleared prop can be shown.
-  const displayObservation = revisionOriginalForDisplay(observation, state.history, learningProtocolVersion, state.error, state.loading);
+  const original = revisionOriginalForDisplay(observation, state.history, learningProtocolVersion, state.error, state.loading);
+  const displayObservation = original ? projectPrivateObservation(original, privacy) : null;
   const [draft, setDraft] = useState<RevisionDraft | null>(null); const [baseTail, setBaseTail] = useState<string | null>(pendingRow?.request.previousEventId ?? null);
   const [baseTotal, setBaseTotal] = useState<number | null>(null);
   const [basePrivacy, setBasePrivacy] = useState<string | null>(observationPrivacyVersion(observation));
@@ -114,6 +116,7 @@ function RevisionDialog({ observation, learningProtocolVersion = 2, disabledReas
   const [confirmed, setConfirmed] = useState(false); const [message, setMessage] = useState<string | null>(null);
   const [revealed, setRevealed] = useState(false); const lock = useRef(false); const live = useRef(true);
   const dirtyCallback = useRef(onDirtyChange); dirtyCallback.current = onDirtyChange;
+  useEffect(() => privacy?.subscribe(() => { loader.invalidatePrivacy(); void loader.refresh(); }), [privacy, loader]);
   useEffect(() => { live.current = true; loader.activate(); void loader.refresh(); return () => { live.current = false; loader.dispose(); }; }, [loader]);
   useEffect(() => {
     const dialog = dialogRef.current; if (!dialog) return;

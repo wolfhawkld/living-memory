@@ -1,10 +1,13 @@
 import type { Observation } from './types.js';
 import { isValidInstant } from '../core/time-model.js';
 
-/** ACLEAR-01 foundation only. No current API or persisted v2 format accepts these types. */
+/** Explicit protocol 3 contracts; persisted protocol 2 does not accept these types. */
 export interface AnswerClearingRequest { observationEventId: string }
 export interface AnswerClearingMarker { observationEventId: string; clearedAt: string }
 export interface AnswerClearingReceipt extends AnswerClearingMarker { status: 'accepted' | 'duplicate' }
+/** A current-state projection which never includes the saved answer or its metadata. */
+export type AnswerClearingState = { observationEventId: string; status: 'saved' | 'empty' }
+  | { observationEventId: string; status: 'cleared'; clearedAt: string };
 
 /** null means deliberately removed; '' continues to mean an originally empty answer. */
 export type ClearedObservation = Omit<Observation, 'answer'> & {
@@ -12,7 +15,7 @@ export type ClearedObservation = Omit<Observation, 'answer'> & {
   answerClearing: AnswerClearingMarker;
 };
 export type PrivacyObservation = Observation | ClearedObservation;
-export type AnswerClearingErrorCode = 'INVALID_REQUEST' | 'INVALID_MARKER' | 'INVALID_RECEIPT'
+export type AnswerClearingErrorCode = 'INVALID_REQUEST' | 'INVALID_MARKER' | 'INVALID_RECEIPT' | 'INVALID_STATE'
   | 'INVALID_OBSERVATION' | 'TARGET_MISMATCH' | 'INVALID_CLEARED_AT' | 'NO_SAVED_ANSWER' | 'INCONSISTENT_CLEARING';
 export class AnswerClearingError extends Error {
   constructor(readonly code: AnswerClearingErrorCode) { super(code); this.name = 'AnswerClearingError'; }
@@ -59,4 +62,17 @@ export function parseAnswerClearingReceipt(value: unknown): AnswerClearingReceip
     return Object.freeze({ status: input.status, observationEventId: id(input.observationEventId, 'INVALID_RECEIPT'),
       clearedAt: instant(input.clearedAt, 'INVALID_RECEIPT') });
   } catch { return invalid('INVALID_RECEIPT'); }
+}
+export function parseAnswerClearingState(value: unknown): AnswerClearingState {
+  try {
+    // Inspect a data descriptor before selecting the union; never invoke a getter.
+    const descriptor = value && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'status') : undefined;
+    const status = descriptor && 'value' in descriptor ? descriptor.value : undefined;
+    if (status !== 'saved' && status !== 'empty' && status !== 'cleared') invalid('INVALID_STATE');
+    const input = data(value, status === 'cleared' ? ['observationEventId', 'status', 'clearedAt'] : ['observationEventId', 'status'], 'INVALID_STATE');
+    const observationEventId = id(input.observationEventId, 'INVALID_STATE');
+    return Object.freeze(status === 'cleared'
+      ? { observationEventId, status, clearedAt: instant(input.clearedAt, 'INVALID_STATE') }
+      : { observationEventId, status });
+  } catch { return invalid('INVALID_STATE'); }
 }

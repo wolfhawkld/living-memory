@@ -1,5 +1,7 @@
 import { LEARNING_PROTOCOL_HEADER, LEARNING_PROTOCOL_ERROR, LEARNING_PROTOCOL_MESSAGE, supportsLearningProtocol, isLearningProtocolExempt, type LearningProtocolVersion } from '../shared/learning-protocol';
-import type { PrivacyObservation } from '../shared/answer-clearing';
+import { parseAnswerClearingRequest, parseAnswerClearingReceipt, parseAnswerClearingState, type AnswerClearingReceipt, type AnswerClearingState, type PrivacyObservation } from '../shared/answer-clearing';
+import { getAnswerPrivacyChannel, isAnswerClearingPath, isOriginalObservationPath } from './answer-clearing-privacy';
+import { projectPrivateHistory, projectPrivateObservation } from './answer-privacy-projection';
 import { validateConceptHistoryPrivacy, validateRevisionHistoryPrivacy, validateLearningOverviewPrivacy } from './privacy-response';
 import type {
   ApplicationRecordRequest,
@@ -155,8 +157,35 @@ function scopeCurrent(scope: QueueScope): boolean {
     (activeScope?.sourceId === scope.sourceId && activeScope.instanceId === scope.instanceId));
 }
 function assertScope(scope: QueueScope): void { if (!scopeCurrent(scope)) throw instanceError(); }
+function guardObservationWrite(path: string, payload: unknown, sourceId: string, eventId?: unknown): void {
+  if (isAnswerClearingPath(path)) throw new ApiRequestError('原答清除不能加入待同步队列。', { code: 'ANSWER_CLEARING_NOT_QUEUEABLE' });
+  if (!isOriginalObservationPath(path) || activeScope?.learningProtocolVersion !== 3) return;
+  const scope = captureScope(sourceId);
+  assertScope(scope);
+  const payloadId = payload && typeof payload === 'object' && 'eventId' in payload ? payload.eventId : undefined;
+  const ids = [payloadId, ...(eventId === undefined ? [] : [eventId])];
+  if (ids.some(id => typeof id !== 'string') || (eventId !== undefined && eventId !== payloadId)) {
+    throw new ApiRequestError('待同步观察标识不一致，原记录已保留。', { code: 'INVALID_OBSERVATION_ID' });
+  }
+  const privacy = getAnswerPrivacyChannel(scope);
+  privacy.reconcile();
+  if (ids.some(id => privacy.isBlocked(id as string))) throw new ApiRequestError('此观察的原答已清除或正在核对清除结果，不再发送旧原答。', { code: 'ANSWER_CLEARED', status: 409 });
+}
 function scopedKey(prefix: string, source: string, instance: string): string {
   return `${prefix}.${encodeURIComponent(source.trim())}${instance === 'legacy' ? '' : `:instance:${encodeURIComponent(instance)}`}`;
+}
+
+async function rememberReadPrivacy(scope: QueueScope, observations: readonly PrivacyObservation[]): Promise<void> {
+  assertScope(scope);
+  if (!scopeConfigured || activeScope?.learningProtocolVersion !== 3) return;
+  const channel = getAnswerPrivacyChannel(scope);
+  channel.reconcile();
+  for (const observation of observations) {
+    if (observation.answer !== null) continue;
+    const marker = observation.answerClearing, first = channel.getMarker(observation.eventId);
+    if (first && first.clearedAt !== marker.clearedAt) throw new ApiRequestError('原答首次清除时间不一致，请重新读取。', { code: 'LEARNING_PRIVACY_RESPONSE_INVALID' });
+    if (!first) { await channel.confirm(marker); assertScope(scope); }
+  }
 }
 
 async function getSession(): Promise<SessionResponse> {
@@ -309,10 +338,27 @@ export function getPendingWrites(sourceId: string | null | undefined): PendingWr
   if (!scope || !scopeCurrent(scope)) return [];
   const key = pendingKey(sourceId, scope.instanceId);
   if (!key) return [];
+  const unavailable = (): PendingWrite => ({ id: 'pending-storage-unavailable', method: 'POST', path: '/pending-storage-unavailable',
+    payload: null, eventId: null, conceptId: null, label: '待同步存储需要核对', createdAt: new Date(0).toISOString(),
+    lastError: { code: 'PENDING_STORAGE_UNAVAILABLE', status: 0, message: '待同步存储无法完整读取，原数据已保留，请恢复本地存储后重试。', retryable: true, attemptedAt: new Date(0).toISOString() } });
   try {
-    return parsePending(window.localStorage.getItem(key));
+    if (activeScope?.learningProtocolVersion !== 3) return parsePending(window.localStorage.getItem(key));
+    const entries = pendingEntriesForUpdate(key), writes = validPendingEntries(entries);
+    const privacy = getAnswerPrivacyChannel(scope); privacy.reconcile();
+    const projected = writes.map(write => {
+      if (!isOriginalObservationPath(write.path)) return write;
+      const payloadId = write.payload && typeof write.payload === 'object' && 'eventId' in write.payload ? write.payload.eventId : null;
+      const ids = [write.eventId, payloadId].filter((id): id is string => typeof id === 'string');
+      if (!ids.some(id => privacy.isBlocked(id))) return write;
+      // This is a display projection only. The sender always rereads the raw
+      // queue under its lock; a privacy-hidden projection is never enqueued.
+      return { id: write.id, method: write.method, path: write.path, eventId: write.eventId, conceptId: write.conceptId,
+        label: write.label, createdAt: write.createdAt, payload: { eventId: write.eventId },
+        lastError: { code: 'ANSWER_CLEARED', status: 409, message: '原答已清除或正在核对清除结果，本机副本等待定向清理。', retryable: false, attemptedAt: write.createdAt } } satisfies PendingWrite;
+    });
+    return writes.length === entries.length ? projected : [...projected, unavailable()];
   } catch {
-    return [];
+    return activeScope?.learningProtocolVersion === 3 ? [unavailable()] : [];
   }
 }
 
@@ -429,6 +475,7 @@ export async function queuePendingWrite(sourceId: string | null | undefined, wri
     const frozen = JSON.parse(JSON.stringify(pending)) as PendingWrite;
     return await withPendingStorageLock(scope.lock, () => {
       assertScope(scope);
+      guardObservationWrite(frozen.path, frozen.payload, sourceId!, frozen.eventId);
       const next = pendingEntriesForUpdate(key);
       const previous = next.filter(item => hasPendingId(item, frozen.id));
       if (previous.length) {
@@ -558,9 +605,9 @@ async function parseError(response: Response, signal: AbortSignal): Promise<ApiR
 }
 
 async function requestBody<T>(path: string, init: RequestInit, consume: (response: Response, protocol?: LearningProtocolVersion) => Promise<T>, bulk = false): Promise<T> {
+  const generation = scopeGeneration;
   try {
     init.signal?.throwIfAborted();
-    const generation = scopeGeneration;
     let protocol: LearningProtocolVersion | undefined;
     if (!isLearningProtocolExempt(path)) {
       if (protocolConfirmation?.generation !== generation) {
@@ -608,6 +655,9 @@ async function requestBody<T>(path: string, init: RequestInit, consume: (respons
         tokenProtocols.set(token, protocol);
       }
     } else headers.delete(LEARNING_PROTOCOL_HEADER);
+    if (isOriginalObservationPath(path) && (init.method ?? 'GET').toUpperCase() === 'POST') {
+      guardObservationWrite(path, typeof init.body === 'string' ? JSON.parse(init.body) : null, headers.get('x-lm-source-id') ?? '');
+    }
     return await withRequestDeadline(async signal => {
       let response: Response;
       try {
@@ -641,6 +691,25 @@ async function requestBody<T>(path: string, init: RequestInit, consume: (respons
       return result;
     }, { signal: init.signal, ...(bulk ? { timeoutMs: BULK_REQUEST_TIMEOUT_MS } : {}) });
   } catch (error) {
+    if (error instanceof ApiRequestError && error.code === 'ANSWER_CLEARED'
+      && isOriginalObservationPath(path) && generation === scopeGeneration && activeScope?.learningProtocolVersion === 3) {
+      // Another device may have cleared this event. Preserve the terminal
+      // rejection, but register a metadata-only recovery path for local copies.
+      const sourceId = new Headers(init.headers).get('x-lm-source-id');
+      try {
+        const payload = typeof init.body === 'string' ? JSON.parse(init.body) as { eventId?: unknown } : null;
+        if (sourceId && typeof payload?.eventId === 'string') {
+          const scope = captureScope(sourceId), channel = getAnswerPrivacyChannel(scope);
+          if (!channel.getMarker(payload.eventId)) {
+            await channel.begin(payload.eventId);
+            assertScope(scope);
+            const state = await api.getObservationAnswerClearingState(payload.eventId, sourceId);
+            assertScope(scope);
+            if (state.status === 'cleared') await channel.confirm({ observationEventId: state.observationEventId, clearedAt: state.clearedAt });
+          }
+        }
+      } catch { /* The original terminal rejection remains visible; intent can be checked later. */ }
+    }
     // Explicit view cancellation remains a cancellation, even if a caller used
     // a custom error as its abort reason.
     if (init.signal?.aborted && error === init.signal.reason) throw error;
@@ -670,14 +739,45 @@ function requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {
 }
 
 export async function writeJson<T>(path: string, payload: unknown, writeToken: string, sourceId: string): Promise<T> {
-  return authenticatedJson<T>(path, {
+  const body = JSON.stringify(payload);
+  const frozen: unknown = body === undefined ? undefined : JSON.parse(body);
+  guardObservationWrite(path, frozen, sourceId);
+  return withSession(writeToken, sourceId, headers => {
+    guardObservationWrite(path, frozen, sourceId);
+    return requestJson<T>(path, {
     method: 'POST',
-    body: JSON.stringify(payload),
-  }, writeToken, sourceId);
+    body,
+    headers,
+    });
+  });
 }
 
 export const api = {
   configureSessionScope,
+  getObservationAnswerClearingState: async (id: string, sourceId: string): Promise<AnswerClearingState> => {
+    const { observationEventId } = parseAnswerClearingRequest({ observationEventId: id });
+    const scope = captureScope(sourceId);
+    assertScope(scope);
+    if (!scopeConfigured || activeScope?.learningProtocolVersion !== 3) throw protocolError();
+    const state = await requestJson(`/observations/${encodeURIComponent(observationEventId)}/answer-clearing`, {
+      cache: 'no-store', headers: { 'x-lm-source-id': scope.sourceId, 'x-lm-instance-id': scope.instanceId },
+    }, (value, protocol) => { if (protocol !== 3) throw protocolError(); return parseAnswerClearingState(value); });
+    assertScope(scope);
+    if (state.observationEventId !== observationEventId) throw new ApiRequestError('清除状态与目标观察不一致。', { code: 'ANSWER_CLEARING_RESPONSE_INVALID' });
+    return state;
+  },
+  clearObservationAnswer: async (id: string, writeToken: string, sourceId: string): Promise<AnswerClearingReceipt> => {
+    const { observationEventId } = parseAnswerClearingRequest({ observationEventId: id });
+    const scope = captureScope(sourceId);
+    assertScope(scope);
+    if (!scopeConfigured || activeScope?.learningProtocolVersion !== 3) throw protocolError();
+    const receipt = await withSession(writeToken, sourceId, headers => requestJson(`/observations/${encodeURIComponent(observationEventId)}/answer-clearing`, {
+      method: 'POST', cache: 'no-store', headers,
+    }, (value, protocol) => { if (protocol !== 3) throw protocolError(); return parseAnswerClearingReceipt(value); }));
+    assertScope(scope);
+    if (receipt.observationEventId !== observationEventId) throw new ApiRequestError('清除回执与目标观察不一致，请核对状态。', { code: 'ANSWER_CLEARING_RESPONSE_INVALID' });
+    return receipt;
+  },
   appendActivity: (payload: ActivityAppendRequest, writeToken: string, sourceId: string) =>
     writeJson<ActivityAppendResult>('/activity', payload, writeToken, sourceId),
   getActivity: (options: ActivityListOptions, sourceId: string, signal?: AbortSignal) => {
@@ -774,22 +874,39 @@ export const api = {
     writeJson<WriteReceipt>('/practice-cards', payload, writeToken, sourceId),
   postPracticeAttempt: (payload: PracticeAttemptRequest, writeToken: string, sourceId: string) =>
     writeJson<WriteReceipt>('/practice-attempts', payload, writeToken, sourceId),
-  getConceptHistory: (conceptId: string, sourceId: string, options: { limit?: number; cursor?: string; applicationEventId?: string; signal?: AbortSignal } = {}) => {
+  getConceptHistory: async (conceptId: string, sourceId: string, options: { limit?: number; cursor?: string; applicationEventId?: string; signal?: AbortSignal } = {}) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识源，请重新连接。', { code: 'SOURCE_REQUIRED' }));
     const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
     if (options.cursor) params.set('cursor', options.cursor);
     if (options.applicationEventId) params.set('applicationEventId', options.applicationEventId);
-    return requestJson<ConceptHistory<PrivacyObservation>>(`/concepts/${encodeURIComponent(conceptId)}/history?${params}`, {
+    const scope = captureScope(sourceId);
+    const history = await requestJson<ConceptHistory<PrivacyObservation>>(`/concepts/${encodeURIComponent(conceptId)}/history?${params}`, {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
     }, validateConceptHistoryPrivacy);
+    if (activeScope?.learningProtocolVersion === 3 && (history.sourceId !== scope.sourceId || history.conceptId !== conceptId)) {
+      throw new ApiRequestError('学习历史与当前知识空间不一致。', { code: 'LEARNING_PRIVACY_RESPONSE_INVALID' });
+    }
+    await rememberReadPrivacy(scope, history.entries.flatMap(entry => entry.type === 'observation' ? [entry.event] : []));
+    assertScope(scope);
+    return activeScope?.learningProtocolVersion === 3 ? projectPrivateHistory(history, getAnswerPrivacyChannel(scope)) : history;
   },
-  getObservationRevisions: (observationEventId: string, sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) => {
+  getObservationRevisions: async (observationEventId: string, sourceId: string, options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) => {
     if (!sourceId.trim()) return Promise.reject(new ApiRequestError('缺少当前知识空间，请重新连接。', { code: 'SOURCE_REQUIRED' }));
     const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
     if (options.cursor) params.set('cursor', options.cursor);
-    return requestJson<ObservationRevisionHistory<PrivacyObservation>>(`/observations/${encodeURIComponent(observationEventId)}/revisions?${params}`, {
+    const scope = captureScope(sourceId);
+    const history = await requestJson<ObservationRevisionHistory<PrivacyObservation>>(`/observations/${encodeURIComponent(observationEventId)}/revisions?${params}`, {
       headers: { 'x-lm-source-id': sourceId }, cache: 'no-store', signal: options.signal,
     }, validateRevisionHistoryPrivacy);
+    if (activeScope?.learningProtocolVersion === 3 && history.observation.eventId !== observationEventId) {
+      throw new ApiRequestError('修订历史与目标观察不一致。', { code: 'LEARNING_PRIVACY_RESPONSE_INVALID' });
+    }
+    await rememberReadPrivacy(scope, [history.observation]);
+    assertScope(scope);
+    if (activeScope?.learningProtocolVersion !== 3) return history;
+    const observation = projectPrivateObservation(history.observation, getAnswerPrivacyChannel(scope));
+    if (!observation) throw new ApiRequestError('原答清除结果尚未确认，原文暂时隐藏。', { code: 'ANSWER_CLEARING_UNKNOWN' });
+    return { ...history, observation };
   },
   postObservationRevision: (payload: ObservationRevisionRequest, writeToken: string, sourceId: string) =>
     writeJson<ObservationRevisionReceipt>(`/observations/${encodeURIComponent(payload.observationEventId)}/revisions`, payload, writeToken, sourceId),
@@ -834,6 +951,7 @@ export const api = {
   refresh: (writeToken: string, sourceId: string) => writeJson<{ status: string }>('/refresh', {}, writeToken, sourceId),
   exportData: (writeToken: string, sourceId: string) => withSession(writeToken, sourceId, (headers) => requestBlob('/export', { headers })),
   sendPending: async (write: PendingWrite, writeToken: string, sourceId: string): Promise<WriteReceipt | ConfigWriteReceipt | Layout> => {
+    guardObservationWrite(write.path, write.payload, sourceId, write.eventId);
     const result = await authenticatedJson<WriteReceipt | ConfigWriteReceipt | Layout>(write.path, {
       method: write.method,
       body: JSON.stringify(write.payload),

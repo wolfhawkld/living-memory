@@ -3,6 +3,8 @@ import type { PrivacyObservation } from '../shared/answer-clearing';
 import type { LearningProtocolVersion } from '../shared/learning-protocol';
 import { PrivacyResponseError, observationPrivacyVersion, rememberObservationPrivacy, validateConceptHistoryPrivacy } from './privacy-response';
 
+import { projectPrivateHistory, type AnswerPrivacyGuard } from './answer-privacy-projection';
+
 type PrivacyHistory = ConceptHistory<PrivacyObservation>;
 
 export interface HistoryLoadState {
@@ -17,7 +19,7 @@ export interface HistoryScope { sourceId: string; conceptId: string; sourceRevis
 export type HistoryFetcher = (conceptId: string, sourceId: string, options: { limit: number; cursor?: string; applicationEventId?: string; signal: AbortSignal }) => Promise<PrivacyHistory>;
 
 /** One concept/source lifetime; late responses cannot enter a new selection or recall task. */
-export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: HistoryFetcher) {
+export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: HistoryFetcher, privacy?: AnswerPrivacyGuard) {
   const protocol = scope.learningProtocolVersion ?? 2;
   const knownClearings = new Map<string, string>();
   let state = EMPTY_HISTORY_STATE;
@@ -42,7 +44,7 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
     try {
       const response = await fetchHistory(scope.conceptId, scope.sourceId, { limit: 20, cursor, applicationEventId: scope.applicationEventId, signal: request.signal });
       if (active !== request || request.signal.aborted) return;
-      const page = validateConceptHistoryPrivacy(response, protocol);
+      const page = projectPrivateHistory(validateConceptHistoryPrivacy(response, protocol), privacy);
       if (page.sourceId !== scope.sourceId || page.conceptId !== scope.conceptId || page.sourceRevision !== scope.sourceRevision) {
         publish({ ...state, history: null });
         throw new Error('知识来源或版本已变化，请刷新知识源后重新查看历史。');
@@ -87,7 +89,7 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
           ...(page.corrections ? { corrections: { ...before.corrections, ...page.corrections } } : {}),
           ...(page.observationAssessments ? { observationAssessments: { ...before.observationAssessments, ...page.observationAssessments } } : {}) };
       }
-      publish({ history, loading: false, loadingMore: false, error: null });
+      publish({ history: projectPrivateHistory(history, privacy), loading: false, loadingMore: false, error: null });
     } catch (error) {
       if (active !== request || request.signal.aborted) return;
       failedMode = mode;
@@ -105,6 +107,11 @@ export function createConceptHistoryLoader(scope: HistoryScope, fetchHistory: Hi
   }
 
   return {
+    invalidatePrivacy: () => {
+      active?.abort(); active = null; refreshQueued = false;
+      try { publish({ ...state, history: state.history ? projectPrivateHistory(state.history, privacy) : null, loading: false, loadingMore: false }); }
+      catch { publish({ history: null, loading: false, loadingMore: false, error: '原答隐私状态需要重新核对。' }); }
+    },
     getSnapshot: () => state,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     refresh: () => load('refresh'),
