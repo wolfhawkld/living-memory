@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
-import { backupInstance,restoreInstance,verifyInstanceBundle } from '../src/server/instance-backup.js';
+import { activateRestoredConnectors,backupInstance,restoreInstance,verifyInstanceBundle } from '../src/server/instance-backup.js';
 import { inspectLearningSchema,migrateLearningSchemaV1ToV2 } from '../src/server/learning-schema.js';
 import { Store } from '../src/server/store.js';
 import { isRestoreQuarantined,readInstanceId } from '../src/server/instance-state.js';
@@ -58,6 +58,15 @@ test('explicit legacy preservation uses the real v1 bundle but still changes ins
     assert.equal(tableRows(join(report.startup.dataDir,'accounts.sqlite')).sessions.length,0);
     assert.deepEqual(treeHashes(oldBundle),before);
     assert.deepEqual(await runInstanceBackupCli(['verify','--bundle',oldBundle]),{format:'living-memory-instance',version:1,learningSchemaVersion:1,status:'verified',files:manifest.files.length,sources:manifest.sources.length});
+    const procRoot=join(base,'empty-proc');mkdirSync(procRoot);
+    const reportPath=join(base,'legacy','restore-report.json'),reportBytes=readFileSync(reportPath);
+    const accountsBefore=tableRows(join(report.startup.dataDir,'accounts.sqlite'));
+    await activateRestoredConnectors(report.startup.dataDir,true,{procRoot});
+    assert.equal(isRestoreQuarantined(report.startup.dataDir),false);
+    assert.equal(inspect(join(report.startup.dataDir,'living-memory.sqlite')).kind,'legacy-v1');
+    assert.deepEqual(tableRows(join(report.startup.dataDir,'living-memory.sqlite')),tableRows(join(oldBundle,'data/living-memory.sqlite')));
+    assert.deepEqual(tableRows(join(report.startup.dataDir,'accounts.sqlite')),accountsBefore);
+    assert.deepEqual(readFileSync(reportPath),reportBytes);
   }finally{rmSync(base,{recursive:true,force:true});}
 });
 

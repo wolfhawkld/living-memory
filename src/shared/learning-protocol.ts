@@ -1,6 +1,6 @@
 /** Learning semantics handshake. Never infer support from an ignored request header. */
 export const LEARNING_PROTOCOL_VERSION = 2 as const;
-/** Client capability only. The server default and runtime gate remain v2. */
+/** Supported client protocols. Servers default to v2; v3 requires explicit runtime selection. */
 export type LearningProtocolVersion = 2 | 3;
 export const LEARNING_PROTOCOL_HEADER = 'X-LM-Learning-Protocol';
 export const LEARNING_PROTOCOL_ERROR = 'LEARNING_PROTOCOL_REQUIRED';

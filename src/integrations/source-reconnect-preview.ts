@@ -41,7 +41,7 @@ export interface SourceReconnectPreview {
   };
   runtime: {
     LM_DATA_DIR: string; LM_CLI_STATE_DIR: string; LM_CLI_SESSION_FILE: string;
-    LM_SERVER_URL: string; LM_KG_ROOT: string; LM_FEISHU_ENABLED: '0';
+    LM_SERVER_URL: string; LM_KG_ROOT: string; LM_FEISHU_ENABLED: '0'; LM_LEARNING_SCHEMA_VERSION: '2' | '3';
   };
   limitations: string[];
 }
@@ -70,6 +70,24 @@ function privateJson(path: string): unknown {
     || (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)) throw new Error();
   return JSON.parse(readFileSync(path, 'utf8'));
 }
+/** Validate only the report contract; runtime schema validation remains a startup responsibility. */
+function reportedLearningSchemaVersion(report: Record<string, unknown>): 2 | 3 {
+  if (!object(report.startup) || !Array.isArray(report.schemaMigrations)) throw new Error();
+  const startupVersion = report.startup.learningSchemaVersion;
+  const migrations = JSON.stringify(report.schemaMigrations);
+  if (!Object.hasOwn(report, 'learningSchemaCandidate')) {
+    if ((startupVersion !== undefined && startupVersion !== 2)
+      || !['[]', '["learning-schema-v2"]'].includes(migrations)) throw new Error();
+    return 2;
+  }
+  const candidate = report.learningSchemaCandidate;
+  if (!object(candidate) || Object.keys(candidate).sort().join(',') !== 'runtimeReady,schemaVersion'
+    || candidate.schemaVersion !== 3 || typeof candidate.runtimeReady !== 'boolean'
+    || (startupVersion !== undefined && startupVersion !== 3)
+    || (candidate.runtimeReady && startupVersion !== 3)
+    || !['[]', '["learning-schema-v3"]', '["learning-schema-v2","learning-schema-v3"]'].includes(migrations)) throw new Error();
+  return 3;
+}
 function readRestoreContext(instanceRoot: string) {
   try {
     const root = directory(instanceRoot), dataDir = join(root, 'data'), kgRoot = join(root, 'knowledge/owner');
@@ -80,17 +98,16 @@ function readRestoreContext(instanceRoot: string) {
       || typeof report.restoredAt !== 'string' || !isValidInstant(report.restoredAt)
       || report.connectorsBlocked !== true || report.browserState !== 'not-included'
       || !object(report.invalidated) || !Object.values(report.invalidated).every(count)
-      || !Array.isArray(report.schemaMigrations) || report.schemaMigrations.length > 1
-      || report.schemaMigrations.some(value => value !== 'learning-schema-v2')
       || !object(report.startup) || report.startup.dataDir !== dataDir || report.startup.kgRoot !== kgRoot
       || report.startup.cliStateDir !== join(root, 'cli')
       || ![null, join(root, 'config/environment.env')].includes(report.startup.envArchive as string | null)
       || readInstanceId(dataDir) === 'legacy' || readInstanceId(dataDir) !== report.instanceId) throw new Error();
+    const learningSchemaVersion = reportedLearningSchemaVersion(report);
     const quarantine = privateJson(join(dataDir, 'restore-quarantine.json'));
     if (!object(quarantine) || Object.keys(quarantine).sort().join(',') !== 'connectorsBlocked,format,restoredAt,version'
       || quarantine.format !== 'living-memory-restore-quarantine' || quarantine.version !== 1
       || quarantine.restoredAt !== report.restoredAt || quarantine.connectorsBlocked !== true) throw new Error();
-    return { root, dataDir, kgRoot, cliStateDir: join(root, 'cli'), sources: report.sources };
+    return { root, dataDir, kgRoot, cliStateDir: join(root, 'cli'), sources: report.sources, learningSchemaVersion };
   } catch { return fail('RESTORE_CONTEXT_INVALID'); }
 }
 function normalizedUrl(value: string): string {
@@ -159,9 +176,9 @@ export function previewSourceReconnect(options: SourceReconnectPreviewOptions): 
       diagnostics: { before: before.index.source.diagnostics.length, after: after.index.source.diagnostics.length } },
     hook,
     runtime: { LM_DATA_DIR: context.dataDir, LM_CLI_STATE_DIR: context.cliStateDir,
-      LM_CLI_SESSION_FILE: join(context.dataDir, 'cli-session.json'), LM_SERVER_URL: serverUrl, LM_KG_ROOT: target, LM_FEISHU_ENABLED: '0' },
+      LM_CLI_SESSION_FILE: join(context.dataDir, 'cli-session.json'), LM_SERVER_URL: serverUrl, LM_KG_ROOT: target, LM_FEISHU_ENABLED: '0', LM_LEARNING_SCHEMA_VERSION: String(context.learningSchemaVersion) as '2' | '3' },
     limitations: ['PREVIEW_ONLY_RERUN_BEFORE_APPLY', 'SAME_PATH_RAW_IDS_ONLY', 'BINDINGS_AND_HISTORY_NOT_INSPECTED',
       'CONTENT_DIFFERENCES_REQUIRE_REVIEW', 'HOOK_RUNTIME_CONFIGURATION_NOT_APPLIED',
-      'SERVICE_AND_HOOK_NOT_RECONFIGURED', 'CONNECTORS_REMAIN_QUARANTINED', 'OLD_QUEUES_MUST_NOT_BE_REPLAYED'],
+      'STATIC_BUILD_COMPATIBILITY_NOT_CHECKED', 'SERVICE_AND_HOOK_NOT_RECONFIGURED', 'CONNECTORS_REMAIN_QUARANTINED', 'OLD_QUEUES_MUST_NOT_BE_REPLAYED'],
   };
 }

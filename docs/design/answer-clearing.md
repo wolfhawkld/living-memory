@@ -1,6 +1,6 @@
 # 清除指定回忆的原回答
 
-更新：2026-10-23。对应 FR-11／LM-006：主动保存的回答片段应能查看与清除。**ACLEAR-02C4B1 已接通显式编程 App v3、多用户初始化、HTTP 与飞书内部链路；日常启动仍为 v2，清除 HTTP 接口和操作界面尚未开放。** `createApp({ learningSchemaVersion: 3 })` 只使用已存在且结构完整的 v3 库，受控初始化全新知识空间；默认 App 与 Store 仍为 2。合成数据验证已覆盖真实 HTTP 与飞书内部处理器，不代表私人实例已升级。运行入口、配置、环境变量、恢复与连接器激活留给 C4B2；v3 隔离候选仍为 `runtimeReady: false`。
+更新：2026-10-26。对应 FR-11／LM-006：主动保存的回答片段应能查看与清除。**ACLEAR-02C4B2 已接通显式 v3 启动、配套网页构建检查及恢复／激活／重接配置；默认仍为 v2，清除 HTTP 接口和操作界面尚未开放。** v3 必须显式选择并使用已有完整数据库，不自动迁移现有实例。新恢复报告的 `runtimeReady: true` 仅表示软件具备显式运行能力，不等于已启动、已核验网页或已解除连接器隔离；历史 false 报告不改写。私人实例和实际服务未操作。
 
 本项只处理一条已保存概念解释或场景调用 `Observation` 的 `answer`，包括数据库原字段、请求载荷中的机械副本以及当前可控的同条浏览器副本。它与[自评更正、暂不采用和恢复采用](observation-revisions.md)分开；清除原答不等于把当时的回答改成空白、不等于脑中回忆，也不撤销练习发生的事实。
 
@@ -220,11 +220,21 @@ v3 身份绑定使用[严格安全回执](../../src/server/answer-clearing-ident
 
 飞书通过窄接口复用同一 Store 的计划、预算、观察与复习能力；脑中回忆的空答仍是原有语义。`ANSWER_CLEARED` 成为不可继续提交的冲突，待写恢复及学习写入成功后的回执补交仍可精确重试。验证使用隔离合成账号和内部处理器，不发送真实消息。
 
-本项只开放编程 App，不修改 `server/index.ts`、`npm start`、`npm run instance`、运行 profile／env、恢复报告、activate／reconnect 或静态构建部署；`runtimeReady: false` 保持。实际服务和私人数据仍为 v2，没有清除 HTTP 路由或按钮。
+B1 交付时只开放编程 App，不修改 `server/index.ts`、`npm start`、`npm run instance`、运行 profile／env、恢复报告、activate／reconnect 或静态构建部署；`runtimeReady: false` 保持。实际服务和私人数据仍为 v2，没有清除 HTTP 路由或按钮。
 
-#### ACLEAR-02C4B2：运行入口与恢复契约（下一项）
+#### ACLEAR-02C4B2：运行入口与恢复契约
 
-统一接通显式启动参数、profile／env、恢复报告、连接器激活与重接预览；在支持语义一致并再次审查后开放 opt-in v3。默认仍保留 2，安排兼容的静态构建与旧 v2 源码／构建保留。新 v3 库仍只能显式离线建立或恢复，不能后台迁移旧库。实际清除操作及跨页可控副本属于 ACLEAR-03。
+[原始入口](../../src/server/index.ts)通过[严格版本解析](../../src/server/learning-runtime-version.ts)仅接受未设置（2）、精确字符串 `2`／`3`；空串、带空白、其他值拒绝，不从库推断。[私有 profile](../../src/server/instance-runtime.ts)的可选数字 `learningSchemaVersion` 只接受 2／3，省略仍为 2；准备环境时明确写入所选值并清除继承设置。显式 3 在租约、来源登记、账号／设备凭据准备和连接器创建之前核对完整已有 v3 与静态构建，默认 App／Store 和默认原始启动仍保留 2。
+
+[生产构建标记](../../src/shared/static-build-compatibility.ts)由 Vite 自动生成，声明支持协议 2／3，记录最终 `index.html` 的 SHA-256；[服务核验](../../src/server/static-build-compatibility.ts)拒绝缺失、损坏、未知／重复协议、非普通文件、符号链接、超限或哈希不匹配。只在显式 3 强制，v2 旧网页保持兼容；dev 不伪造标记。这是构建匹配声明，不是所有资源完整性或供应链签名。profile check 仍不打开数据库、不读取凭据、不探测端口，只多检查显式 v3 的标记并报告所选版本，不能据此宣称数据库就绪。
+
+v3 新恢复报告仍为 v1，额外写 `startup.learningSchemaVersion: 3` 与 candidate `runtimeReady: true`。后者只表示当前软件能力，历史 false 报告不改写；默认恢复仍为 2，v3 归档必须显式选 3，不降级。解除 v3 连接器隔离须再次明确 `--learning-schema 3`；默认／2 拒绝实际 3，明确 3 拒绝非 3，确认、持锁、两次离线扫描和文件身份核对保持。此操作不连接飞书、不修改学习库或恢复报告，默认 legacy／v2 激活兼容保留。
+
+[重接预览](../../src/integrations/source-reconnect-preview.ts)继续只读元数据。无 candidate 的普通报告仅接受空迁移链或 v2，输出环境版本 2；严格 v3 candidate 只接受空链、v3、先 v2 后 v3，新 true 报告必须声明 startup 3，旧 false 可以省略并由当前软件提议 3。矛盾／重复／逆序／未知组合拒绝，预览明确未核验网页，不读取数据库、凭据或改写隔离标记。
+
+改动前已保留 `62101a01f35141405cae485e680fa09c1592017f` 源码归档、对应完整 v2 网页及 lockfile／文件 SHA-256 清单，位于本机忽略目录 `local/runtime-baselines/v2-62101a0/`；168 个文件哈希独立核对通过。仅保存软件材料，不包含私人数据，不覆盖现用 `dist`，未执行真实切换或回退。完整使用与限制见[日常启动](../development/instance-runtime.md#显式启动-v3)和[离线迁移](../development/instance-migration.md#学习结构-v3-的隔离候选)。
+
+实际清除操作及跨页可控副本仍属于下一项 ACLEAR-03。本轮不迁移私人实例、不重启现有服务、不发送真实飞书消息，也不执行本机浏览器验证。
 
 ## ACLEAR-03：界面与可控副本
 
@@ -236,19 +246,21 @@ v3 身份绑定使用[严格安全回执](../../src/server/answer-clearing-ident
 
 ## 开发顺序与验收门槛
 
+下表保留各阶段交付时的范围；当前运行能力以 C4B2 为准，私人实例状态与软件能力分别记录。
+
 | 阶段 | 本轮状态／完成门槛 |
 | --- | --- |
 | ACLEAR-01 设计、纯契约与投影 | 已实现；由独立 SQLite 内核及合成测试使用，尚未接通产品运行链 |
 | ACLEAR-02A SQLite 内核 | 已实现：完整独立 schema 3、双副本原子清除、首次标记、跨 namespace、竞争／回滚及要求事务的重放 guard；现产品未接入 |
-| ACLEAR-02B1 完整实例迁移 | 已实现：显式离线 v1／v2 到新目录 v3 候选，bundle 内层版本、清除后完整往返及失败 stage 清理；当前服务仍不支持候选启动 |
+| ACLEAR-02B1 完整实例迁移 | 已实现：显式离线 v1／v2 到新目录 v3 候选，bundle 内层版本、清除后完整往返及失败 stage 清理；该阶段只支持离线候选，显式启动由 C4B2 接续 |
 | ACLEAR-02B2 JSON 与纯合并 | 已实现独立 v3 解析／序列化、共用预览、重算 token 后的完整 JSON 合并及四向隐私检查；未接产品，SQL 事务与回执移至 02C |
 | ACLEAR-02C1 凭证退休与准备 | 已实现独立 v3 内核的原子退休、遗留准备、只读状态与调用方事务 guard；未接产品写入方 |
 | ACLEAR-02C2A v2 导入仓库提取 | 已实现：Store 真实委托共用导入 SQL、占位与必要前置查询，要求调用方事务；该阶段提取 v2，C2B 随后扩展显式 v3 |
-| ACLEAR-02C2B v3 事务导入 | 已实现显式 v3 快照、同仓库写入、事务协调及安全语义重试；最终验证证据见本轮记录，尚未开放产品 v3 |
+| ACLEAR-02C2B v3 事务导入 | 已实现显式 v3 快照、同仓库写入、事务协调及安全语义重试；验证证据见阶段记录，产品运行由后续 C3／C4 接续 |
 | ACLEAR-02C3 显式 v3 Store 与统计闭环 | 已实现同一 Store 的显式 v3 读写、历史／修订、隐私表现门槛及安全身份重试；默认服务仍为 v2；提交 9992929 的完整本地及远端验证通过，最终架构交付审查通过 |
-| ACLEAR-02C4A 客户端兼容准备 | 已实现双版本握手、隐私读取、历史／修订只读展示与动态 SSE；提交 f4a597e 的 1647 项本地及远端回归、构建、8 项主题与 33 项远端浏览器全部通过，最终交付审查通过；实际服务仍为 2 |
-| ACLEAR-02C4B1 内部运行接线 | 已实现显式 App v3、多用户初始化、HTTP 与飞书内部链路；集中验证和交付证据见下文；日常启动仍为 2 |
-| ACLEAR-02C4B2 启动与恢复契约 | 下一项：运行入口、profile／env、恢复／激活／重接语义与静态构建；当前 `runtimeReady: false` 保持 |
+| ACLEAR-02C4A 客户端兼容准备 | 已实现双版本握手、隐私读取、历史／修订只读展示与动态 SSE；提交 f4a597e 的 1647 项本地及远端回归、构建、8 项主题与 33 项远端浏览器全部通过，最终交付审查通过；该阶段交付时服务仍为 2，显式启动由 B2 接续 |
+| ACLEAR-02C4B1 内部运行接线 | 已交付：显式 App v3、多用户初始化、HTTP 与飞书内部链路；62101a0 的 1679 项回归、构建、8 项主题和 33 项远端浏览器通过 |
+| ACLEAR-02C4B2 启动与恢复契约 | 已实现显式启动、profile／env、构建匹配和恢复／激活／重接契约；集中验证中；默认 2，私人升级未执行 |
 | ACLEAR-03 API／Web 与缓存 | 待开发：权限、明确确认、结果未知恢复、水位、迟到响应、跨页队列与 checkpoint |
 | ACLEAR-04 集成与交付 | 待开发：非空 JSON／bundle 往返、跨页／多标签、已有修订链与飞书计数、远端浏览器回归；私人升级和真实删除单独安排 |
 
@@ -273,7 +285,10 @@ ACLEAR-02C3 的[表现投影测试](../../tests/observation-performance.test.ts)
 ACLEAR-02C4A 的[客户端握手](../../tests/learning-protocol-client.test.ts)、[CLI](../../tests/learning-protocol-cli.test.ts)、[SSE](../../tests/change-sync.test.ts)、[隐私响应与分页](../../tests/privacy-response.test.ts)、[真实 API 包装边界](../../tests/learning-protocol-privacy-api.test.ts)和[旧格式拒绝](../../tests/import-answer-clearing-rejection.test.ts)使用合成数据，不接私人实例。本轮完整 1647 项 Node／HTTP 回归通过（失败、取消、跳过均为 0），含类型检查的独立构建、8 项主题与 261 个相关文档链接／锚点检查通过；提交 `f4a597e28d05cb11d5cf1634c06e9c4c795685be` 已推送 develop；[CI 39925499250](https://github.com/wolfhawkld/living-memory/actions/runs/39925499250) 第二次运行全部通过：1647 项 Node／HTTP（失败、取消、跳过均为 0）、含类型检查的构建、8 项主题与 33 项远端浏览器检查。浏览器约 9.0 分钟，33 条唯一进度，无用例重试或 flaky；最终架构交付审查通过。首次运行因依赖下载耗时 9 分 10 秒挤占作业时限而中断，保持代码与工作流不变，仅重跑一次。未执行本机浏览器视觉验证、启动 v3 服务、迁移私人库或发送真实飞书消息。
 
 
-ACLEAR-02C4B1 新增 32 项合成测试：[namespace 门禁与竞争](../../tests/learning-namespace-v3.test.ts)、[同步账号准备](../../tests/accounts-provisioning.test.ts)、[真实 v3 HTTP](../../tests/app-v3.test.ts)、[HTTP 多账号与失败资源清理](../../tests/app-v3-accounts.test.ts)、[飞书内部能力与待写恢复](../../tests/feishu-review-v3-capability.test.ts)、[真实 v3 写前备份](../../tests/import-backup-v3.test.ts)。32 项定向测试与完整 1679 项 Node／HTTP 回归通过（失败、取消、跳过均为 0），含类型检查的独立构建及 8 项主题检查通过；精确提交远端 CI 待核对。本轮不启动私人 v3 服务、不发送飞书消息、不运行本地浏览器。
+ACLEAR-02C4B1 新增 32 项合成测试：[namespace 门禁与竞争](../../tests/learning-namespace-v3.test.ts)、[同步账号准备](../../tests/accounts-provisioning.test.ts)、[真实 v3 HTTP](../../tests/app-v3.test.ts)、[HTTP 多账号与失败资源清理](../../tests/app-v3-accounts.test.ts)、[飞书内部能力与待写恢复](../../tests/feishu-review-v3-capability.test.ts)、[真实 v3 写前备份](../../tests/import-backup-v3.test.ts)。32 项定向测试与完整 1679 项 Node／HTTP 回归通过（失败、取消、跳过均为 0），含类型检查的独立构建及 8 项主题检查通过；最终交付及引用点击收尾证据见下文。该阶段不启动私人 v3 服务、不发送飞书消息、不运行本地浏览器。
 
 
-C4B1 提交 `094918c133b5adec216ea0878aaadf310ad74f6f` 的 [CI 39935365730](https://github.com/wolfhawkld/living-memory/actions/runs/39935365730) 通过 1679 项 Node／HTTP、构建与 8 项主题；浏览器在第 9 项章节引用用例停止（8 通过、1 失败、24 未运行），不算完成交付。远端 trace 与源码确认既有阅读器滚动更新当前章节时，内联导航回调变化会重建 Markdown 引用按钮，使点击可能丢失。收口修复将导航回调稳定为 `useCallback`，保留身份／版本依赖及原有 pending／epoch 行为；原用例增加滚动前后按钮 DOM 身份不变断言，再执行单次点击和原五种失败提示检查。没有增加 sleep／自动重试、放宽断言或修改超时，也未重跑旧失败 SHA。修复后 25 项相关定向与 1679 项完整 Node／HTTP 回归全部通过（失败、取消、跳过均为 0），含类型检查的独立构建、8 项主题和 252 个本地文档链接／锚点检查通过；新精确提交远端 CI 待核对。此修复不展开 C4B2。
+C4B1 提交 `094918c133b5adec216ea0878aaadf310ad74f6f` 的 [CI 39935365730](https://github.com/wolfhawkld/living-memory/actions/runs/39935365730) 通过 1679 项 Node／HTTP、构建与 8 项主题；浏览器在第 9 项章节引用用例停止（8 通过、1 失败、24 未运行），不算完成交付。远端 trace 与源码确认既有阅读器滚动更新当前章节时，内联导航回调变化会重建 Markdown 引用按钮，使点击可能丢失。收口修复将导航回调稳定为 `useCallback`，保留身份／版本依赖及原有 pending／epoch 行为；原用例增加滚动前后按钮 DOM 身份不变断言，再执行单次点击和原五种失败提示检查。没有增加 sleep／自动重试、放宽断言或修改超时，也未重跑旧失败 SHA。修复后 25 项相关定向与 1679 项完整 Node／HTTP 回归全部通过（失败、取消、跳过均为 0），含类型检查的独立构建、8 项主题和 252 个本地文档链接／锚点检查通过；最终修复提交 `62101a01f35141405cae485e680fa09c1592017f` 已推送 develop；[CI 39937456266](https://github.com/wolfhawkld/living-memory/actions/runs/39937456266) 首次运行全部通过：1679 项 Node／HTTP（失败、取消、跳过均为 0）、构建、8 项主题及 33 项远端浏览器检查。浏览器约 10.8 分钟，33 条唯一进度，无用例重试或 flaky；原第 9 项引用用例通过，最终架构交付审查通过。此修复交付时未展开 C4B2。
+
+
+C4B2 验证使用[静态构建](../../tests/static-build-compatibility.test.ts)、[profile 元数据](../../tests/instance-runtime.test.ts)、[既有 CLI](../../tests/instance-runtime-cli.test.ts)、[真实 v3 子进程启动](../../tests/instance-runtime-v3.test.ts)、[完整实例往返](../../tests/answer-clearing-bundle.test.ts)、[备份 CLI](../../tests/instance-backup-cli.test.ts)、[重接预览](../../tests/source-reconnect-preview.test.ts)、[离线扫描](../../tests/instance-backup.test.ts)及[真实旧版兼容](../../tests/instance-backup-compat.test.ts)。定向共 90 项及完整 1697 项 Node／HTTP 回归全部通过（失败、取消、跳过均为 0），含类型检查的独立生产构建、实际标记／入口哈希和 8 项主题检查通过；精确提交远端 CI 待核对。首次新启动夹具漏传 Store 的 anchor 参数，按架构诊断补齐 `null` 后 5 项真实子进程检查通过，未修改产品规则或放宽断言。

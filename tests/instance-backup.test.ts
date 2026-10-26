@@ -315,15 +315,19 @@ test('activation with an open or unknown process preserves quarantine bytes and 
   const f=await instanceFixture();
   try {
     await backupInstance(f.options);
-    const restored=await restoreInstance({bundle:f.options.output,target:join(f.base,'restore-scan'),now});
-    const path=join(restored.startup.dataDir,'restore-quarantine.json'),before=readFileSync(path);
-    for(const kind of ['open','unknown'] as const){
-      const pid=syntheticProcess(f.options.procRoot,kind==='open'?join(restored.startup.dataDir,'living-memory.sqlite'):undefined);
-      if(kind==='unknown')unlinkSync(join(pid,'status'));
-      await assert.rejects(activateRestoredConnectors(restored.startup.dataDir,true,{procRoot:f.options.procRoot}),
-        {code:kind==='open'?'DATABASE_OPEN':'OFFLINE_CHECK_UNAVAILABLE'});
-      assert.deepEqual(readFileSync(path),before);assert.equal(isRestoreQuarantined(restored.startup.dataDir),true);
-      assertLeaseReleased(restored.startup.dataDir);rmSync(pid,{recursive:true});
+    for (const version of [2,3] as const) {
+      const restored=await restoreInstance({bundle:f.options.output,target:join(f.base,`restore-scan-${version}`),now,
+        ...(version===3?{targetLearningSchemaVersion:3 as const}:{})});
+      const path=join(restored.startup.dataDir,'restore-quarantine.json'),before=readFileSync(path);
+      for(const kind of ['open','unknown'] as const){
+        const pid=syntheticProcess(f.options.procRoot,kind==='open'?join(restored.startup.dataDir,'living-memory.sqlite'):undefined);
+        if(kind==='unknown')unlinkSync(join(pid,'status'));
+        await assert.rejects(activateRestoredConnectors(restored.startup.dataDir,true,{procRoot:f.options.procRoot,
+          ...(version===3?{learningSchemaVersion:3 as const}:{})}),
+          {code:kind==='open'?'DATABASE_OPEN':'OFFLINE_CHECK_UNAVAILABLE'});
+        assert.deepEqual(readFileSync(path),before);assert.equal(isRestoreQuarantined(restored.startup.dataDir),true);
+        assertLeaseReleased(restored.startup.dataDir);rmSync(pid,{recursive:true});
+      }
     }
   } finally {f.cleanup();}
 });

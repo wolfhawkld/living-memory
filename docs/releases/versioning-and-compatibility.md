@@ -1,17 +1,18 @@
 # 版本与兼容约定
 
-更新：2026-10-20。适用于本地 Web 预览与后续维护；现有实现入口见[开发导览](../development/codebase-guide.md)。本页区分已实现的兼容行为和今后改动应遵守的约定，不把文档约定当成自动迁移功能。
+更新：2026-10-26。适用于本地 Web 预览与后续维护；现有实现入口见[开发导览](../development/codebase-guide.md)。本页区分已实现的兼容行为和今后改动应遵守的约定，不把文档约定当成自动迁移功能。
 
 ## 版本分别维护
 
 | 对象 | 当前值 / 实现 | 用途 |
 | --- | --- | --- |
 | 软件版本 | 开发版本 `0.0.1-preview.2`，尚未发布 | 首个预览仍为 preview.1；固定 tag 为 `v0.0.1-preview.1`，精确目标与结果见 [GitHub release](https://github.com/wolfhawkld/living-memory/releases/tag/v0.0.1-preview.1) |
-| 学习 JSON 格式 | 导出 v2，接收 v1 / v2 | v2 必须有 `observationRevisions`；v1 不能携带该字段 |
+| 学习 JSON 格式 | 默认服务导出 v2；显式 v3 服务导出 v3 | v3 保留 null 原答与清除标记，旧版不能读取；v1／v2 导入仍受当前隐私状态约束 |
 | 记忆模型 | `time-only-v0` | 标识时间投影语义；配置 revision 标识本人修改 H 的历史，不是软件或格式版本 |
-| SQLite 学习结构 | schema 2 / minimum reader 2 | `user_version` 与单行登记须一致；完整旧结构只在新目录恢复阶段迁移 |
-| 实例 bundle | 新建 v2，接收已知 v1 / v2 | v2 声明实际学习 schema 1 或 2；恢复报告仍为 v1 |
-| 学习 HTTP 协议 | 服务 2；客户端显式兼容 2／3 | 实际服务仍拒绝 3；客户端按会话声明选择，和本机存储键版本独立 |
+| SQLite 学习结构 | 默认 schema 2；显式 schema 3 / minimum reader 3 | 版本登记与真实结构严格一致；迁移只在新目录离线恢复阶段进行 |
+| 实例 bundle | 新建 v2，接收已知 v1 / v2 | v2 声明实际学习 schema 1／2／3；恢复报告仍为 v1 |
+| 学习 HTTP 协议 | 服务默认 2、显式选择 3；客户端兼容 2／3 | 每个服务精确要求选定协议，客户端按会话声明选择，和本机存储键版本独立 |
+| 网页构建标记 | `living-memory-build.json` v1 | 显式 v3 启动核对协议能力与最终入口 SHA-256；v2 接受原有未标记构建 |
 
 包版本必须在 `package.json`、lockfile 顶层和 `packages[""]` 三处一致。只改项目版本时不重新解析依赖，不改变 JSON schema、模型版本或既有学习事件。`private: true` 用来防止误发 npm，不妨碍源码开源。
 
@@ -25,9 +26,11 @@
 
 首轮分发源码与安装说明；不附带数据库、私人知识、`node_modules` 或 `dist`。未来附带构建包/运行时之前，按[第三方许可检查](third-party-licenses.md)生成实际分发内容的许可材料。
 
-## 学习 JSON v1 / v2
+## 学习 JSON v1 / v2 / v3
 
-定义在 [ExportData](../../src/shared/types.ts)，校验和映射见 [import-plan.ts](../../src/server/import-plan.ts)。接收 `schemaVersion: 1 / 2`，新导出固定为 2。v2 必须包含修订数组，空链也不能省略；v1 若携带修订字段会拒绝，未知版本返回 `UNSUPPORTED_SCHEMA`。实际旧 b16 解析入口拒绝 v2，不能改版本数字交给旧程序以避免漏掉排除决定。
+定义在 [ExportData](../../src/shared/types.ts)，校验和映射见 [import-plan.ts](../../src/server/import-plan.ts)。默认服务接收 `schemaVersion: 1 / 2`，导出固定为 2。v2 必须包含修订数组，空链也不能省略；v1 若携带修订字段会拒绝，未知版本返回 `UNSUPPORTED_SCHEMA`。实际旧 b16 解析入口拒绝 v2，不能改版本数字交给旧程序以避免漏掉排除决定。
+
+显式 v3 服务使用[新版 JSON 契约](../../src/shared/answer-clearing-export.ts)，导出固定为 3，观察保留 `answer: null` 与首次清除标记；导入 v1／v2／v3 时都核对本机隐私状态，旧原文不能恢复已清除内容，外部标记不能代替本机确认。默认 v2 拒绝 v3，旧格式夹带清除标记也拒绝；不能手工修改版本号绕过。规则及事务边界见[原答清除设计](../design/answer-clearing.md)。
 
 | 字段/情况 | 当前兼容行为 |
 | --- | --- |
@@ -54,7 +57,9 @@ JSON 不包含知识正文、关系、附件、账号密码或浏览器草稿，
 
 学习库通过[严格结构识别](../../src/server/learning-schema.ts)区分空库、完整已知旧结构、当前 v2、部分损坏与未知版本。空库原子创建 v2；当前库核验 schema/minimum-reader 登记、`user_version`、表、索引与约束。启动遇到旧结构返回 `LEARNING_SCHEMA_UPGRADE_REQUIRED`，在知识源登记、成员默认记录与设备凭据轮换前停止；不原地补表升级。过早期五表库、部分结构与未知版本拒绝，不能据此宣称任意历史版本均可迁移。
 
-支持的旧结构通过完整离线 bundle 恢复到尚不存在的新目录，在暂存库事务中升级到 2，保留原 rowid、请求载荷、原时间和学习记录；失败不发布目标，旧目录和源归档不改。v2 库恢复不重写结构登记时间。bundle v1 仅接受已知 preview.1 与实际旧学习结构；bundle v2 必须是当前软件版本并声明实际 schema 1 或 2，声明与数据库不一致会在创建暂存目录前拒绝。新工具备份尚未迁移的完整旧库会诚实声明 schema 1，恢复时再迁移，不需要先启动新服务。
+支持的旧结构通过完整离线 bundle 恢复到尚不存在的新目录，在暂存库事务中升级到 2，保留原 rowid、请求载荷、原时间和学习记录；失败不发布目标，旧目录和源归档不改。v2 库恢复不重写结构登记时间。bundle v1 仅接受已知 preview.1 与实际旧学习结构；bundle v2 必须是当前软件版本并声明实际 schema 1／2／3，声明与数据库不一致会在创建暂存目录前拒绝。新工具备份尚未迁移的完整旧库会诚实声明 schema 1，恢复时再迁移，不需要先启动新服务。
+
+显式运行 v3 时，原始入口的 `LM_LEARNING_SCHEMA_VERSION=3` 或 profile 数字 `learningSchemaVersion: 3` 必须与已存在完整 v3 库及配套网页构建一致；缺库、空库、旧库和损坏结构均拒绝，不隐式迁移。`restore --learning-schema 3` 在新目录生成 v3，源为 v3 的归档必须显式选择 3，不支持降级。新报告的 `runtimeReady: true` 只表示软件支持显式运行，隔离状态仍保持；历史 false 报告不改写。恢复后激活 v3 连接器也需显式 `--learning-schema 3`，离线核验与确认流程保持。
 
 `restore --preserve-legacy-learning-schema` 仅对实际旧结构生效，也只恢复到新目录，用于配合旧程序核对或回退；不会把 v2 降到 v1。恢复后的新实例标识、失效会话和连接器隔离规则仍保留。旧程序可能忽略新库的登记，因此禁止用旧程序直接打开已升级目录。完整操作见[迁移说明](../development/instance-migration.md)。
 
@@ -82,11 +87,11 @@ LM-014A 在学习库 `applications` 增加可空 `relation_suggestion_json` 列�
 
 ## API 与本机客户端
 
-路由保留 `/api/...`，新增学习协议 2 门禁。`GET /api/session` 必须返回 `learningProtocolVersion: 2`；Web / CLI 校验后才访问受保护数据。受保护 JSON 使用 `X-LM-Learning-Protocol: 2`，缺失、重复或不支持返回 426；不会按认证过期自动重放。认证后、成员 Store 懒初始化前执行门禁。新客户端连接缺少握手字段的旧服务也会拒绝。
+路由保留 `/api/...`，服务精确要求所选学习协议（默认 2、显式 3）。`GET /api/session` 返回该服务的数字 `learningProtocolVersion`；Web / CLI 校验后才访问受保护数据。受保护 JSON 的 `X-LM-Learning-Protocol` 必须与服务所选版本一致，缺失、重复或不支持返回 426；不会按认证过期自动重放。认证后、成员 Store 懒初始化前执行门禁。新客户端连接缺少握手字段的旧服务也会拒绝。
 
-例外仅为 session、health、认证流程，以及保留原认证 / 来源 / 路径 / 版本检查的 `GET /api/concepts/:id/attachment` 二进制资源。SSE `GET /api/changes` 使用唯一查询参数 `learningProtocol=2`；若另带 header 也必须唯一为 2，其他 JSON 不能用查询参数替代 header。仍没有 `/api/v1/...` 通用稳定接口。
+例外仅为 session、health、认证流程，以及保留原认证 / 来源 / 路径 / 版本检查的 `GET /api/concepts/:id/attachment` 二进制资源。SSE `GET /api/changes` 使用唯一查询参数 `learningProtocol=2` 或 `3`，精确匹配服务版本；若另带 header 也必须唯一且与所选版本一致，其他 JSON 不能用查询参数替代 header。仍没有 `/api/v1/...` 通用稳定接口。
 
-ACLEAR-02C4A 新客户端额外准备协议 3 的隐私读取能力，但当前服务继续声明并要求 2，候选 `runtimeReady: false` 不变。Web／CLI 只使用会话明确确认的数字 2 或 3，未确认不发受保护请求／SSE；bootstrap／认证不声明默认版本。JSON、下载、账号管理和 SSE 跟随确认版本，缺失或未知声明拒绝，426 与跨协议 401 恢复不会重发原写入。Web 的版本变化失效旧请求与旧 token，完整运行入口仍待 [C4B](../design/answer-clearing.md#aclear-02c4b显式运行接线下一项) 评审；目前不能据客户端支持而启动 v3 实例。
+Web／CLI 只使用会话明确确认的数字 2 或 3，未确认不发受保护请求／SSE；bootstrap／认证不声明默认版本。JSON、下载、账号管理和 SSE 跟随确认版本，缺失或未知声明拒绝，426 与跨协议 401 恢复不会重发原写入。Web 的版本变化使旧请求与旧 token 失效。[C4B2](../design/answer-clearing.md#aclear-02c4b2运行入口与恢复契约)已接通显式运行入口，私人升级需另行安排；清除 HTTP／Web 操作仍未开放。
 
 - 账号模式下要先取得有效身份和 `/api/session`；写请求携带本机 token，并核对来源。用户、namespace、资料版本和概念 ID 的边界不能由客户端过滤替代。
 - 学习事件重试保留 event ID、发生/观察时间和 payload；首次保存与完全相同重放有不同回执，换内容可能返回 `EVENT_CONFLICT`。观察、长期保持、配置、导入和身份衔接还各有版本/前序校验，不可重建一个新请求来掩盖冲突。

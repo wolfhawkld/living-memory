@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+ACLEAR-02C4B2 接通显式 v3 启动：原始入口使用 `LM_LEARNING_SCHEMA_VERSION=3`，私有 profile 使用数字 `learningSchemaVersion: 3`；省略仍为 2。v3 只接受已存在的完整数据库与声明支持协议 3、入口哈希匹配的网页构建，失败在运行租约和账号准备前拒绝。恢复报告、显式连接器激活及只读重接预览同步版本规则；新 `runtimeReady: true` 仅表示软件能力，历史报告和连接器隔离不会自动改变。私人实例未升级，原答清除入口仍未开放。见[启动与回退材料](docs/development/instance-runtime.md#显式启动-v3)和[恢复边界](docs/development/instance-migration.md#学习结构-v3-的隔离候选)。
+
 修复大窗阅读中的引用点击偶尔无响应：滚动更新当前章节时保持 Markdown 引用按钮稳定，避免重绘替换正在点击的元素；原章节导航回归增加按钮身份检查，保留五种失败提示与不写入学习记录的验证。
 
 ACLEAR-02C4B1 增加显式编程 App v3：在已存在的完整 v3 库中准备各用户知识空间，账号准备失败不会发布账号，已清除原答的旧请求保持拒绝。真实 HTTP 历史／导出／导入前备份和飞书内部处理复用新版 Store。默认日常启动仍为 v2；运行配置、恢复与连接器启用留待 C4B2，清除入口和私人升级尚未开放。账号与学习库不承诺跨库原子回滚，失败时可保留无授权的空空间。见[接口与边界](docs/design/answer-clearing.md#aclear-02c4b1显式-app-与多用户内部接线)。

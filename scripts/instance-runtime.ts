@@ -8,8 +8,9 @@ const help = `Living Memory existing-instance runtime (foreground)
   npm run instance -- check --profile /private/runtime.local.json
   npm run instance -- start --profile /private/runtime.local.json [--feishu]
 
-check validates paths and identities only; databases, ports and credentials are not checked.
+check validates paths, identities and the v3 build marker; databases, ports and credentials are not checked.
 start uses accounts mode, discards inherited LM_* settings, and defaults Feishu off.
+The profile's numeric learningSchemaVersion selects 2 (default) or explicit 3; v3 requires an existing complete database and matching build.
 --feishu explicitly reads the profile's private credential file; restore quarantine still applies.
 Stop the foreground server with Ctrl+C (SIGINT) or SIGTERM. No daemon is installed.
 `;
@@ -37,7 +38,8 @@ export async function instanceRuntimeMain(argv: string[], io: RuntimeIO): Promis
     return 0;
   } catch (error) {
     const code = error instanceof InstanceRuntimeError ? error.code
-      : error && typeof error === 'object' && 'code' in error && ['DATA_DIRECTORY_BUSY', 'DATA_DIRECTORY_LOCK_UNKNOWN'].includes(String(error.code))
+      : error && typeof error === 'object' && 'code' in error && ['DATA_DIRECTORY_BUSY', 'DATA_DIRECTORY_LOCK_UNKNOWN',
+        'RUNTIME_SCHEMA_VERSION_INVALID', 'RUNTIME_BUILD_INCOMPATIBLE', 'LEARNING_SCHEMA_UNSUPPORTED_VERSION'].includes(String(error.code))
         ? String(error.code) : 'RUNTIME_START_FAILED';
     io.stderr(JSON.stringify({ error: { code } }) + '\n');
     return 1;

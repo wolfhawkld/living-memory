@@ -57,7 +57,7 @@ test('connector activation requires explicit confirmation and never receives tes
   assert.deepEqual(f.calls, [['activate', '/target/data', true]]);
 });
 
-test('schema selection is restore-only, exact and mutually exclusive with legacy preservation before any backend call', async () => {
+test('restore schema selection is exact and mutually exclusive with legacy preservation before any backend call', async () => {
   const f = fixture(), restore = ['restore', '--bundle', '/bundle', '--target', '/target'];
   for (const value of ['1', '4', '03', '3.0', ' 3', 'true']) {
     await assert.rejects(runInstanceBackupCli([...restore, '--learning-schema', value], f.backend), { code: 'INVALID_INSTANCE_ARGUMENT' });
@@ -72,15 +72,17 @@ test('schema selection is restore-only, exact and mutually exclusive with legacy
   assert.deepEqual(f.calls, [['restore', { bundle: '/bundle', target: '/target', targetLearningSchemaVersion: 2 }]]);
 });
 
-test('explicit v3 restore identifies an offline candidate without exposing private report fields or implying runtime support', async () => {
+test('explicit v3 restore identifies software runtime support without exposing private report fields or implying activation', async () => {
   const f = fixture(), original = f.backend.restoreInstance;
-  f.backend.restoreInstance = async options => ({ ...await original(options),
-    learningSchemaCandidate: { schemaVersion: 3, runtimeReady: false, secret: 'private-candidate-secret' } } as RestoreReport);
+  f.backend.restoreInstance = async options => { const restored = await original(options); return { ...restored,
+    startup: { ...restored.startup, learningSchemaVersion: 3 },
+    learningSchemaCandidate: { schemaVersion: 3, runtimeReady: true, secret: 'private-candidate-secret' } } as RestoreReport; };
   const result = await runInstanceBackupCli(['restore', '--bundle', '/bundle', '--target', '/candidate', '--learning-schema', '3'], f.backend);
   assert.deepEqual(f.calls, [['restore', { bundle: '/bundle', target: '/candidate', targetLearningSchemaVersion: 3 }]]);
-  assert.deepEqual((result as Record<string, unknown>).learningSchemaCandidate, { schemaVersion: 3, runtimeReady: false });
+  assert.deepEqual((result as Record<string, unknown>).learningSchemaCandidate, { schemaVersion: 3, runtimeReady: true });
+  assert.equal((result as { startup: { learningSchemaVersion: number } }).startup.learningSchemaVersion, 3);
   assert.doesNotMatch(JSON.stringify(result), /private-candidate-secret|privateAccount|private-instance|invalidated/);
-  assert.match(String(await runInstanceBackupCli(['restore', '--help'], f.backend)), /当前服务尚不能启动/);
+  assert.match(String(await runInstanceBackupCli(['restore', '--help'], f.backend)), /runtimeReady 不代表已启动或解除隔离/);
 });
 
 test('terminal errors contain only a fixed code and help explains stop/quarantine/browser boundaries without running a backend', async () => {
@@ -148,4 +150,32 @@ test('legacy preservation is a restore-only explicit boolean and v1 verification
   assert.deepEqual(f.calls,[]);
   f.backend.verifyInstanceBundle=()=>({version:1,applicationVersion:'0.0.1-preview.1',files:[],sources:[]} as unknown as InstanceManifest);
   assert.deepEqual(await runInstanceBackupCli(['verify','--bundle','/bundle'],f.backend),{format:'living-memory-instance',version:1,learningSchemaVersion:1,status:'verified',files:0,sources:0});
+});
+
+
+test('activation forwards only an explicit exact schema choice and preserves omitted/v2 call compatibility', async () => {
+  const f = fixture(), activation = ['activate-connectors', '--data-dir', '/target/data', '--confirm-bindings'];
+  for (const value of ['1', '4', '03', '3.0', ' 3', 'true', '']) {
+    await assert.rejects(runInstanceBackupCli([...activation, '--learning-schema', value], f.backend), { code: 'INVALID_INSTANCE_ARGUMENT' });
+  }
+  for (const argv of [[...activation, '--learning-schema'], [...activation, '--learning-schema', '3', '--learning-schema', '2']]) {
+    await assert.rejects(runInstanceBackupCli(argv, f.backend), { code: 'INVALID_INSTANCE_ARGUMENT' });
+  }
+  assert.deepEqual(f.calls, []);
+  await runInstanceBackupCli(activation, f.backend);
+  await runInstanceBackupCli([...activation, '--learning-schema=2'], f.backend);
+  await runInstanceBackupCli([...activation, '--learning-schema', '3', '--sudo-offline-scan'], f.backend);
+  assert.deepEqual(f.calls, [
+    ['activate', '/target/data', true],
+    ['activate', '/target/data', true, { learningSchemaVersion: 2 }],
+    ['activate', '/target/data', true, { offlineCheck: 'sudo', learningSchemaVersion: 3 }],
+  ]);
+});
+
+test('legacy false candidate reports stay visible without being silently rewritten by the CLI', async () => {
+  const f = fixture(), original = f.backend.restoreInstance;
+  f.backend.restoreInstance = async options => ({ ...await original(options), learningSchemaCandidate: { schemaVersion: 3, runtimeReady: false } });
+  const result = await runInstanceBackupCli(['restore', '--bundle', '/bundle', '--target', '/old-candidate', '--learning-schema', '3'], f.backend) as any;
+  assert.deepEqual(result.learningSchemaCandidate, { schemaVersion: 3, runtimeReady: false });
+  assert.equal(Object.hasOwn(result.startup, 'learningSchemaVersion'), false);
 });

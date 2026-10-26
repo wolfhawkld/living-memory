@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { inspectAnswerClearingSchemaV3 } from '../src/server/answer-clearing-schema.js';
 import { AnswerClearingStore, ANSWER_CLEARING_RETIRED_CREDENTIAL } from '../src/server/answer-clearing-store.js';
 import { activateRestoredConnectors, backupInstance, restoreInstance, verifyInstanceBundle,
   type RestoreReport } from '../src/server/instance-backup.js';
+import { previewSourceReconnect } from '../src/integrations/source-reconnect-preview.js';
 import { isRestoreQuarantined, readInstanceId } from '../src/server/instance-state.js';
 import { assertLearningDatabaseReady, Store } from '../src/server/store.js';
 import { digest, instanceFixture, tableRows, treeHashes } from './helpers/instance-backup-fixture.js';
@@ -33,6 +34,14 @@ function assertUpgradedRows(before:Tables,after:Tables) {
 function candidateOptions(report:RestoreReport,procRoot:string,output:string) {
   return {dataDir:report.startup.dataDir,kgRoot:report.startup.kgRoot,cliStateDir:report.startup.cliStateDir,
     ...(report.startup.envArchive ? {envFile:report.startup.envArchive} : {}),procRoot,output,now};
+}
+function assertReconnectVersion(report: RestoreReport) {
+  const root = dirname(report.startup.dataDir), before = treeHashes(root);
+  const preview = previewSourceReconnect({ instanceRoot: root, kgRoot: report.startup.kgRoot, serverUrl: 'http://127.0.0.1:4317' });
+  assert.equal(preview.runtime.LM_LEARNING_SCHEMA_VERSION, '3');
+  assert.equal(preview.runtime.LM_FEISHU_ENABLED, '0');
+  assert.ok(preview.limitations.includes('STATIC_BUILD_COMPATIBILITY_NOT_CHECKED'));
+  assert.deepEqual(treeHashes(root), before, 'reconnect only reads the real restored report and knowledge');
 }
 function assertNoTarget(base:string,target:string) {
   assert.equal(existsSync(target),false);
@@ -67,8 +76,9 @@ test('offline v2 to v3 candidate, clear, v3 backup and explicit v3 restore prese
     assert.equal(manifest2.version,2); assert.equal(manifest2.learningSchemaVersion,2);
     const bundle2Before=treeHashes(f.options.output);
     const candidate=await restoreInstance({bundle:f.options.output,target:join(f.base,'candidate-v3'),now,targetLearningSchemaVersion:3});
-    assert.deepEqual(candidate.learningSchemaCandidate,{schemaVersion:3,runtimeReady:false});
+    assert.deepEqual(candidate.learningSchemaCandidate,{schemaVersion:3,runtimeReady:true});
     assert.deepEqual(candidate.schemaMigrations,['learning-schema-v3']);
+    assert.equal(candidate.startup.learningSchemaVersion,3);assertReconnectVersion(candidate);
     const path=join(candidate.startup.dataDir,'living-memory.sqlite');
     assert.deepEqual(inspection(path),{kind:'current-v3',schemaVersion:3,minimumReaderVersion:3});
     assertUpgradedRows(sourceRows,tableRows(path));
@@ -107,7 +117,14 @@ test('offline v2 to v3 candidate, clear, v3 backup and explicit v3 restore prese
     assert.deepEqual(verifyInstanceBundle(bundle3),JSON.parse(JSON.stringify(manifest3)));
     const bundle3Before=treeHashes(bundle3);
     const restored=await restoreInstance({bundle:bundle3,target:join(f.base,'roundtrip-v3'),now,targetLearningSchemaVersion:3});
-    assert.deepEqual(restored.learningSchemaCandidate,{schemaVersion:3,runtimeReady:false});assert.deepEqual(restored.schemaMigrations,[]);
+    assert.deepEqual(restored.learningSchemaCandidate,{schemaVersion:3,runtimeReady:true});assert.deepEqual(restored.schemaMigrations,[]);
+    assert.equal(restored.startup.learningSchemaVersion,3);assertReconnectVersion(restored);
+    const reportPath=join(dirname(restored.startup.dataDir),'restore-report.json'),reportBytes=readFileSync(reportPath);
+    try {
+      const historical=JSON.parse(reportBytes.toString('utf8'));historical.learningSchemaCandidate.runtimeReady=false;delete historical.startup.learningSchemaVersion;
+      writeFileSync(reportPath,JSON.stringify(historical));assertReconnectVersion(historical);
+      assert.equal(JSON.parse(readFileSync(reportPath,'utf8')).learningSchemaCandidate.runtimeReady,false);
+    } finally {writeFileSync(reportPath,reportBytes);}
     assert.deepEqual(tableRows(join(restored.startup.dataDir,'living-memory.sqlite')),clearedRows);
     const restoredDb=new DatabaseSync(join(restored.startup.dataDir,'living-memory.sqlite'));
     try {
@@ -128,8 +145,16 @@ test('offline v2 to v3 candidate, clear, v3 backup and explicit v3 restore prese
     assert.equal(tableRows(join(restored.startup.dataDir,'accounts.sqlite')).sessions.length,0);
     assert.deepEqual(treeHashes(bundle3),bundle3Before);assert.deepEqual(treeHashes(f.options.output),bundle2Before);
     assert.equal(digest(readFileSync(sourcePath)),sourceBytes);assert.deepEqual(tableRows(sourcePath),sourceRows);
+    const activationAccounts=tableRows(join(restored.startup.dataDir,'accounts.sqlite')),activationReport=readFileSync(reportPath);
     await assert.rejects(activateRestoredConnectors(restored.startup.dataDir,true,{procRoot:f.options.procRoot}),{code:'INSTANCE_RUNTIME_UNSUPPORTED'});
     assert.equal(isRestoreQuarantined(restored.startup.dataDir),true);
+    await assert.rejects(activateRestoredConnectors(restored.startup.dataDir,true,{procRoot:f.options.procRoot,learningSchemaVersion:2}),{code:'INSTANCE_RUNTIME_UNSUPPORTED'});
+    assert.equal(isRestoreQuarantined(restored.startup.dataDir),true);
+    await activateRestoredConnectors(restored.startup.dataDir,true,{procRoot:f.options.procRoot,learningSchemaVersion:3});
+    assert.equal(isRestoreQuarantined(restored.startup.dataDir),false);
+    assert.deepEqual(tableRows(join(restored.startup.dataDir,'living-memory.sqlite')),clearedRows);
+    assert.deepEqual(tableRows(join(restored.startup.dataDir,'accounts.sqlite')),activationAccounts);
+    assert.deepEqual(readFileSync(reportPath),activationReport);
     for(const [label,options] of [ ['default',{}],['target2',{targetLearningSchemaVersion:2 as const}],['legacy',{preserveLegacyLearningSchema:true}] ] as const) {
       const target=join(f.base,`refused-${label}`);
       await assert.rejects(restoreInstance({bundle:bundle3,target,now,...options}),
@@ -144,8 +169,9 @@ test('the real b16 v1 bundle can explicitly produce a quarantined v3 candidate w
     const bytes=treeHashes(oldBundle),source=tableRows(join(oldBundle,'data/living-memory.sqlite'));
     const manifest=verifyInstanceBundle(oldBundle);
     const report=await restoreInstance({bundle:oldBundle,target:join(base,'v3'),now,targetLearningSchemaVersion:3});
-    assert.deepEqual(report.learningSchemaCandidate,{schemaVersion:3,runtimeReady:false});
+    assert.deepEqual(report.learningSchemaCandidate,{schemaVersion:3,runtimeReady:true});
     assert.deepEqual(report.schemaMigrations,['learning-schema-v2','learning-schema-v3']);
+    assert.equal(report.startup.learningSchemaVersion,3);assertReconnectVersion(report);
     const path=join(report.startup.dataDir,'living-memory.sqlite');
     assert.equal(inspection(path).kind,'current-v3');assertUpgradedRows(source,tableRows(path));
     assert.equal(isRestoreQuarantined(report.startup.dataDir),true);assert.notEqual(report.instanceId,manifest.instanceId);
@@ -192,4 +218,24 @@ test('manifest schema lies and future schema declarations cannot be verified or 
     }
     assert.deepEqual(treeHashes(f.options.output),bytes);
   } finally {f.cleanup();}
+});
+
+
+test('activation rejects invalid schema options before locking and explicit v3 cannot authorize a v2 instance', async () => {
+  const f = await instanceFixture();
+  try {
+    const missing = join(f.base, 'must-not-create');
+    for (const schema of [null, '3', 0, 4]) {
+      await assert.rejects(activateRestoredConnectors(missing, true, { learningSchemaVersion: schema as 3 }), { code: 'INSTANCE_RUNTIME_UNSUPPORTED' });
+      assert.equal(existsSync(missing), false);
+    }
+    await backupInstance(f.options);
+    const restored = await restoreInstance({ bundle: f.options.output, target: join(f.base, 'v2-activation'), now });
+    assert.equal(Object.hasOwn(restored.startup, 'learningSchemaVersion'), false, 'v2 reports retain their old shape');
+    const marker = join(restored.startup.dataDir, 'restore-quarantine.json'), before = readFileSync(marker);
+    await assert.rejects(activateRestoredConnectors(restored.startup.dataDir, true, { procRoot: f.options.procRoot, learningSchemaVersion: 3 }), { code: 'INSTANCE_RUNTIME_UNSUPPORTED' });
+    assert.deepEqual(readFileSync(marker), before);
+    await activateRestoredConnectors(restored.startup.dataDir, true, { procRoot: f.options.procRoot, learningSchemaVersion: 2 });
+    assert.equal(isRestoreQuarantined(restored.startup.dataDir), false);
+  } finally { f.cleanup(); }
 });

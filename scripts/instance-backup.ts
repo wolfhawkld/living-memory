@@ -8,7 +8,7 @@ export interface InstanceBackupCliBackend {
   backupInstance: (options: BackupOptions) => Promise<InstanceManifest>;
   verifyInstanceBundle: (bundle: string) => InstanceManifest;
   restoreInstance: (options: Omit<RestoreInstanceOptions, 'now'>) => Promise<RestoreReport>;
-  activateRestoredConnectors: (dataDir: string, confirmed: boolean, options?: { offlineCheck?: 'native' | 'sudo' }) => Promise<void>;
+  activateRestoredConnectors: (dataDir: string, confirmed: boolean, options?: { offlineCheck?: 'native' | 'sudo'; learningSchemaVersion?: 2 | 3 }) => Promise<void>;
 }
 const backend: InstanceBackupCliBackend = { backupInstance, verifyInstanceBundle, restoreInstance, activateRestoredConnectors };
 const HELP = `Living Memory 完整实例离线迁移
@@ -16,14 +16,15 @@ const HELP = `Living Memory 完整实例离线迁移
 node --import tsx scripts/instance-backup.ts backup --data-dir <目录> --kg-root <目录> --cli-state-dir <目录> --output <新目录> [--env-file <文件>] [--cli-session-file <文件>] [--sudo-offline-scan]
 node --import tsx scripts/instance-backup.ts verify --bundle <备份目录>
 node --import tsx scripts/instance-backup.ts restore --bundle <备份目录> --target <新目录> [--preserve-legacy-learning-schema | --learning-schema 2|3]
-node --import tsx scripts/instance-backup.ts activate-connectors --data-dir <恢复后的data目录> --confirm-bindings [--sudo-offline-scan]
+node --import tsx scripts/instance-backup.ts activate-connectors --data-dir <恢复后的data目录> --confirm-bindings [--learning-schema 2|3] [--sudo-offline-scan]
 
 备份和激活前必须停止本地服务、飞书连接及其他数据库使用进程；不会自动终止进程。
 目标必须是新目录；源、目标和静态资源路径隔离由后端核验。
 浏览器待同步请求和未提交草稿不在备份中，迁移前请自行核对。
 恢复保持连接器隔离；不会自动激活飞书，需停服后显式确认绑定。
 默认将已知旧学习库迁移到 v2；仅隔离回退时显式保留 legacy 结构，不能用于 v2 数据降级。
-显式 --learning-schema 3 仅生成隔离的 v3 候选，当前服务尚不能启动它，也不能激活连接器；不会切换现有实例。
+显式 --learning-schema 3 生成隔离的 v3 候选；当前软件支持显式 v3 启动，仍须匹配网页构建，不会切换现有实例。
+v3 解除连接器隔离须再次显式选择 --learning-schema 3；runtimeReady 不代表已启动或解除隔离。
 v3 备份恢复必须显式选择 --learning-schema 3；不支持降级为 v2 或 legacy。
 仅当前 Linux/WSL 离线检查流程；Windows 完整迁移待验证。
 遇到 systemd/PAM 的受限文件描述符，可显式选择 --sudo-offline-scan，仅给只读扫描辅助器提权。
@@ -46,7 +47,7 @@ function parse(argv: readonly string[]): { command: string; flags: Map<string, s
   const command = argv[0];
   const allowed: Record<string, readonly string[]> = {
     backup: ['data-dir', 'kg-root', 'cli-state-dir', 'output', 'env-file', 'cli-session-file', 'sudo-offline-scan'],
-    verify: ['bundle'], restore: ['bundle', 'target', 'preserve-legacy-learning-schema', 'learning-schema'], 'activate-connectors': ['data-dir', 'confirm-bindings', 'sudo-offline-scan'],
+    verify: ['bundle'], restore: ['bundle', 'target', 'preserve-legacy-learning-schema', 'learning-schema'], 'activate-connectors': ['data-dir', 'confirm-bindings', 'learning-schema', 'sudo-offline-scan'],
   };
   if (!Object.hasOwn(allowed, command)) throw new CliArgumentError('INVALID_INSTANCE_COMMAND');
   const flags = new Map<string, string | true>();
@@ -94,12 +95,19 @@ export async function runInstanceBackupCli(argv: readonly string[], implementati
       ...(schema === undefined ? {} : { targetLearningSchemaVersion: Number(schema) as 2 | 3 }),
       ...(parsed.flags.has('preserve-legacy-learning-schema') ? { preserveLegacyLearningSchema: true } : {}) });
     return { format: 'living-memory-restore-report', version: 1, status: 'restored-quarantined', target, files: restored.files, sources: restored.sources,
-      connectorsBlocked: true, startup: { dataDir: restored.startup.dataDir, kgRoot: restored.startup.kgRoot, cliStateDir: restored.startup.cliStateDir, envArchive: restored.startup.envArchive },
+      connectorsBlocked: true, startup: { dataDir: restored.startup.dataDir, kgRoot: restored.startup.kgRoot, cliStateDir: restored.startup.cliStateDir, envArchive: restored.startup.envArchive,
+        ...(restored.startup.learningSchemaVersion === undefined ? {} : { learningSchemaVersion: restored.startup.learningSchemaVersion }) },
       ...(restored.learningSchemaCandidate ? { learningSchemaCandidate: { schemaVersion: restored.learningSchemaCandidate.schemaVersion, runtimeReady: restored.learningSchemaCandidate.runtimeReady } } : {}) };
   }
   const dataDir = required('data-dir');
   if (parsed.flags.get('confirm-bindings') !== true) throw new CliArgumentError('CONNECTOR_CONFIRMATION_REQUIRED');
-  if (parsed.flags.has('sudo-offline-scan')) await implementation.activateRestoredConnectors(dataDir, true, { offlineCheck: 'sudo' });
+  const schema = optional('learning-schema');
+  if (schema !== undefined && !['2', '3'].includes(schema)) throw new CliArgumentError('INVALID_INSTANCE_ARGUMENT');
+  const activationOptions = {
+    ...(parsed.flags.has('sudo-offline-scan') ? { offlineCheck: 'sudo' as const } : {}),
+    ...(schema === undefined ? {} : { learningSchemaVersion: Number(schema) as 2 | 3 }),
+  };
+  if (Object.keys(activationOptions).length) await implementation.activateRestoredConnectors(dataDir, true, activationOptions);
   else await implementation.activateRestoredConnectors(dataDir, true);
   return { format: 'living-memory-connectors-activation', version: 1, status: 'activated', dataDir };
 }

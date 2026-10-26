@@ -5,6 +5,7 @@ import { parseEnv } from 'node:util';
 import { parseFeishuConfig } from '../integrations/feishu-config.js';
 import { isRestoreQuarantined, readInstanceId } from './instance-state.js';
 import { resolveSourceIdentity } from './source-identities.js';
+import { assertStaticBuildCompatible } from './static-build-compatibility.js';
 
 export interface InstanceRuntimeProfile {
   format: 'living-memory-instance-runtime';
@@ -20,6 +21,7 @@ export interface InstanceRuntimeProfile {
   feishuEnvFile?: string;
   kgLimit?: number;
   kgInclude?: string;
+  learningSchemaVersion?: 2 | 3;
 }
 
 export type InstanceRuntimeErrorCode =
@@ -44,13 +46,14 @@ export interface InstanceRuntimeCheck {
   restoreQuarantined: boolean;
   credentials: 'not-read';
   databaseContents: 'not-checked';
+  learningSchemaVersion: 2 | 3;
 }
 
 const controlCharacters = /[\u0000-\u001f\u007f]/;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const hash = /^[a-f0-9]{64}$/;
 const fields = new Set(['format', 'version', 'dataDir', 'kgRoot', 'cliStateDir', 'staticDir', 'port',
-  'expectedInstanceId', 'expectedSourceIdentityHash', 'expectedSourceRootFingerprint', 'feishuEnvFile', 'kgLimit', 'kgInclude']);
+  'expectedInstanceId', 'expectedSourceIdentityHash', 'expectedSourceRootFingerprint', 'feishuEnvFile', 'kgLimit', 'kgInclude', 'learningSchemaVersion']);
 
 function absolutePath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && !controlCharacters.test(value)
@@ -75,6 +78,7 @@ export function readInstanceRuntimeProfile(path: string): InstanceRuntimeProfile
     const value = JSON.parse(privateText(path, 64 * 1024, 'RUNTIME_PROFILE_INVALID')) as InstanceRuntimeProfile;
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !fields.has(key))
       || value.format !== 'living-memory-instance-runtime' || value.version !== 1
+      || (value.learningSchemaVersion !== undefined && value.learningSchemaVersion !== 2 && value.learningSchemaVersion !== 3)
       || !['dataDir', 'kgRoot', 'cliStateDir', 'staticDir'].every(key => absolutePath(value[key as keyof InstanceRuntimeProfile]))
       || (value.feishuEnvFile !== undefined && !absolutePath(value.feishuEnvFile))
       || !Number.isInteger(value.port) || value.port < 1 || value.port > 65535
@@ -134,6 +138,8 @@ function inspect(profilePath: string): { profile: InstanceRuntimeProfile; check:
   requireFile(join(data, 'accounts.sqlite'), 'RUNTIME_DATABASE_MISSING');
   requireFile(join(data, 'living-memory.sqlite'), 'RUNTIME_DATABASE_MISSING');
   requireFile(join(assets, 'index.html'), 'RUNTIME_BUILD_MISSING');
+  const learningSchemaVersion = profile.learningSchemaVersion ?? 2;
+  assertStaticBuildCompatible(assets, learningSchemaVersion);
   try {
     if (readInstanceId(data) !== profile.expectedInstanceId) throw new Error();
   } catch { throw new InstanceRuntimeError('RUNTIME_INSTANCE_MISMATCH'); }
@@ -145,6 +151,7 @@ function inspect(profilePath: string): { profile: InstanceRuntimeProfile; check:
     format: 'living-memory-runtime-check', version: 1, status: 'checked', url: `http://127.0.0.1:${profile.port}`,
     instanceMatched: true, sourceMatched: true, storagePathsChecked: true, staticEntryChecked: true,
     restoreQuarantined: isRestoreQuarantined(data), credentials: 'not-read', databaseContents: 'not-checked',
+    learningSchemaVersion,
   } };
 }
 
@@ -161,6 +168,7 @@ export function prepareInstanceRuntime(profilePath: string, options: { feishu?: 
     LM_CLI_SESSION_FILE: join(profile.dataDir, 'cli-session.json'), LM_PORT: String(profile.port),
     LM_AUTH_MODE: 'accounts', LM_STATIC_DIR: profile.staticDir, LM_SERVER_URL: check.url, LM_FEISHU_ENABLED: '0',
     LM_KG_LIMIT: String(profile.kgLimit ?? 20), LM_KG_INCLUDE: profile.kgInclude ?? '',
+    LM_LEARNING_SCHEMA_VERSION: String(check.learningSchemaVersion),
   };
   if (options.feishu) {
     if (check.restoreQuarantined) throw new InstanceRuntimeError('RUNTIME_CONNECTOR_QUARANTINED');

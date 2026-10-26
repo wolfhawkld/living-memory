@@ -119,7 +119,7 @@ test('reconnect preview preserves cross-root concept IDs and member identities w
     assert.equal(result.hook.runtimeConfiguration, 'planned');
     assert.ok(result.hook.files.some(file => file.path === '_system/living-memory.local.json' && file.localOnly));
     assert.deepEqual(result.runtime, { LM_DATA_DIR: f.data, LM_CLI_STATE_DIR: join(f.instanceRoot, 'cli'),
-      LM_CLI_SESSION_FILE: join(f.data, 'cli-session.json'), LM_SERVER_URL: url, LM_KG_ROOT: f.after, LM_FEISHU_ENABLED: '0' });
+      LM_CLI_SESSION_FILE: join(f.data, 'cli-session.json'), LM_SERVER_URL: url, LM_KG_ROOT: f.after, LM_FEISHU_ENABLED: '0', LM_LEARNING_SCHEMA_VERSION: '2' });
     assert.ok(result.limitations.length > 0);
     safeOutput(JSON.stringify(result));
     assert.deepEqual(inventory(f.base), initial);
@@ -287,5 +287,57 @@ test('real preview CLI subprocess returns metadata without writes, credentials, 
     assert.equal(result.status, 'reviewable');
     safeOutput(stdout);
     assert.deepEqual(inventory(f.base), initial);
+  } finally { f.close(); }
+});
+
+
+test('metadata-only reconnect preserves explicit schema choice for new and historical v3 report shapes', () => {
+  const f = fixture();
+  try {
+    for (const selected of [
+      { migrations: [], startup: {}, candidate: undefined, version: '2' },
+      { migrations: ['learning-schema-v2'], startup: { learningSchemaVersion: 2 }, candidate: undefined, version: '2' },
+      ...[[], ['learning-schema-v3'], ['learning-schema-v2', 'learning-schema-v3']].flatMap(migrations => [
+        { migrations, startup: { learningSchemaVersion: 3 }, candidate: { schemaVersion: 3, runtimeReady: true }, version: '3' },
+        { migrations, startup: {}, candidate: { schemaVersion: 3, runtimeReady: false }, version: '3' },
+      ]),
+    ]) {
+      const report = { ...f.report, schemaMigrations: selected.migrations, startup: { ...f.report.startup, ...selected.startup },
+        ...(selected.candidate === undefined ? {} : { learningSchemaCandidate: selected.candidate }) };
+      privateJson(join(f.instanceRoot, 'restore-report.json'), report);
+      const before = inventory(f.base), preview = previewSourceReconnect(f.options);
+      assert.equal(preview.runtime.LM_LEARNING_SCHEMA_VERSION, selected.version);
+      assert.equal(preview.runtime.LM_FEISHU_ENABLED, '0');
+      assert.ok(preview.limitations.includes('STATIC_BUILD_COMPATIBILITY_NOT_CHECKED'));
+      assert.deepEqual(inventory(f.base), before, 'preview cannot rewrite legacy false reports, open databases or apply changes');
+    }
+  } finally { f.close(); }
+});
+
+test('reconnect rejects ambiguous schema metadata, malformed candidates and unknown or reordered migrations', () => {
+  const f = fixture();
+  try {
+    const v3 = { schemaVersion: 3, runtimeReady: true };
+    const rejected = [
+      { schemaMigrations: [], startup: { learningSchemaVersion: 3 } },
+      { schemaMigrations: ['learning-schema-v3'] },
+      { schemaMigrations: ['learning-schema-v2', 'learning-schema-v2'] },
+      { schemaMigrations: [], startup: { learningSchemaVersion: null } },
+      { schemaMigrations: [], startup: { learningSchemaVersion: '2' } },
+      ...[null, {}, { schemaVersion: 2, runtimeReady: true }, { ...v3, runtimeReady: 'true' }, { ...v3, extra: true }]
+        .map(candidate => ({ schemaMigrations: [], startup: { learningSchemaVersion: 3 }, learningSchemaCandidate: candidate })),
+      { schemaMigrations: [], learningSchemaCandidate: v3 },
+      { schemaMigrations: [], startup: { learningSchemaVersion: 2 }, learningSchemaCandidate: v3 },
+      { schemaMigrations: [], startup: { learningSchemaVersion: '3' }, learningSchemaCandidate: v3 },
+      ...[['learning-schema-v2'], ['learning-schema-v3', 'learning-schema-v2'], ['learning-schema-v3', 'learning-schema-v3'], ['unknown']]
+        .map(schemaMigrations => ({ schemaMigrations, startup: { learningSchemaVersion: 3 }, learningSchemaCandidate: v3 })),
+      { schemaMigrations: [], startup: { learningSchemaVersion: 2 }, learningSchemaCandidate: { schemaVersion: 3, runtimeReady: false } },
+    ];
+    for (const partial of rejected) {
+      privateJson(join(f.instanceRoot, 'restore-report.json'), { ...f.report, ...partial, startup: { ...f.report.startup, ...partial.startup } });
+      const before = inventory(f.base);
+      assertCode(() => previewSourceReconnect(f.options), 'RESTORE_CONTEXT_INVALID');
+      assert.deepEqual(inventory(f.base), before);
+    }
   } finally { f.close(); }
 });

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { checkInstanceRuntime, InstanceRuntimeError, prepareInstanceRuntime, readInstanceRuntimeProfile } from '../src/server/instance-runtime.js';
+import { parseLearningRuntimeVersion } from '../src/server/learning-runtime-version.js';
 import { instanceRuntimeFixture, RUNTIME_TEST_SECRET } from './helpers/instance-runtime-fixture.js';
 
 function rejected(operation: () => unknown, code?: string) {
@@ -21,7 +22,7 @@ test('runtime check validates existing metadata without opening databases or rea
     assert.deepEqual(readInstanceRuntimeProfile(f.profilePath), { ...f.profile, feishuEnvFile: f.envPath });
     assert.deepEqual(checkInstanceRuntime(f.profilePath), { format: 'living-memory-runtime-check', version: 1, status: 'checked',
       url: `http://127.0.0.1:${f.profile.port}`, instanceMatched: true, sourceMatched: true, storagePathsChecked: true,
-      staticEntryChecked: true, restoreQuarantined: false, credentials: 'not-read', databaseContents: 'not-checked' });
+      staticEntryChecked: true, restoreQuarantined: false, credentials: 'not-read', databaseContents: 'not-checked', learningSchemaVersion: 2 });
     assert.deepEqual(f.inventory(), before);
   } finally { f.cleanup(); }
 });
@@ -31,6 +32,7 @@ test('strict profile rejects unknown keys, malformed values, noncanonical paths 
   try {
     const mutations: unknown[] = [null, [], { ...f.profile, version: 2 }, { ...f.profile, extra: RUNTIME_TEST_SECRET },
       ...[0, -1, 65536, 1.5, '4317', null].map(port => ({ ...f.profile, port })),
+      ...[0, 1, 4, 2.5, '2', '3', null, true].map(learningSchemaVersion => ({ ...f.profile, learningSchemaVersion })),
       ...[0, -1, 301, 1.5, '20', null].map(kgLimit => ({ ...f.profile, kgLimit })),
       ...['bad\nfilter', 'x'.repeat(4097), 42, null].map(kgInclude => ({ ...f.profile, kgInclude })),
       ...['dataDir', 'kgRoot', 'cliStateDir', 'staticDir', 'feishuEnvFile'].flatMap(key => ['', 'relative/path', '/tmp/../tmp/noncanonical', '/tmp/control\npath', 42]
@@ -123,7 +125,7 @@ test('prepare defaults to accounts and Feishu off without inheriting or mutating
     assert.deepEqual(result.environment, { LM_DATA_DIR: f.profile.dataDir, LM_KG_ROOT: f.profile.kgRoot,
       LM_CLI_STATE_DIR: f.profile.cliStateDir, LM_CLI_SESSION_FILE: join(f.profile.dataDir, 'cli-session.json'),
       LM_PORT: String(f.profile.port), LM_AUTH_MODE: 'accounts', LM_STATIC_DIR: f.profile.staticDir,
-      LM_SERVER_URL: `http://127.0.0.1:${f.profile.port}`, LM_FEISHU_ENABLED: '0', LM_KG_LIMIT: '20', LM_KG_INCLUDE: '' });
+      LM_SERVER_URL: `http://127.0.0.1:${f.profile.port}`, LM_FEISHU_ENABLED: '0', LM_KG_LIMIT: '20', LM_KG_INCLUDE: '', LM_LEARNING_SCHEMA_VERSION: '2' });
     assert.doesNotMatch(JSON.stringify(result.environment), /SYNTHETIC_RUNTIME_SECRET|synthetic\/wrong/);
   } finally { for (const [key, value] of original) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } f.cleanup(); }
 });
@@ -188,5 +190,34 @@ test('Vite source index must never make the installed repository or its ancestor
       f.writeProfile({ ...f.profile, staticDir }); const before = f.inventory();
       rejected(() => checkInstanceRuntime(f.profilePath), 'RUNTIME_STORAGE_CONFLICT'); assert.deepEqual(f.inventory(), before);
     }
+  } finally { f.cleanup(); }
+});
+
+
+test('raw runtime version selection is exact and never coerces invalid settings', () => {
+  assert.equal(parseLearningRuntimeVersion(undefined), 2);
+  assert.equal(parseLearningRuntimeVersion('2'), 2);
+  assert.equal(parseLearningRuntimeVersion('3'), 3);
+  for (const value of [null, 2, 3, '', '03', ' 3', '3 ', '2.0', '4', true, [], {}]) {
+    assert.throws(() => parseLearningRuntimeVersion(value), { code: 'RUNTIME_SCHEMA_VERSION_INVALID', message: 'RUNTIME_SCHEMA_VERSION_INVALID' });
+  }
+});
+
+test('explicit v3 profile checks the build while keeping database and credentials unread', () => {
+  const f = instanceRuntimeFixture();
+  try {
+    f.writeProfile({ ...f.profile, learningSchemaVersion: 3, feishuEnvFile: f.envPath });
+    const unmarked = f.inventory();
+    assert.throws(() => checkInstanceRuntime(f.profilePath), { code: 'RUNTIME_BUILD_INCOMPATIBLE' });
+    assert.deepEqual(f.inventory(), unmarked);
+    f.markBuild();
+    const before = f.inventory();
+    assert.equal(checkInstanceRuntime(f.profilePath).learningSchemaVersion, 3);
+    assert.equal(checkInstanceRuntime(f.profilePath).databaseContents, 'not-checked');
+    assert.equal(checkInstanceRuntime(f.profilePath).credentials, 'not-read');
+    assert.equal(prepareInstanceRuntime(f.profilePath).environment.LM_LEARNING_SCHEMA_VERSION, '3');
+    assert.deepEqual(f.inventory(), before);
+    f.writeProfile({ ...f.profile, learningSchemaVersion: 2 });
+    assert.equal(prepareInstanceRuntime(f.profilePath).environment.LM_LEARNING_SCHEMA_VERSION, '2');
   } finally { f.cleanup(); }
 });

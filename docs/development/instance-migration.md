@@ -66,7 +66,7 @@ FD 扫描只代表检查点的观察，不能原子阻止任意旧程序随后�
 
 ## 学习结构 v2 的升级边界
 
-新建 bundle 外层为 v2，包含 `learningSchemaVersion: 1 | 2 | 3`。离线备份如实声明源学习结构，备份不会升级源库；v1 归档仅接受已知 preview.1 的实际旧结构。默认恢复仍使用 v2，v3 仅支持下述显式候选流程。未知、部分损坏、声明不符的结构会拒绝，不能通过编辑 manifest 的版本数字转换。
+新建 bundle 外层为 v2，包含 `learningSchemaVersion: 1 | 2 | 3`。离线备份如实声明源学习结构，备份不会升级源库；v1 归档仅接受已知 preview.1 的实际旧结构。默认恢复仍使用 v2，v3 使用下述显式恢复和启动流程。未知、部分损坏、声明不符的结构会拒绝，不能通过编辑 manifest 的版本数字转换。
 
 新服务对旧学习库返回 `LEARNING_SCHEMA_UPGRADE_REQUIRED`，启动不原地升级。按本页先完成离线备份与 `verify`，再执行下面的恢复：旧结构只在新目标的暂存库内事务迁移为 schema 2，失败不发布目标；当前 v2 保留原登记。保存旧目录与源归档，回退时不要用旧程序打开升级后的目录。
 
@@ -74,7 +74,7 @@ FD 扫描只代表检查点的观察，不能原子阻止任意旧程序随后�
 
 ## 学习结构 v3 的隔离候选
 
-2026-10-22 的 ACLEAR-02B1 支持为原答清除准备离线候选。**当前产品服务、学习 JSON 与统计仍使用 v2，不能启动 v3 候选。** 日常迁移继续使用下节默认命令，不需要选择 v3。
+2026-10-26 的 ACLEAR-02C4B2 已接通显式 v3 启动。默认启动和恢复仍为 v2；v3 需先离线恢复到新目录，再选择运行版本 3 与匹配的网页构建。日常使用的私人实例未因此升级，原回答清除入口仍未开放。
 
 ```bash
 node --import tsx scripts/instance-backup.ts restore \
@@ -87,9 +87,9 @@ node --import tsx scripts/instance-backup.ts restore \
 
 完整备份和 `verify` 支持 v3，并在 manifest 的 `learningSchemaVersion` 如实声明 3；v3→v3 显式恢复保留已有清除标记和缺失原答，不转成普通空答。v3 归档若没有显式选 3，或要求 2，返回 `INSTANCE_SCHEMA_TARGET_REQUIRED`，创建目标之前拒绝；不提供 v3→v2／legacy 降级。`--learning-schema` 只接受 2 或 3，不能与 `--preserve-legacy-learning-schema` 并用。
 
-报告额外包含 `learningSchemaCandidate: { schemaVersion: 3, runtimeReady: false }`。新实例身份、旧会话撤销和连接器隔离沿用正常恢复规则；当前 `activate-connectors` 对 v3 返回 `INSTANCE_RUNTIME_UNSUPPORTED`，保留隔离。不要依据只读 profile 检查或报告中的路径判断候选已可运行。先保留 v2 的源码／构建和旧备份，后续产品协议、统计与 JSON 兼容完成后再单独安排私人升级。
+新报告额外包含 `learningSchemaCandidate: { schemaVersion: 3, runtimeReady: true }` 及 `startup.learningSchemaVersion: 3`。`runtimeReady` 仅说明当前软件支持显式 v3，不表示已启动、已核验网页或已解除隔离；旧工具生成的 false 报告不会被改写。新实例身份、旧会话撤销和连接器隔离规则保持。按[日常启动说明](instance-runtime.md#显式启动-v3)选择 v3，连接器激活需再次显式选择 3。升级前保留匹配的 v2 源码／构建及旧备份，私人升级仍单独安排。
 
-本轮的完整往返、清除标记和失败阶段清理仅在合成目录验证，未迁移或切换当前私人实例。学习 JSON v3 及导入合并仍待后续，不把完整数据库备份往返当成 JSON 防恢复证据。
+完整往返、清除标记、实际启动和失败清理使用合成目录验证，未迁移或切换当前私人实例。v3 学习 JSON／导入已有独立保护与集成测试；完整数据库备份往返和 JSON 防恢复分别验收。
 
 ## 恢复与核对
 
@@ -99,7 +99,7 @@ node --import tsx scripts/instance-backup.ts restore \
   --target /private/restored/living-memory
 ```
 
-目标必须是尚不存在的新目录。工具先校验和暂存，成功后发布新目录，不覆盖原实例。恢复结果中的 `startup` 给出新的 data、所有者知识源、CLI 收据和可选配置归档位置。默认 v2 恢复可按这些实际路径配置 `LM_DATA_DIR`、`LM_KG_ROOT`、`LM_CLI_STATE_DIR` 后启动应用；配置归档不会自动作为环境加载。显式 v3 候选当前不能启动，见上节边界。
+目标必须是尚不存在的新目录。工具先校验和暂存，成功后发布新目录，不覆盖原实例。恢复结果中的 `startup` 给出新的 data、所有者知识源、CLI 收据和可选配置归档位置。默认 v2 恢复可按这些实际路径配置 `LM_DATA_DIR`、`LM_KG_ROOT`、`LM_CLI_STATE_DIR` 后启动应用；配置归档不会自动作为环境加载。显式 v3 候选须额外选择运行版本 3 并使用匹配构建，见上节边界。
 
 源身份登记保留原 namespace 与概念 ID 的生成身份，所以物理根目录改变不会把个人历史变成新的知识库。当前物理根指纹仍单独校验。学习记录、长期保持状态和活动原始引用按原事实保留，不借迁移伪造新的学习表现。
 
@@ -126,7 +126,7 @@ node --import tsx scripts/source-reconnect-preview.ts \
 
 状态 `reviewable` 只表示可以审阅这份当时快照；`blocked` 表示钩子文件或安装前提存在冲突，命令返回非零。缺少或损坏的恢复上下文、登记冲突、未隔离实例及无效目录会直接拒绝。两种状态都不表示已经接通，更不表示知识含义相同。实际切换前仍需重新预览、停止服务并核对具体修改，不能将输出直接覆盖到运行中的登记表。
 
-`runtime` 列出新实例应使用的 `LM_DATA_DIR`、`LM_CLI_STATE_DIR`、`LM_CLI_SESSION_FILE`、`LM_SERVER_URL`、`LM_KG_ROOT`，并保持 `LM_FEISHU_ENABLED=0`。这些是所需配置，不是已生效配置，也不会验证令牌是否有效。`hook.runtimeDirectoriesSupported=true` 仅表示拟安装模板支持运行目录；成功计划标为 `runtimeConfiguration: "planned"`，冲突时为 `"unavailable"`，均未应用。预览把恢复实例的数据与 CLI 目录传给安装规划器，升级原样 managed v1 模板并提出 v2 本机配置，凭据路径固定派生为 `dataDir/cli-session.json`；不打印配置内容或脚本原文。
+`runtime` 列出新实例应使用的 `LM_DATA_DIR`、`LM_CLI_STATE_DIR`、`LM_CLI_SESSION_FILE`、`LM_SERVER_URL`、`LM_KG_ROOT` 和 `LM_LEARNING_SCHEMA_VERSION`，并保持 `LM_FEISHU_ENABLED=0`。这些是所需配置，不是已生效配置，也不会验证令牌是否有效。版本从严格验证的恢复报告推导：普通 v2 报告只能对应空迁移链或 v2；v3 candidate 只接受空链、v3 或先 v2 后 v3，历史 false candidate 可按当前软件提议 3，新 true 报告必须明确 startup 版本 3。其他组合拒绝，预览不检查数据库或网页兼容性，也不改写旧报告。`hook.runtimeDirectoriesSupported=true` 仅表示拟安装模板支持运行目录；成功计划标为 `runtimeConfiguration: "planned"`，冲突时为 `"unavailable"`，均未应用。预览把恢复实例的数据与 CLI 目录传给安装规划器，升级原样 managed v1 模板并提出 v2 本机配置，凭据路径固定派生为 `dataDir/cli-session.json`；不打印配置内容或脚本原文。
 
 实际安装方式及旧配置兼容见[指定实例的运行目录](cli-and-kg-triggers.md#指定实例的运行目录)。只改 URL 不足以完成迁移；实际接回知识源仍须核对身份登记、服务运行参数和全部调用方。安装前暂停 KG 调用；本机文件逐个原子替换，不是跨文件事务。预览不替代这些步骤，也不会搬运或重放旧实例队列。
 
@@ -142,6 +142,6 @@ node --import tsx scripts/instance-backup.ts activate-connectors \
 
 该命令只解除恢复隔离标记，不连接飞书、不发送消息，也不修改学习表现。之后仍需由服务启动过程读取有效的飞书启用配置。恢复或激活失败时，CLI 仅输出固定错误码；原始异常、密钥和个人内容不会打印到终端。
 
-本节适用于当前可运行的 v2 恢复实例；v3 候选的激活请求会固定拒绝并保持隔离。
+v3 实例必须在上述激活命令额外加 `--learning-schema 3`；省略或选择 2 会拒绝 v3，并保留隔离。显式选择 3 遇到非 v3 也拒绝。省略版本仍保留已知 legacy／v2 的原激活兼容行为；这只解除连接器隔离，不代表旧结构可由当前服务直接启动。激活继续要求停服、持锁、两次离线扫描及文件身份核对，不能用报告的 `runtimeReady` 代替这些检查。
 
 若激活时也遇到同样的 `/proc` 权限限制，可在原账号执行的命令中另加 `--sudo-offline-scan`，使用新一轮只读扫描；它不会沿用备份时的授权结果。`verify` 和 `restore` 不接受此选项，也不会触发提权。

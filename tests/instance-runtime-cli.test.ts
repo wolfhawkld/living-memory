@@ -109,7 +109,7 @@ test('foreground runtime clears inherited LM settings, serves isolated assets an
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       const port = await unusedPort(); f.writeProfile({ ...f.profile, port }); const url = `http://127.0.0.1:${port}`;
       const running = child(['start', '--profile', f.profilePath], f.root, {
-        LM_PORT: '4318', LM_AUTH_MODE: 'local', LM_DATA_DIR: join(f.root, 'must-not-create'),
+        LM_PORT: '4318', LM_AUTH_MODE: 'local', LM_LEARNING_SCHEMA_VERSION: '3', LM_DATA_DIR: join(f.root, 'must-not-create'),
         LM_KG_ROOT: join(f.root, 'wrong-source'), LM_STATIC_DIR: join(f.root, 'wrong-assets'),
         LM_FEISHU_ENABLED: '1', LM_FEISHU_APP_SECRET: RUNTIME_TEST_SECRET, LM_FEISHU_APP_ID: 'cli_synthetic_wrong',
         LM_FEISHU_TENANT_KEY: 'synthetic-wrong', LM_UNRECOGNIZED_RUNTIME_KEY: RUNTIME_TEST_SECRET,

@@ -44,10 +44,10 @@ export interface BackupInstanceOptions {
 export interface RestoreReport {
   format: 'living-memory-restore-report'; version: 1; restoredAt: string; instanceId: string;
   files: number; sources: number; invalidated: Record<string, number>; connectorsBlocked: true;
-  browserState: 'not-included'; startup: { dataDir: string; kgRoot: string; cliStateDir: string; envArchive: string | null };
+  browserState: 'not-included'; startup: { dataDir: string; kgRoot: string; cliStateDir: string; envArchive: string | null; learningSchemaVersion?: 2 | 3 };
   schemaMigrations: string[];
-  /** Offline candidate only: current product Store and HTTP protocol still reject schema 3. */
-  learningSchemaCandidate?: { schemaVersion: 3; runtimeReady: false };
+  /** Software supports explicit v3 startup; this does not start it or clear connector quarantine. */
+  learningSchemaCandidate?: { schemaVersion: 3; runtimeReady: boolean };
 }
 export interface RestoreInstanceOptions {
   bundle: string; target: string; now?: () => Date; preserveLegacyLearningSchema?: boolean;
@@ -435,7 +435,10 @@ export async function restoreInstance(options: RestoreInstanceOptions): Promise<
         dataDir: join(target, 'data'), kgRoot: join(target, 'knowledge/owner'), cliStateDir: join(target, 'cli'),
         envArchive: manifest.configuration.includes('config/environment.env') ? join(target, 'config/environment.env') : null,
       } };
-    if (targetSchemaVersion === 3) report.learningSchemaCandidate = { schemaVersion: 3, runtimeReady: false };
+    if (targetSchemaVersion === 3) {
+      report.learningSchemaCandidate = { schemaVersion: 3, runtimeReady: true };
+      report.startup.learningSchemaVersion = 3;
+    }
     writePrivate(join(stage, 'restore-report.json'), JSON.stringify(report, null, 2));
     lock.release(); lock = null;
     // Re-read the bundle to detect modifications during staging as well.
@@ -444,14 +447,18 @@ export async function restoreInstance(options: RestoreInstanceOptions): Promise<
 }
 
 /** Explicit offline acknowledgement; this function never connects or sends. */
-export async function activateRestoredConnectors(dataDir: string, confirmed: boolean, options: { procRoot?: string; offlineCheck?: 'native' | 'sudo' } = {}): Promise<void> {
+export async function activateRestoredConnectors(dataDir: string, confirmed: boolean, options: { procRoot?: string; offlineCheck?: 'native' | 'sudo'; learningSchemaVersion?: 2 | 3 } = {}): Promise<void> {
+  if (options.learningSchemaVersion !== undefined && options.learningSchemaVersion !== 2 && options.learningSchemaVersion !== 3) {
+    throw new InstanceBackupError('INSTANCE_RUNTIME_UNSUPPORTED');
+  }
   if (!confirmed) throw new InstanceBackupError('CONNECTOR_CONFIRMATION_REQUIRED');
   const lock = acquireDataDirectoryLock(dataDir); let scanner: OfflineScanner | null = null; let operationFailed = false;
   try {
     const mainIdentities = mainDatabaseIdentities(dataDir);
     scanner = await createOfflineScanner({ mode: options.offlineCheck, dataDir, procRoot: options.procRoot });
     await scanner.scan(databasePaths(dataDir));
-    if (learningSchemaVersion(join(dataDir, 'living-memory.sqlite')) === 3) throw new InstanceBackupError('INSTANCE_RUNTIME_UNSUPPORTED');
+    const actualSchemaVersion = learningSchemaVersion(join(dataDir, 'living-memory.sqlite'));
+    if ((actualSchemaVersion === 3) !== (options.learningSchemaVersion === 3)) throw new InstanceBackupError('INSTANCE_RUNTIME_UNSUPPORTED');
     if (!isRestoreQuarantined(dataDir)) throw new InstanceBackupError('RESTORE_QUARANTINE_NOT_PRESENT');
     const path = join(dataDir, 'restore-quarantine.json');
     const state = JSON.parse(readOrdinary(path).toString('utf8')) as RestoreQuarantine;

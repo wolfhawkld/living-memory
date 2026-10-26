@@ -28,6 +28,10 @@ export function instanceRuntimeFixture() {
   const writeProfile = (value: unknown = profile) => write(profilePath, JSON.stringify(value));
   writeProfile();
   return { root, profile, profilePath, envPath, write, writeProfile,
+    markBuild() {
+      write(join(staticDir, 'living-memory-build.json'), JSON.stringify({ format: 'living-memory-static-build', version: 1,
+        supportedLearningProtocols: [2, 3], indexHtmlSha256: createHash('sha256').update(readFileSync(join(staticDir, 'index.html'))).digest('hex') }));
+    },
     quarantine(blocked = true) { write(join(dataDir, 'restore-quarantine.json'), JSON.stringify({ format: 'living-memory-restore-quarantine', version: 1,
       restoredAt: '2026-10-21T00:00:00.000Z', connectorsBlocked: blocked })); },
     inventory() {
