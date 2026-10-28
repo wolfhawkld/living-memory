@@ -1,6 +1,7 @@
 import type { FeishuActor } from './feishu-binding.js';
 import type { FeishuReadAuthorization } from './feishu-reading.js';
 import type { FeishuReviewTarget } from './feishu-review.js';
+import type { FeishuRewarmTarget } from './feishu-rewarm.js';
 
 export const FEISHU_CARD_NAV_KIND = 'lm.nav.v1' as const;
 export type FeishuCardCollection =
@@ -10,7 +11,7 @@ export type FeishuCardCollection =
 export type FeishuBrowseView = FeishuCardCollection
   | { kind: 'help' }
   | { kind: 'read'; reference: string; page: number; revision: string; back: Exclude<FeishuCardCollection, { kind: 'domains' }> };
-export type FeishuCardView = FeishuBrowseView | FeishuReviewTarget;
+export type FeishuCardView = FeishuBrowseView | FeishuReviewTarget | FeishuRewarmTarget;
 
 export interface FeishuCardNavAction extends FeishuActor {
   eventId: string;

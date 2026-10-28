@@ -10,6 +10,9 @@ import type { FeishuDeliveryResult, FeishuReadAuthorization } from '../shared/fe
 import { feishuReviewItemId, feishuReviewEventId, feishuReviewCurrentOperations } from '../shared/feishu-review.js';
 import type { FeishuReviewState, FeishuReviewSession, FeishuReviewOperation, FeishuReviewWriteIntent, FeishuReviewTrigger, FeishuReviewMutation, FeishuReviewTransitionContext, FeishuReviewTransitionResult, FeishuReviewTarget, FeishuReviewResolvedTarget } from '../shared/feishu-review.js';
 
+import { isValidFeishuRewarmTarget, isValidFeishuRewarmRequest } from '../shared/feishu-rewarm.js';
+import type { FeishuRewarmIntent, FeishuRewarmScope, FeishuRewarmTrigger, FeishuRewarmTransitionResult, FeishuRewarmTarget } from '../shared/feishu-rewarm.js';
+
 const PASSWORD_MIN_LENGTH = 12;
 const PASSWORD_MAX_LENGTH = 256;
 const PASSWORD_HASH_BYTES = 64;
@@ -96,7 +99,7 @@ function cardDomain(value: unknown): boolean { return value === null || (typeof 
 function validCardView(value: unknown, allowRead = true): value is FeishuCardView {
   if (!value || typeof value !== 'object') return false;
   const view = value as Record<string, unknown>;
-  if (validReviewTarget(view)) return true;
+  if (validReviewTarget(view) || isValidFeishuRewarmTarget(view)) return true;
   if (view.kind === 'help') return strictKeys(view,['kind']);
   if (view.kind === 'domains') return strictKeys(view,['kind','page']) && cardPage(view.page);
   if (view.kind === 'list') return strictKeys(view,['kind','domainId','query','sort','page']) && cardDomain(view.domainId)
@@ -371,6 +374,15 @@ export class Accounts {
         message_id TEXT, chat_id TEXT,
         status TEXT NOT NULL CHECK(status IN ('draft','active','consumed'))
       );
+      CREATE TABLE IF NOT EXISTS feishu_rewarm_intents (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES accounts(id),
+        account_access_revision INTEGER NOT NULL, binding_id TEXT NOT NULL,
+        app_id TEXT NOT NULL, tenant_key TEXT NOT NULL, open_id TEXT NOT NULL,
+        namespace TEXT NOT NULL, source_fingerprint TEXT NOT NULL, origin_chat_id TEXT NOT NULL,
+        request_json TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','applied','conflict')),
+        error_code TEXT, created_at TEXT NOT NULL, settled_at TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS feishu_rewarm_pending ON feishu_rewarm_intents(binding_id, namespace) WHERE status = 'pending';
       CREATE TABLE IF NOT EXISTS feishu_review_sessions (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES accounts(id),
         account_access_revision INTEGER NOT NULL, binding_id TEXT NOT NULL,
@@ -830,7 +842,7 @@ export class Accounts {
     };
   }
 
-  private sameCardOwner(card: FeishuCardStored, actor: FeishuActor, auth: FeishuReadAuthorization): boolean {
+  private sameCardOwner(card: Pick<FeishuCardStored, 'actor' | 'authorization'>, actor: FeishuActor, auth: FeishuReadAuthorization): boolean {
     return !!actor && !!auth && card.actor.appId === actor.appId && card.actor.tenantKey === actor.tenantKey
       && card.actor.openId === actor.openId && card.authorization.userId === auth.userId
       && card.authorization.bindingId === auth.bindingId && card.authorization.accessRevision === auth.accessRevision;
@@ -913,6 +925,118 @@ export class Accounts {
       if (!receipt.changes) return null;
       this.db.prepare("UPDATE feishu_card_views SET status = 'consumed' WHERE id = ?").run(card.id);
       return { card, target, operationId };
+    });
+  }
+
+  private rewarmIntentById(id: string): FeishuRewarmIntent | null {
+    const row = this.db.prepare('SELECT * FROM feishu_rewarm_intents WHERE id = ?').get(id);
+    if (!row) return null;
+    const request: unknown = JSON.parse(row.request_json as string);
+    if (!isValidFeishuRewarmRequest(request, row.id as string)) throw new Error('Invalid rewarm request');
+    return { id: row.id as string,
+      actor: { appId: row.app_id as string, tenantKey: row.tenant_key as string, openId: row.open_id as string },
+      authorization: { userId: row.user_id as string, bindingId: row.binding_id as string, accessRevision: row.account_access_revision as number },
+      namespace: row.namespace as string, sourceFingerprint: row.source_fingerprint as string, originChatId: row.origin_chat_id as string,
+      request, status: row.status as FeishuRewarmIntent['status'], errorCode: row.error_code as string | null,
+      createdAt: row.created_at as string, settledAt: row.settled_at as string | null };
+  }
+
+  private validRewarmScope(scope: FeishuRewarmScope): boolean {
+    return !!scope && validFeishuText(scope.namespace) && validFingerprint(scope.sourceFingerprint) && validFeishuText(scope.originChatId);
+  }
+
+  getFeishuRewarmIntent(actor: FeishuActor, auth: FeishuReadAuthorization, scope: FeishuRewarmScope, intentId?: string): FeishuRewarmIntent | null {
+    if (!this.validRewarmScope(scope) || (intentId !== undefined && !validCardId(intentId))) return null;
+    try {
+      if (!this.cardAuthorization(actor,auth)) return null;
+      // Pending is unique across chats: never hide it behind a newer terminal intent.
+      const row = intentId === undefined ? this.db.prepare(`SELECT id FROM feishu_rewarm_intents WHERE binding_id = ? AND namespace = ?
+        AND (status = 'pending' OR origin_chat_id = ?)
+        ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1`).get(auth.bindingId,scope.namespace,scope.originChatId) : null;
+      const selectedId = intentId ?? (row?.id as string | undefined);
+      const intent = selectedId ? this.rewarmIntentById(selectedId) : null;
+      return intent && this.sameCardOwner(intent,actor,auth)
+        && intent.namespace === scope.namespace && intent.originChatId === scope.originChatId ? intent : null;
+    } catch { throw accountError('WRITE_FAILED', '飞书重温状态暂时无法读取，请稍后重试。', 503); }
+  }
+
+  claimFeishuRewarmTransition(actor: FeishuActor, auth: FeishuReadAuthorization, trigger: FeishuRewarmTrigger,
+    scope: FeishuRewarmScope): FeishuRewarmTransitionResult | null {
+    if (!this.validRewarmScope(scope) || !trigger || !['message','card'].includes(trigger.kind)) return null;
+    const incoming = trigger.kind === 'message' ? trigger.message : trigger.action;
+    if (!incoming || !actor || incoming.appId !== actor.appId || incoming.tenantKey !== actor.tenantKey || incoming.openId !== actor.openId
+        || ![incoming.eventId,incoming.messageId,incoming.chatId].every(validFeishuText) || incoming.chatId !== scope.originChatId
+        || (trigger.kind === 'message' && (typeof trigger.message.text !== 'string' || trigger.message.text.length > 4096
+          || !strictKeys(trigger.command,['kind']) || !['status','retry'].includes(trigger.command.kind)))
+        || (trigger.kind === 'card' && !validCardAction(trigger.action))) return null;
+    return this.cardTransaction(() => {
+      if (!this.cardAuthorization(actor,auth)) return null;
+      let card: FeishuCardStored | null = null;
+      let target: FeishuRewarmTarget | null = null;
+      if (trigger.kind === 'card') {
+        card = this.getFeishuCardForAction(trigger.action);
+        if (!card || !this.sameCardOwner(card,actor,auth) || card.namespace !== scope.namespace
+            || card.sourceFingerprint !== scope.sourceFingerprint || card.originChatId !== scope.originChatId) return null;
+        const candidate = card.actions.find(action => action.id === trigger.action.actionId)?.target;
+        if (!isValidFeishuRewarmTarget(candidate)) return null;
+        target = candidate;
+      }
+      const operationId = trigger.kind === 'message'
+        ? tokenHash(JSON.stringify(['feishu-read-v1',actor.appId,actor.tenantKey,actor.openId,incoming.messageId])).slice(0,32)
+        : tokenHash(JSON.stringify(['feishu-card-click-v1',trigger.action.cardId,trigger.action.actionId])).slice(0,32);
+      if (this.db.prepare('SELECT 1 FROM feishu_read_receipts WHERE operation_id = ?').get(operationId)) return null;
+      // Look up across chats before insertion so an existing pending request can never be replaced.
+      const pending = this.db.prepare("SELECT id, origin_chat_id FROM feishu_rewarm_intents WHERE binding_id = ? AND namespace = ? AND status = 'pending'")
+        .get(auth.bindingId,scope.namespace);
+      if (pending && pending.origin_chat_id !== scope.originChatId) return null;
+      let intent = this.getFeishuRewarmIntent(actor,auth,scope,target?.kind === 'rewarm' ? target.intentId : undefined);
+      if (target?.kind === 'rewarm' && !intent) return null;
+      const now = iso(nowDate(this.now));
+      let mayApply = false;
+      let create = false;
+      if (target?.kind === 'rewarm-confirm') {
+        if (!pending) {
+          const id = randomUUID().replaceAll('-','');
+          intent = { id, actor: { ...actor }, authorization: { ...auth }, ...scope,
+            request: { eventId: `feishu-rewarm:${id}`,conceptId:target.conceptId,sourceRevision:target.sourceRevision,kind:'review',occurredAt:now },
+            status:'pending',errorCode:null,createdAt:now,settledAt:null };
+          create = true; mayApply = true;
+        }
+      } else {
+        const retry = target?.kind === 'rewarm' ? target.verb === 'retry' : trigger.kind === 'message' && trigger.command.kind === 'retry';
+        mayApply = retry && intent?.status === 'pending';
+      }
+      const receipt = this.db.prepare("INSERT OR IGNORE INTO feishu_read_receipts(operation_id,user_id,created_at,status) VALUES(?,?,?,'attempted')")
+        .run(operationId,auth.userId,now);
+      if (receipt.changes !== 1) throw new Error('Rewarm receipt changed');
+      if (card) {
+        const consumed = this.db.prepare("UPDATE feishu_card_views SET status = 'consumed' WHERE id = ? AND status = 'active'").run(card.id);
+        if (consumed.changes !== 1) throw new Error('Rewarm card changed');
+      }
+      if (create && intent) this.db.prepare(`INSERT INTO feishu_rewarm_intents(id,user_id,account_access_revision,binding_id,app_id,tenant_key,open_id,
+        namespace,source_fingerprint,origin_chat_id,request_json,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?)`)
+        .run(intent.id,auth.userId,auth.accessRevision,auth.bindingId,actor.appId,actor.tenantKey,actor.openId,
+          scope.namespace,scope.sourceFingerprint,scope.originChatId,JSON.stringify(intent.request),now);
+      return { operationId,intent,mayApply };
+    });
+  }
+
+  settleFeishuRewarmIntent(id: string, actor: FeishuActor, auth: FeishuReadAuthorization, scope: FeishuRewarmScope,
+    result: { status: 'applied' } | { status: 'conflict'; errorCode: string }): FeishuRewarmIntent | null {
+    const safeCodes = ['EVENT_CONFLICT','ANCHOR_CONFLICT','CONFIG_REVISION_UNKNOWN','SOURCE_CHANGED','STATE_CONFLICT',
+      'CONFIG_CONFLICT','SOURCE_MISMATCH','FUTURE_OBSERVATION','FUTURE_EVENT','ANSWER_CLEARED','CONCEPT_NOT_FOUND'];
+    if (!validCardId(id) || !this.validRewarmScope(scope) || !result
+        || (result.status === 'applied' ? !strictKeys(result,['status'])
+          : result.status !== 'conflict' || !strictKeys(result,['status','errorCode']) || !safeCodes.includes(result.errorCode))) return null;
+    return this.cardTransaction(() => {
+      const intent = this.getFeishuRewarmIntent(actor,auth,scope,id);
+      if (!intent) return null;
+      const errorCode = result.status === 'conflict' ? result.errorCode : null;
+      if (intent.status !== 'pending') return intent.status === result.status && intent.errorCode === errorCode ? intent : null;
+      const changed = this.db.prepare("UPDATE feishu_rewarm_intents SET status = ?, error_code = ?, settled_at = ? WHERE id = ? AND status = 'pending'")
+        .run(result.status,errorCode,iso(nowDate(this.now)),id);
+      if (changed.changes !== 1) throw new Error('Rewarm settlement changed');
+      return this.rewarmIntentById(id);
     });
   }
 

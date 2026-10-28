@@ -58,7 +58,7 @@ export interface FeishuCardViewPlan {
   build: (cardId: string) => FeishuCardPayload;
 }
 
-const READ_ONLY = '只读浏览不扣复习预算、不更新学习或记忆。只有最新卡可操作；点击后请看新卡，未收到新卡时重新发送入口命令。';
+const READ_ONLY = '浏览不扣复习预算、不更新学习或记忆。明确确认重温仅更新时间，不代表自评。只有最新卡可操作；点击后请看新卡，未收到新卡时重新发送入口命令。';
 const DEFAULT_LIST = { kind: 'list', domainId: null, query: '', sort: 'elapsed', page: 1 } as const;
 const STATES = { unknown: '尚无时间锚点', recent: '近期时间记录', revisit: '建议重温', stale: '时间记录较久', pending: '版本或时间待确认', retained: '人工长期保持' };
 function hash(value: string) { return createHash('sha256').update(value).digest('hex'); }
@@ -215,7 +215,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
   const toRead = (id: string, revision: string, back: Extract<FeishuCardView, { kind: 'list' | 'due' }>): FeishuCardView => ({
     kind: 'read', reference: references.get(id)!, page: 1, revision: hash(revision).slice(0, 12), back,
   });
-  if (view.kind === 'help') return errorPlan('知识 卡片：全部节点\n知识 卡片 领域 ［页码］\n知识 卡片 搜索 关键词\n知识 卡片 列表 域="目录域" 查="关键词" 序=时间|名称 页=1\n知识 待复习 ［域="目录域"］ ［量=3|5］\n知识 复习：单条脑中回忆\n知识 复习 3 或 知识 复习 5：小批次脑中回忆\n知识 继续复习 / 暂停复习 / 结束复习\n时间状态仅作管理提示，不代表实测记忆能力。');
+  if (view.kind === 'help') return errorPlan('知识 卡片：全部节点\n知识 卡片 领域 ［页码］\n知识 卡片 搜索 关键词\n知识 卡片 列表 域="目录域" 查="关键词" 序=时间|名称 页=1\n知识 待复习 ［域="目录域"］ ［量=3|5］\n知识 复习：单条脑中回忆\n知识 复习 3 或 知识 复习 5：小批次脑中回忆\n知识 继续复习 / 暂停复习 / 结束复习\n知识 重温状态 / 知识 重试重温\n时间状态仅作管理提示，不代表实测记忆能力。');
   if (view.kind === 'read') {
     if (!/^[a-f0-9]{12,64}$/.test(view.reference) || !/^[a-f0-9]{12}$/.test(view.revision)) return errorPlan('节点引用或分页标识失效，请重新列表或搜索。');
     const matches = digests.filter((entry) => entry.digest.startsWith(view.reference));
@@ -227,6 +227,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
     const controls: CardControl[] = [];
     if (view.page > 1) controls.push({ caption: '上一页', target: { ...view, page: view.page - 1 } });
     if (view.page < chunks.length) controls.push({ caption: '下一页', target: { ...view, page: view.page + 1 } });
+    controls.push({ caption: '确认已重温', target: { kind: 'rewarm-confirm', conceptId: concept.id, sourceRevision: concept.source.revision } });
     controls.push({ caption: view.back.kind === 'due' ? '返回原待复习' : '返回原列表', target: view.back });
     const plan = createReadPlan({ title: concept.title, domain: domainIdOf(concept),
       time: timeText(context, concept.id), confirmed: confirmed(context, concept.id, concept.source.revision),

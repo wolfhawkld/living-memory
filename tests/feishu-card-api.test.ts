@@ -5,6 +5,7 @@ import { createServer, request } from 'node:http';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { setImmediate as nextTick } from 'node:timers/promises';
 import { createApp } from '../src/server/app.js';
 import { createFeishuConnector } from '../src/integrations/feishu-connector.js';
@@ -14,6 +15,7 @@ import { Accounts } from '../src/server/accounts.js';
 import type { FeishuReadMessage } from '../src/shared/feishu-reading.js';
 import type { FeishuCardNavAction, FeishuCardPayload } from '../src/shared/feishu-cards.js';
 import type { Concept } from '../src/shared/types.js';
+import { initializeAppV3 } from './helpers/app-v3-fixture.js';
 
 const scope = { appId: 'cli_0000000000000000', tenantKey: 'synthetic-tenant' };
 const ownerActor = { ...scope, openId: 'owner_open' };
@@ -23,12 +25,17 @@ function note(root: string, domain: string, name: string, title: string, body: s
   mkdirSync(join(root, domain), { recursive: true });
   writeFileSync(join(root, domain, `${name}.md`), `---\ntype: concept\ntitle: ${title}\n---\n${body}`);
 }
-async function fixture(options: { accountsEnabled?: boolean; configured?: boolean; timeZone?: string } = {}) {
+async function fixture(options: { accountsEnabled?: boolean; configured?: boolean; timeZone?: string; learningSchemaVersion?: 2 | 3 } = {}) {
   const temp = mkdtempSync(join(tmpdir(), 'lm-feishu-card-api-'));
   const root = join(temp, 'owner-kg'); const dataDir = join(temp, 'data');
   let instant = Date.parse('2026-10-02T01:00:00Z');
   for (let i = 0; i < 6; i++) note(root, i === 5 ? 'AI' : 'Math', `Owner${i}`, `OwnerOnly${i}`, `Owner-private-body-${i}`);
+  if (options.learningSchemaVersion === 3) {
+    mkdirSync(dataDir, { recursive: true });
+    initializeAppV3(join(dataDir, 'living-memory.sqlite'));
+  }
   const appOptions = { root, dataDir, staticDir: join(temp, 'none'), port: 4317, limit: 1,
+    learningSchemaVersion: options.learningSchemaVersion ?? 2,
     accountsEnabled: options.accountsEnabled !== false, feishuScope: options.configured === false ? null : scope,
     feishuTimeZone: options.timeZone ?? 'Asia/Hong_Kong', now: () => new Date(instant),
     getFeishuChannelState: () => 'connected' as const };
@@ -38,7 +45,7 @@ async function fixture(options: { accountsEnabled?: boolean; configured?: boolea
   const send = (path: string, input: { method?: string; body?: unknown; cookie?: string; headers?: Record<string, string> } = {}) =>
     new Promise<{ status: number; body: any; cookie: string }>((resolve, reject) => {
       const req = request({ hostname: '127.0.0.1', port: (server.address() as { port: number }).port, path,
-        method: input.method ?? 'GET', headers: { 'X-LM-Learning-Protocol': '2', host: '127.0.0.1:4317', 'content-type': 'application/json',
+        method: input.method ?? 'GET', headers: { 'X-LM-Learning-Protocol': String(options.learningSchemaVersion ?? 2), host: '127.0.0.1:4317', 'content-type': 'application/json',
           ...(input.cookie ? { cookie: input.cookie } : {}), ...input.headers } }, res => {
         let text = ''; res.setEncoding('utf8'); res.on('data', chunk => text += chunk);
         res.on('end', () => resolve({ status: res.statusCode!, body: text ? JSON.parse(text) : null,
@@ -47,7 +54,7 @@ async function fixture(options: { accountsEnabled?: boolean; configured?: boolea
     });
   const credentials = async (cookie: string): Promise<Credentials> => {
     const session = (await send('/api/session', { cookie })).body;
-    return { cookie, headers: { 'x-lm-token': session.writeToken, 'x-lm-source-id': session.sourceId } };
+    return { cookie, headers: { 'x-lm-token': session.writeToken, 'x-lm-source-id': session.sourceId, 'x-lm-instance-id': session.instanceId } };
   };
   async function bind(credentials: Credentials, actor: typeof ownerActor) {
     const issued = await send('/api/feishu/binding/request', { ...credentials, method: 'POST', body: {} });
@@ -125,6 +132,105 @@ async function channel(f: Awaited<ReturnType<typeof fixture>>) {
     } };
 }
 const learningKeys = ['anchors', 'observations', 'retentions', 'applications', 'corrections', 'practice', 'config', 'configHistory', 'reviewPlan', 'layout', 'restoreMetadata'];
+
+for (const learningSchemaVersion of [2, 3] as const) {
+  test(`reading rewarm crosses SDK and Web with private first/existing anchors and zero budget in v${learningSchemaVersion}`, async () => {
+    const f = await fixture({ learningSchemaVersion }); let c: Awaited<ReturnType<typeof channel>> | undefined;
+    try {
+      const users = await f.users();
+      const snapshot = (await f.send('/api/snapshot?scope=all', users.member)).body;
+      const concept = snapshot.concepts.find((item: Concept) => item.title === 'MemberOnly0') as Concept;
+      assert.equal(snapshot.states[concept.id].anchor, null);
+      assert.equal((await f.send('/api/review-plan', { ...users.member, method: 'PUT', body: { revision: 0, dailyBudget: 0 } })).status, 200);
+      const before = (await f.send('/api/export', users.member)).body;
+      const ownerBefore = (await f.send('/api/export', users.owner)).body;
+      c = await channel(f);
+      await c.message(input('知识 卡片 搜索 MemberOnly0', 'rewarm-search'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '阅读 1'));
+      const confirmation = action(c.sent.at(-1)!, `platform-${c.sent.length}`, '确认已重温');
+      assert.equal((await f.send('/api/export', users.member)).body.anchors.length, 0);
+      const sentBefore = c.sent.length;
+      await c.click({ ...confirmation, ...ownerActor, eventId: 'wrong-rewarm-owner' });
+      assert.equal(c.sent.length, sentBefore);
+      await c.click(confirmation);
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /已确认重温/);
+      let saved = (await f.send('/api/export', users.member)).body;
+      assert.equal(saved.anchors.length, 1); assert.equal(saved.observations.length, 0);
+      const first = saved.anchors[0];
+      assert.match(first.eventId, /^feishu-rewarm:[a-f0-9]{32}$/);
+      assert.equal(first.conceptId, concept.id); assert.equal(first.kind, 'review');
+      assert.equal(first.occurredAt, '2026-10-02T01:00:00.000Z');
+      await c.click({ ...confirmation, eventId: 'redelivered-rewarm-confirmation' });
+      assert.deepEqual((await f.send('/api/export', users.member)).body.anchors, saved.anchors);
+      const history = (await f.send(`/api/concepts/${concept.id}/history`, users.member)).body;
+      assert.equal(history.entries.filter((entry: any) => entry.type === 'anchor' && entry.event.eventId === first.eventId).length, 1);
+      assert.equal((await f.send('/api/review-plan', users.member)).body.completedConceptIds.length, 0);
+      for (const key of ['observations', 'config', 'configHistory', 'reviewPlan']) assert.deepEqual(saved[key], before[key], key);
+      assert.equal((await f.send('/api/retentions', { ...users.member, method: 'POST', body: {
+        eventId: 'explicit-long-term', conceptId: concept.id, sourceRevision: concept.source.revision,
+        active: true, previousEventId: null, occurredAt: '2026-10-02T01:00:00.000Z',
+      } })).status, 201);
+      const retentions = (await f.send('/api/export', users.member)).body.retentions;
+      f.advance(60_000);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '返回资料'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '确认已重温'));
+      saved = (await f.send('/api/export', users.member)).body;
+      assert.equal(saved.anchors.length, 2); assert.equal(saved.observations.length, 0);
+      assert.deepEqual(saved.retentions, retentions);
+      assert.equal(saved.anchors.find((event: any) => event.eventId !== first.eventId).occurredAt, '2026-10-02T01:01:00.000Z');
+      assert.equal((await f.send('/api/review-plan', users.member)).body.completedConceptIds.length, 0);
+      const ownerAfter = (await f.send('/api/export', users.owner)).body;
+      for (const key of learningKeys) assert.deepEqual(ownerAfter[key], ownerBefore[key], `owner ${key}`);
+    } finally { await c?.connector.stop(); await f.close(); }
+  });
+
+  test(`reading rewarm recovers a lost result card after restart without another anchor in v${learningSchemaVersion}`, async () => {
+    const f = await fixture({ learningSchemaVersion }); let c: Awaited<ReturnType<typeof channel>> | undefined;
+    try {
+      const users = await f.users(); c = await channel(f);
+      await c.message(input('知识 卡片 搜索 MemberOnly0', 'lost-rewarm-search'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '阅读 1'));
+      const confirmation = action(c.sent.at(-1)!, `platform-${c.sent.length}`, '确认已重温');
+      c.fail(); await c.click(confirmation);
+      const committed = (await f.send('/api/export', users.member)).body;
+      assert.equal(committed.anchors.length, 1); assert.equal(committed.observations.length, 0);
+      await c.connector.stop(); f.advance(2 * 60 * 60_000); await f.reopen(); c = await channel(f);
+      await c.message(input('知识 重温状态', 'lost-rewarm-status'));
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /已确认重温/);
+      await c.message(input('知识 重试重温', 'lost-rewarm-retry'));
+      await c.click({ ...confirmation, eventId: 'expired-rewarm-redelivery' });
+      const recovered = (await f.send('/api/export', users.member)).body;
+      for (const key of learningKeys) assert.deepEqual(recovered[key], committed[key], `recovery ${key}`);
+    } finally { await c?.connector.stop(); await f.close(); }
+  });
+
+  test(`another concept confirmation cannot replace the pending rewarm across SDK in v${learningSchemaVersion}`, async () => {
+    const f = await fixture({ learningSchemaVersion }); let c: Awaited<ReturnType<typeof channel>> | undefined;
+    const sql = (statement: string) => { const db = new DatabaseSync(join(f.dataDir, 'living-memory.sqlite')); try { db.exec(statement); } finally { db.close(); } };
+    try {
+      const users = await f.users(); c = await channel(f);
+      sql("CREATE TRIGGER fail_rewarm BEFORE INSERT ON anchors BEGIN SELECT RAISE(ABORT, 'synthetic-offline'); END;");
+      await c.message(input('知识 卡片 搜索 MemberOnly0', 'pending-rewarm-A'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '阅读 1'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '确认已重温'));
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /写入结果待确认/);
+      f.advance(60_000);
+      await c.message(input('知识 卡片 搜索 MemberOnly1', 'pending-rewarm-B'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '阅读 1'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '确认已重温'));
+      const blocked = JSON.stringify(c.sent.at(-1)!.card);
+      assert.match(blocked, /MemberOnly0/); assert.match(blocked, /本次未创建新的重温记录/);
+      assert.equal((await f.send('/api/export', users.member)).body.anchors.length, 0);
+      sql('DROP TRIGGER fail_rewarm;');
+      await c.message(input('知识 重试重温', 'pending-rewarm-retry'));
+      const after = (await f.send('/api/export', users.member)).body;
+      const concepts = (await f.send('/api/snapshot?scope=all', users.member)).body.concepts as Concept[];
+      assert.equal(after.anchors.length, 1); assert.equal(after.observations.length, 0);
+      assert.equal(after.anchors[0].conceptId, concepts.find(concept => concept.title === 'MemberOnly0')!.id);
+      assert.equal(after.anchors[0].occurredAt, '2026-10-02T01:00:00.000Z');
+    } finally { await c?.connector.stop(); await f.close(); }
+  });
+}
 
 test('SDK card browsing uses each private full index, restores filters and never changes learning data', async () => {
   const f = await fixture(); let c: Awaited<ReturnType<typeof channel>> | undefined;

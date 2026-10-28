@@ -4,6 +4,7 @@ import { normalizeFeishuSdkCardAction } from './feishu-events.js';
 import { normalizeFeishuCardNavigation } from './feishu-card-actions.js';
 import { parseFeishuCardCommand } from './feishu-card-commands.js';
 import { parseFeishuReviewCommand } from './feishu-review-commands.js';
+import { parseFeishuRewarmCommand } from './feishu-rewarm-commands.js';
 import { normalizeFeishuBindingMessage, normalizeFeishuReadMessage } from './feishu-messages.js';
 import type { FeishuActor, FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuChannelState } from '../shared/feishu-binding.js';
 import type { FeishuDeliveryResult, FeishuReadMessage } from '../shared/feishu-reading.js';
@@ -182,7 +183,8 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
       const input = normalizeFeishuReadMessage(event, configuration.value);
       if (!input) return;
       const isCard = options.prepareCardMessage
-        && (parseFeishuCardCommand(input.text) !== null || parseFeishuReviewCommand(input.text) !== null);
+        && (parseFeishuCardCommand(input.text) !== null || parseFeishuReviewCommand(input.text) !== null
+          || parseFeishuRewarmCommand(input.text) !== null);
       if (!isCard && !options.prepareReading) return;
       const entry = admit(input);
       if (!entry) return;

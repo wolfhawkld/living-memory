@@ -7,6 +7,7 @@ import { createOfflineScanner, type OfflineScanner } from './offline-scan.js';
 import { parseSourceIdentityRegistry, readSourceIdentityRegistry, resolveSourceIdentity, type SourceIdentityRegistry } from './source-identities.js';
 import { isRestoreQuarantined, readInstanceId, type InstanceIdentity, type RestoreQuarantine } from './instance-state.js';
 import { isValidInstant } from '../core/time-model.js';
+import { isValidFeishuRewarmRequest } from '../shared/feishu-rewarm.js';
 import { isValidFeishuReviewState } from './accounts.js';
 import { inspectLearningSchema, migrateLearningSchemaV1ToV2 } from './learning-schema.js';
 import { inspectAnswerClearingSchemaV3 } from './answer-clearing-schema.js';
@@ -145,6 +146,36 @@ function learningSchemaVersion(path: string): 1 | 2 | 3 {
   } catch { throw new InstanceBackupError('INSTANCE_DATABASE_INVALID'); }
   finally { db?.close(); }
 }
+/** Older bundles have no standalone reading-rewarm journal. Present journals must be usable. */
+function validateRewarmJournal(path: string): void {
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    const columns = db.prepare('PRAGMA table_info(feishu_rewarm_intents)').all();
+    const names = ['id', 'user_id', 'account_access_revision', 'binding_id', 'app_id', 'tenant_key', 'open_id',
+      'namespace', 'source_fingerprint', 'origin_chat_id', 'request_json', 'status', 'error_code', 'created_at', 'settled_at'];
+    if (names.some(name => !columns.some(column => column.name === name
+      && String(column.type).toUpperCase() === (name === 'account_access_revision' ? 'INTEGER' : 'TEXT')))
+      || !columns.some(column => column.name === 'id' && column.pk === 1)) throw new Error();
+    for (const row of db.prepare('SELECT * FROM feishu_rewarm_intents').iterate()) {
+      if (typeof row.id !== 'string' || !/^[a-f0-9]{32}$/.test(row.id)
+        || !Number.isSafeInteger(row.account_access_revision) || Number(row.account_access_revision) < 1
+        || ['user_id', 'binding_id', 'app_id', 'tenant_key', 'open_id', 'namespace', 'origin_chat_id'].some(key => (
+          typeof row[key] !== 'string' || !(row[key] as string).trim() || row[key] !== (row[key] as string).trim()))
+        || typeof row.source_fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(row.source_fingerprint)
+        || typeof row.request_json !== 'string' || !isValidFeishuRewarmRequest(JSON.parse(row.request_json), row.id)
+        || !['pending', 'applied', 'conflict'].includes(String(row.status))
+        || typeof row.created_at !== 'string' || !isValidInstant(row.created_at)) throw new Error();
+      if (row.status === 'pending') {
+        if (row.error_code !== null || row.settled_at !== null) throw new Error();
+      } else if (typeof row.settled_at !== 'string' || !isValidInstant(row.settled_at)
+        || (row.status === 'applied' ? row.error_code !== null
+          : typeof row.error_code !== 'string' || !/^[A-Z][A-Z0-9_]{0,127}$/.test(row.error_code))) throw new Error();
+    }
+    if (db.prepare("SELECT 1 FROM feishu_rewarm_intents WHERE status='pending' GROUP BY binding_id,namespace HAVING COUNT(*)>1 LIMIT 1").get()) throw new Error();
+  } catch { throw new InstanceBackupError('INSTANCE_DATABASE_INVALID'); }
+  finally { db?.close(); }
+}
 function validateDatabases(root: string, databases: DatabaseEntry[]) {
   if (!databases.some((entry) => entry.path === 'data/living-memory.sqlite')) throw new InstanceBackupError('INSTANCE_DATABASE_MISSING');
   const paths = new Set<string>();
@@ -157,6 +188,9 @@ function validateDatabases(root: string, databases: DatabaseEntry[]) {
       : ['namespaces', 'config_history', 'anchors', 'observations', 'retentions', 'applications', 'corrections', 'relation_reviews', 'practice_cards', 'practice_attempts',
         'practice_card_sources', 'layouts', 'review_plans', 'imported_concepts', 'identity_catalog', 'identity_bindings', 'import_receipts'];
     if (required.some((name) => !Object.hasOwn(actual.tables, name))) throw new InstanceBackupError('INSTANCE_DATABASE_INVALID');
+    if (entry.path === 'data/accounts.sqlite' && Object.hasOwn(actual.tables, 'feishu_rewarm_intents')) {
+      validateRewarmJournal(join(root, entry.path));
+    }
     if (entry.path === 'data/living-memory.sqlite') {
       const count = ['activity_settings', 'activity_events', 'activity_deliveries', 'activity_deletions'].filter((name) => Object.hasOwn(actual.tables, name)).length;
       if (count !== 0 && count !== 4) throw new InstanceBackupError('INSTANCE_DATABASE_INVALID');
@@ -423,6 +457,10 @@ export async function restoreInstance(options: RestoreInstanceOptions): Promise<
             .run(restoredAt, JSON.stringify(state), String(row.id)).changes);
         }
         change('pendingReviewIntents', "UPDATE feishu_review_operations SET status='conflict',error_code='INSTANCE_RESTORED',settled_at=? WHERE status='pending'", restoredAt);
+        invalidated.pendingRewarmIntents = 0;
+        if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feishu_rewarm_intents'").get()) {
+          change('pendingRewarmIntents', "UPDATE feishu_rewarm_intents SET status='conflict',error_code='INSTANCE_RESTORED',settled_at=? WHERE status='pending'", restoredAt);
+        }
         change('unknownReadReceipts', "UPDATE feishu_read_receipts SET status='failed-or-unknown' WHERE status='attempted'");
         db.exec('COMMIT');
       } catch (error) { try { db.exec('ROLLBACK'); } catch { /* preserve original failure */ } throw error; }
