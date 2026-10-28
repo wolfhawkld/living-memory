@@ -1,5 +1,7 @@
 # Living Memory v0.1 开发任务
 
+2026-10-27 当前状态：ACLEAR-03／04 软件已随 `673728d` 交付，[CI 40285662248](https://github.com/wolfhawkld/living-memory/actions/runs/40285662248) 通过；私人实例于 10 月 26 日完成 [v3 迁移与 Web 只读核验](../development/instance-migration.md#2026-10-26-本机-v3-升级记录)。[图谱连通区域修复](../development/domain-views.md#web-行为)已部署，代码与测试随本次 `develop` 提交归档，视觉待本人验收。本次已通过官方入口显式激活原 v3 实例，恢复网页及飞书连接，SDK 报告 `connected`，账号绑定保留；一轮真实批次的两条脑中自评写回、一条跳过及结束终态已核对，见[本轮试用补记](../development/feishu-live-acceptance.md#2026-10-27-真实批次与自评写回补记)；独立确认重温、本人 Web 页面及完整汇总视觉仍待验。完整任务、原 23 项 AC 及本人复习闭环未因此整体验收；下文旧日期记录保留当时状态。
+
 2026-10-26 将 ACLEAR-03／04 合并为 [原答清除统一交付 goal](answer-clearing-delivery-goal.md)。已接通 v3 授权清除／状态 API、明确确认与未知结果恢复、跨标签页持久隐私标记、目标队列／断点和历史／修订／场景机械副本处理；正在统一验证 HTTP→JSON／bundle／飞书以及独立 v3 远端浏览器。默认 v2、私人实例、真实飞书及实际删除保持原状；未标记完整 LM-006 或 v0.1 已验收。
 
 日期：2026-09-16。状态：**完整 v0.1 的 18 项任务仍未整体完成；P0 时间驱动原型已可运行并进入小范围试用**。用户进一步建议减少变量，优先时间维度。当前按 [P0 时间驱动原型](../design/time-first-prototype.md)推进，下文 18 项完整 v0.1 任务保留为扩展路线，不再同时作为第一轮的前置条件。独立 Web 先行、后接 Obsidian，记忆与遗忘机制主导的方向保持不变。当前运行与验证边界见 [P0 运行说明](../development/p0-running.md)和[P0 验证记录](../development/p0-validation.md)。

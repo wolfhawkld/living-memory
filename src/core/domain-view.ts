@@ -227,6 +227,79 @@ function connectedToVisiblePrimary(
   ));
 }
 
+/** Choose a connected region before filling the cap from genuinely separate groups. */
+function selectPrimaryRegion(
+  concepts: Concept[],
+  links: readonly GraphLink[],
+  limit: number,
+  selectedId: string | null,
+): Concept[] {
+  if (concepts.length <= limit) return concepts;
+
+  const order = new Map(concepts.map((concept, index) => [concept.id, index]));
+  const adjacent = new Map(concepts.map(concept => [concept.id, new Set<string>()]));
+  for (const link of links) {
+    if (link.source === link.target) continue;
+    const source = adjacent.get(link.source), target = adjacent.get(link.target);
+    if (!source || !target) continue;
+    source.add(link.target);
+    target.add(link.source);
+  }
+  const compareNeighbors = (left: string, right: string) => (
+    adjacent.get(right)!.size - adjacent.get(left)!.size || order.get(left)! - order.get(right)!
+  );
+  const neighbors = new Map([...adjacent].map(([id, values]) => [id, [...values].sort(compareNeighbors)]));
+  const groups: Array<{ ids: string[]; seed: string; first: number }> = [];
+  const groupById = new Map<string, number>();
+  for (const concept of concepts) {
+    if (groupById.has(concept.id)) continue;
+    const index = groups.length, ids = [concept.id];
+    let seed = concept.id;
+    groupById.set(concept.id, index);
+    for (let cursor = 0; cursor < ids.length; cursor += 1) {
+      const id = ids[cursor];
+      if (compareNeighbors(id, seed) < 0) seed = id;
+      for (const neighbor of neighbors.get(id)!) {
+        if (groupById.has(neighbor)) continue;
+        groupById.set(neighbor, index);
+        ids.push(neighbor);
+      }
+    }
+    groups.push({ ids, seed, first: order.get(concept.id)! });
+  }
+  const rankedGroups = groups.map((_, index) => index).sort((left, right) => (
+    groups[right].ids.length - groups[left].ids.length || groups[left].first - groups[right].first
+  ));
+  const sample = (focus: string | null): Set<string> => {
+    const focusedGroup = focus === null ? undefined : groupById.get(focus);
+    const ranked = focusedGroup === undefined ? rankedGroups
+      : [focusedGroup, ...rankedGroups.filter(index => index !== focusedGroup)];
+    const chosen = new Set<string>();
+    for (const index of ranked) {
+      const seed = index === focusedGroup ? focus! : groups[index].seed;
+      const queue = [seed], seen = new Set(queue);
+      for (let cursor = 0; cursor < queue.length; cursor += 1) {
+        const id = queue[cursor];
+        chosen.add(id);
+        if (chosen.size === limit) return chosen;
+        for (const neighbor of neighbors.get(id)!) {
+          if (seen.has(neighbor)) continue;
+          seen.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+    return chosen;
+  };
+
+  const defaultRegion = sample(null);
+  // Clicking an already visible default node only highlights/focuses it.
+  // A search/list selection outside that region opens its actual neighborhood.
+  const chosen = selectedId && groupById.has(selectedId) && !defaultRegion.has(selectedId)
+    ? sample(selectedId) : defaultRegion;
+  return concepts.filter(concept => chosen.has(concept.id));
+}
+
 /**
  * Project a snapshot to one directory domain and a small, explicitly requested
  * set of connected cross-domain concepts. This function only selects existing
@@ -243,19 +316,7 @@ export function projectDomainView(
   const primaryCount = domainConcepts.length;
   const limit = clampLimit(options.limit ?? snapshot.source.limit);
   const selectedId = options.selectedId ?? null;
-  const selected = selectedId
-    ? domainConcepts.find((concept) => concept.id === selectedId)
-    : undefined;
-
-  // Keep source order because it is the order produced by the knowledge-source
-  // scanner. That makes paging and refreshes stable for a given source.
-  const primary = domainConcepts.slice(0, limit);
-  if (selected && !primary.some((concept) => concept.id === selected.id)) {
-    // Keep the display cap fixed when a focused node is outside the first N:
-    // replace the last ordinary node rather than making the graph denser.
-    if (primary.length >= limit) primary[primary.length - 1] = selected;
-    else primary.push(selected);
-  }
+  const primary = selectPrimaryRegion(domainConcepts, snapshot.links, limit, selectedId);
 
   // Use the final primary set when deciding whether an expansion is related.
   const visiblePrimaryIds = new Set(primary.map((concept) => concept.id));

@@ -49,6 +49,8 @@ export function GraphDisplayControls({
       <p className="graph-display-help" id={GRAPH_LIMIT_HELP_ID}>
         仅调整图谱显示范围，不影响学习或查询。
         文字列表展示完整当前领域，节点上限只对图谱生效。
+        超过上限时优先展示相连区域，选中范围外的概念可查看它附近的节点。
+        原本不相连的分组仍保持分开。
       </p>
       <p className="graph-display-summary">
         图谱内当前领域节点：{summary.visiblePrimaryNodes} / {summary.domainTotalNodes}；

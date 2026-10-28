@@ -1,5 +1,7 @@
 # 飞书知识点查看与轻量复习通道 TODO
 
+2026-10-27 当前状态：ACLEAR-03／04 软件已随 `673728d` 交付，[CI 40285662248](https://github.com/wolfhawkld/living-memory/actions/runs/40285662248) 通过；私人实例于 10 月 26 日完成 [v3 迁移与 Web 只读核验](../development/instance-migration.md#2026-10-26-本机-v3-升级记录)。[图谱连通区域修复](../development/domain-views.md#web-行为)已部署，代码与测试随本次 `develop` 提交归档，视觉待本人验收。本次已通过官方入口[显式激活原 v3 实例](../development/instance-migration.md#明确恢复连接器)，恢复网页及飞书连接，SDK 报告 `connected`，账号绑定保留。10 月 21 日的连接记录仅反映当时状态；一轮真实批次的两条脑中自评写回、一条跳过及结束终态已核对，见[本轮试用补记](../development/feishu-live-acceptance.md#2026-10-27-真实批次与自评写回补记)；独立确认重温、本人 Web 页面及完整汇总视觉仍待验，FEISHU-04 和本人复习闭环未整体通过。
+
 更新：2026-10-21。状态：**FEISHU-01～03B 软件均已实现；专用应用已发布、绑定并接通回调，本机恢复实例已重接原知识源并显式激活飞书。本人确认基础卡片显示／功能，查询／选择／平台递送及三项会话启动／结束部分覆盖；自评、独立重温、其余项推进和 Web 对照仍待验，FEISHU-04 未整体验收。** 对应 NEXT-06，复用 LM-008／LM-010／LM-012。真实运行与本次未覆盖范围见[2026-10-21 验收补记](../development/feishu-live-acceptance.md#2026-10-21-实际运行与基础试用补记)。其他安装仍默认关闭。首轮边界见[离线验证说明](../development/feishu-offline-probe.md)，当前配置见[连接器说明](../development/feishu-connector.md)，身份映射见[账号绑定](../development/feishu-account-binding.md)，文本浏览见[知识阅读](../development/feishu-knowledge-reading.md)，点击浏览见[知识卡片](../development/feishu-card-browsing.md)。
 
 ## 目标与入口

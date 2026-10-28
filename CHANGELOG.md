@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+图谱达到节点显示上限时，优先选择真实连通区域，避免按文件顺序截取出大量断链节点。选中当前默认区域内的概念保持区域不变；搜索或列表选中区域外的概念时展示其附近节点，原关系方向和多条边保留，不补造连线。见[领域显示规则](docs/development/domain-views.md#web-行为)。
+
+ACLEAR-03／04 已接通显式 v3 的原答清除 API 与 Web 入口：支持明确确认、结果核验及浏览器可控副本清理，保留原评分、学习时间与操作事实；局部副本清理未完成会单独提示。默认 v2 不自动升级，也不承诺清除外部备份或平台副本。见[原答清除交付范围](docs/planning/answer-clearing-delivery-goal.md)。下列 ACLEAR-02 阶段的「未开放」等表述保留各阶段当时的含义。
+
 ACLEAR-02C4B2 接通显式 v3 启动：原始入口使用 `LM_LEARNING_SCHEMA_VERSION=3`，私有 profile 使用数字 `learningSchemaVersion: 3`；省略仍为 2。v3 只接受已存在的完整数据库与声明支持协议 3、入口哈希匹配的网页构建，失败在运行租约和账号准备前拒绝。恢复报告、显式连接器激活及只读重接预览同步版本规则；新 `runtimeReady: true` 仅表示软件能力，历史报告和连接器隔离不会自动改变。私人实例未升级，原答清除入口仍未开放。见[启动与回退材料](docs/development/instance-runtime.md#显式启动-v3)和[恢复边界](docs/development/instance-migration.md#学习结构-v3-的隔离候选)。
 
 修复大窗阅读中的引用点击偶尔无响应：滚动更新当前章节时保持 Markdown 引用按钮稳定，避免重绘替换正在点击的元素；原章节导航回归增加按钮身份检查，保留五种失败提示与不写入学习记录的验证。
