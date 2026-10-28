@@ -134,6 +134,89 @@ async function channel(f: Awaited<ReturnType<typeof fixture>>) {
 const learningKeys = ['anchors', 'observations', 'retentions', 'applications', 'corrections', 'practice', 'config', 'configHistory', 'reviewPlan', 'layout', 'restoreMetadata'];
 
 for (const learningSchemaVersion of [2, 3] as const) {
+  test(`unknown-time cards browse the full private index and establish one first anchor in v${learningSchemaVersion}`, async () => {
+    const f = await fixture({ learningSchemaVersion }); let c: Awaited<ReturnType<typeof channel>> | undefined;
+    try {
+      const users = await f.users();
+      note(users.memberRoot, 'Math', 'Member1', 'MemberOnly1', `Member-second-start\n${'synthetic-details '.repeat(300)}\nMember-second-tail`);
+      assert.equal((await f.send('/api/refresh', { ...users.member, method: 'POST', body: {} })).status, 200);
+      const full = (await f.send('/api/snapshot?scope=all', users.member)).body;
+      const visible = (await f.send('/api/snapshot', users.member)).body;
+      assert.equal(full.concepts.length, 2); assert.equal(visible.concepts.length, 1);
+      const unknown = full.concepts.find((concept: Concept) => !visible.concepts.some((item: Concept) => item.id === concept.id)) as Concept;
+      const known = full.concepts.find((concept: Concept) => concept.id !== unknown.id) as Concept;
+      assert.ok(unknown); assert.equal(full.states[unknown.id].status, 'unknown');
+      assert.equal((await f.send('/api/reviews', { ...users.member, method: 'POST', body: {
+        eventId: 'known-time-anchor', conceptId: known.id, sourceRevision: known.source.revision,
+        kind: 'review', occurredAt: '2026-09-01T00:00:00Z',
+      } })).status, 201);
+      const before = (await f.send('/api/export', users.member)).body;
+      const ownerBefore = (await f.send('/api/export', users.owner)).body;
+      const planBefore = (await f.send('/api/review-plan', users.member)).body;
+      c = await channel(f);
+      await c.message(input('知识 复习 3', 'unknown-filter-batch'));
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /第 1\/1 项/);
+      const batchRows = () => {
+        const db = new DatabaseSync(join(f.dataDir, 'accounts.sqlite'), { readOnly: true });
+        try { return db.prepare('SELECT * FROM feishu_review_sessions ORDER BY id').all(); }
+        finally { db.close(); }
+      };
+      const batchBefore = batchRows(); assert.equal(batchBefore.length, 1);
+      await c.message(input('知识 卡片 未建起点', 'unknown-filter-entry'));
+      let payload = JSON.stringify(c.sent.at(-1)!.card);
+      assert.match(payload, /1 个节点/); assert.match(payload, /筛选：尚无时间记录/);
+      assert.ok(payload.includes(unknown.title)); assert.ok(!payload.includes(known.title));
+      assert.doesNotMatch(payload, /OwnerOnly|本范围待复习/);
+      const reading = action(c.sent.at(-1)!, `platform-${c.sent.length}`, '阅读 1');
+      const sentBefore = c.sent.length;
+      await c.click({ ...reading, ...ownerActor, eventId: 'wrong-filter-actor' });
+      assert.equal(c.sent.length, sentBefore);
+      await c.click(reading);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '下一页'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '返回原列表'));
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /筛选：尚无时间记录/);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '按名称排序'));
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /筛选：尚无时间记录/);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '取消时间筛选'));
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /2 个节点/);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '尚无时间记录'));
+      payload = JSON.stringify(c.sent.at(-1)!.card);
+      assert.match(payload, /1 个节点/); assert.ok(payload.includes(unknown.title));
+      const browsed = (await f.send('/api/export', users.member)).body;
+      for (const key of learningKeys) assert.deepEqual(browsed[key], before[key], `browse-only ${key}`);
+      assert.deepEqual(batchRows(), batchBefore, 'filtering and reading preserve the active review batch');
+      assert.deepEqual((await f.send('/api/review-plan', users.member)).body, planBefore);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '阅读 1'));
+      const confirm = action(c.sent.at(-1)!, `platform-${c.sent.length}`, '确认已重温');
+      await c.click(confirm); await c.click({ ...confirm, eventId: 'unknown-filter-duplicate' });
+      await c.message(input('知识 卡片 未建起点', 'unknown-filter-after-rewarm'));
+      payload = JSON.stringify(c.sent.at(-1)!.card);
+      assert.match(payload, /0 个节点/); assert.match(payload, /没有匹配节点/);
+      assert.ok(!payload.includes(unknown.title));
+      const saved = (await f.send('/api/export', users.member)).body;
+      const additions = saved.anchors.filter((entry: { eventId: string }) => !before.anchors.some((old: { eventId: string }) => old.eventId === entry.eventId));
+      assert.equal(additions.length, 1); assert.equal(additions[0].conceptId, unknown.id);
+      assert.match(additions[0].eventId, /^feishu-rewarm:/);
+      assert.equal(saved.anchors.length, before.anchors.length + 1);
+      assert.deepEqual(saved.anchors.filter((entry: { eventId: string }) => entry.eventId !== additions[0].eventId), before.anchors);
+      const expectedRequest = { eventId: additions[0].eventId, conceptId: unknown.id,
+        sourceRevision: unknown.source.revision, occurredAt: '2026-10-02T01:00:00.000Z', kind: 'review' };
+      for (const [key, value] of Object.entries(expectedRequest)) assert.equal(additions[0][key], value);
+      assert.deepEqual(saved.restoreMetadata, { ...before.restoreMetadata,
+        anchorRequests: [...before.restoreMetadata.anchorRequests, expectedRequest] });
+      for (const key of learningKeys.filter(key => !['anchors', 'restoreMetadata'].includes(key))) assert.deepEqual(saved[key], before[key], `rewarm-only ${key}`);
+      assert.deepEqual(batchRows(), batchBefore);
+      assert.deepEqual((await f.send('/api/review-plan', users.member)).body, planBefore);
+      const after = (await f.send('/api/snapshot?scope=all', users.member)).body;
+      assert.equal(after.states[unknown.id].status, 'recent');
+      await c.message(input('知识 卡片 未建起点', 'unknown-filter-owner', ownerActor));
+      payload = JSON.stringify(c.sent.at(-1)!.card);
+      assert.match(payload, /6 个节点/); assert.doesNotMatch(payload, /MemberOnly|Member-private/);
+      const ownerAfter = (await f.send('/api/export', users.owner)).body;
+      for (const key of learningKeys) assert.deepEqual(ownerAfter[key], ownerBefore[key], `owner ${key}`);
+    } finally { await c?.connector.stop(); await f.close(); }
+  });
+
   test(`reading rewarm crosses SDK and Web with private first/existing anchors and zero budget in v${learningSchemaVersion}`, async () => {
     const f = await fixture({ learningSchemaVersion }); let c: Awaited<ReturnType<typeof channel>> | undefined;
     try {

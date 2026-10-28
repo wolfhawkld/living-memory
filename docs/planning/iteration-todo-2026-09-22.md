@@ -1,5 +1,7 @@
 # 演示后的迭代 TODO
 
+2026-10-28 接续 FEISHU-06：[飞书未知起点单列](../development/feishu-card-browsing.md#尚无时间记录)。从卡片列表筛出尚无时间记录的概念，衔接首次明确重温；沿用现有数据模型和复习规则。定向验证、相关回归、构建与主题检查通过；本人暂不启动服务，本项只使用合成数据开发，不恢复私人实例更新或要求即时验收。
+
 2026-10-28 接续 [FEISHU-05：阅读后的明确重温](../development/feishu-reading-rewarm.md)：飞书阅读卡增加独立确认入口，可建立首次时间起点，并通过状态查询和原请求重试处理回复丢失；不要求自评，不改变当前三项批次、预算或长期保持。软件定向验证通过，真实平台待本人使用。
 
 2026-10-27 当前状态：ACLEAR-03／04 的[原答清除统一软件交付](answer-clearing-delivery-goal.md)已完成，提交 `673728d8b5a445c1b7366789a69dfa403874773c` 的 [CI 40285662248](https://github.com/wolfhawkld/living-memory/actions/runs/40285662248) 已通过。私人实例随后已独立完成 [v3 升级与只读核验](../development/instance-migration.md#2026-10-26-本机-v3-升级记录)，学习事实保留；[20 节点连通区域修复](../development/domain-views.md#web-行为)已部署，实际画面仍待本人验收。本次已通过官方入口显式激活原 v3 实例，恢复网页及飞书连接，SDK 报告 `connected`，账号绑定保留；一轮真实批次的两条脑中自评写回、一条跳过及结束终态已核对，见[本轮试用补记](../development/feishu-live-acceptance.md#2026-10-27-真实批次与自评写回补记)；独立确认重温、本人 Web 页面及完整汇总视觉仍待验。

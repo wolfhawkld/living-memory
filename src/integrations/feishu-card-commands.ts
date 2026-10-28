@@ -7,6 +7,7 @@ export function parseFeishuCardCommand(text: string): FeishuBrowseView | null {
   const input = text.trim();
   if (/^知识\s+卡片(?:\s|$)/.test(input)) {
     const rest = input.replace(/^知识\s+卡片/, '').trim();
+    if (rest === '未建起点') return { kind: 'list', domainId: null, query: '', sort: 'elapsed', page: 1, timeState: 'unknown' };
     const parsed = parseFeishuReadCommand(rest ? `知识 ${rest}` : '知识');
     if (!parsed || parsed.kind === 'read') return { kind: 'help' };
     return parsed;

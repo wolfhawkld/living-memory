@@ -6,7 +6,7 @@ import type { FeishuRewarmTarget } from './feishu-rewarm.js';
 export const FEISHU_CARD_NAV_KIND = 'lm.nav.v1' as const;
 export type FeishuCardCollection =
   | { kind: 'domains'; page: number }
-  | { kind: 'list'; domainId: string | null; query: string; sort: 'elapsed' | 'title'; page: number }
+  | { kind: 'list'; domainId: string | null; query: string; sort: 'elapsed' | 'title'; page: number; timeState?: 'unknown' }
   | { kind: 'due'; domainId: string | null; limit: 3 | 5 };
 export type FeishuBrowseView = FeishuCardCollection
   | { kind: 'help' }

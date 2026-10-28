@@ -13,14 +13,14 @@ import type { Concept } from '../src/shared/types.js';
 
 const actor = { appId: 'app_synthetic', tenantKey: 'tenant_synthetic', openId: 'open_synthetic' };
 const asOf = '2026-10-02T00:00:00.000Z';
-const domain = '中'.repeat(384);
+const domain = '中'.repeat(512);
 const query = '概'.repeat(120);
 const concepts: Concept[] = Array.from({ length: 20 }, (_, index) => ({
   id: `synthetic-budget-${String(index).padStart(2,'0')}`, title: `知识 ${String(index).padStart(2,'0')}`,
   aliases: [query], domain: 'unused', summary: '', body: 'Synthetic body content. '.repeat(220),
   source: { path: `${domain}/concept-${index}.md`, revision: `synthetic-revision-${index}` },
 }));
-const context: FeishuReadContext = { concepts, states: {}, anchors: [], asOf };
+const context: FeishuReadContext = { concepts, states: Object.fromEntries(concepts.map(concept => [concept.id, { conceptId: concept.id, status: 'unknown' as const, anchor: null, elapsedDays: null, decay: null, reason: null, asOf }])), anchors: [], asOf };
 const reviewPlan: ReviewPlanResponse = { sourceId:'synthetic', asOf, timeZone:'UTC', dayKey:'2026-10-02',
   plan:{ revision:1, dailyBudget:5, concepts:{} }, completedConceptIds:[] };
 
@@ -56,13 +56,18 @@ for (const envelope of [
         accounts.discardFeishuCard(stored.id,actor,auth);
         return plan;
       };
-      let view:FeishuBrowseView={kind:'list',domainId:domain,query,sort:'title',page:1};
+      for (const timeState of [null, 'unknown'] as const) {
+      let view:FeishuBrowseView={kind:'list',domainId:domain,query,sort:'title',page:1, ...(timeState ? { timeState } : {})};
       const references=new Set<string>();
       let pages=0;
       while(view.kind==='list') {
         assert.ok(++pages<=20,'list traversal must terminate');
         const current:Extract<FeishuBrowseView,{kind:'list'}>=view;
         const rendered=persist(current);
+        assert.ok(rendered.actions.some(action=>action.target.kind==='list'&&action.target.sort==='elapsed'&&action.target.domainId===domain),'sort survives budget degradation');
+        assert.ok(rendered.actions.some(action=>action.target.kind==='list'&&action.target.domainId===domain&&action.target.sort==='title'&&action.target.timeState!==(timeState??undefined)),'filter toggle survives budget degradation');
+        assert.ok(rendered.actions.some(action=>action.target.kind==='list'&&action.target.domainId===null&&action.target.query===''&&!Object.hasOwn(action.target,'timeState')),'all nodes reset survives');
+        if(current.page>1) assert.ok(rendered.actions.some(action=>action.target.kind==='list'&&action.target.page===current.page-1&&action.target.domainId===domain),'previous page survives');
         const reads=rendered.actions.filter(action=>action.target.kind==='read');
         assert.ok(reads.length>0,'every collection page must retain accessible concepts');
         for(const action of reads) {
@@ -91,6 +96,7 @@ for (const envelope of [
       }
       assert.ok(pages>2,'exercise full metadata at several intermediate pages');
       assert.equal(references.size,concepts.length,'all matching concepts remain reachable');
+      }
     } finally {accounts.close();rmSync(dataDir,{recursive:true,force:true});}
   });
 }

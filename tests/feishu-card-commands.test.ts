@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { parseFeishuReadCommand } from '../src/integrations/feishu-read-commands.js';
 import { parseFeishuCardCommand as parse } from '../src/integrations/feishu-card-commands.js';
 
 test('card entry commands reuse bounded quoted collection filters and distinguish ordinary text', () => {
@@ -26,4 +27,17 @@ test('malformed card commands give bounded help and cannot issue reads or learni
     '知识 卡片 列表 页=100001', '知识 卡片 列表 页=0', '知识 卡片 列表 查=x 查=y',
     '知识 卡片 列表 查="bad', '知识 卡片 列表 root=/private']) assert.deepEqual(parse(text), { kind: 'help' });
   assert.equal(parse('知识 卡片 '.repeat(1000)), null);
+});
+
+
+test('unknown time-state entry is an exact card-only command with no parameter grammar', () => {
+  const expected = { kind: 'list', domainId: null, query: '', sort: 'elapsed', page: 1, timeState: 'unknown' };
+  assert.deepEqual(parse('知识 卡片 未建起点'), expected);
+  assert.deepEqual(parse('  知识  卡片   未建起点  '), expected);
+  for (const text of ['知识 卡片 未建起点 域=Math', '知识 卡片 未建起点 页=2',
+    '知识 卡片 未建起点 查=x', '知识 卡片 未建起点x', '知识 卡片 列表 timeState=unknown']) {
+    assert.deepEqual(parse(text), { kind: 'help' });
+  }
+  assert.deepEqual(parseFeishuReadCommand('知识 未建起点'), { kind: 'help' });
+  assert.equal(parse('知识 未建起点'), null);
 });

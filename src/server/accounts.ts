@@ -102,7 +102,9 @@ function validCardView(value: unknown, allowRead = true): value is FeishuCardVie
   if (validReviewTarget(view) || isValidFeishuRewarmTarget(view)) return true;
   if (view.kind === 'help') return strictKeys(view,['kind']);
   if (view.kind === 'domains') return strictKeys(view,['kind','page']) && cardPage(view.page);
-  if (view.kind === 'list') return strictKeys(view,['kind','domainId','query','sort','page']) && cardDomain(view.domainId)
+  if (view.kind === 'list') return strictKeys(view,Object.hasOwn(view,'timeState')
+    ? ['kind','domainId','query','sort','page','timeState'] : ['kind','domainId','query','sort','page'])
+    && (!Object.hasOwn(view,'timeState') || view.timeState === 'unknown') && cardDomain(view.domainId)
     && typeof view.query === 'string' && view.query.length <= 120 && ['elapsed','title'].includes(view.sort as string) && cardPage(view.page);
   if (view.kind === 'due') return strictKeys(view,['kind','domainId','limit']) && cardDomain(view.domainId) && [3,5].includes(view.limit as number);
   if (view.kind === 'read' && allowRead) return strictKeys(view,['kind','reference','page','revision','back'])

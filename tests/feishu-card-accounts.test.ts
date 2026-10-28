@@ -167,3 +167,52 @@ test('two stores claim one active card once even when callback event IDs differ'
     assert.equal(rows(second,'feishu_read_receipts').length,1);
   } finally { second.close(); f.cleanup(); }
 });
+
+test('legacy and unknown list views, action targets and read backs roundtrip across reopening', async () => {
+  const f = await fixture();
+  let accounts = f.accounts;
+  try {
+    for (const list of [
+      { kind: 'list' as const, domainId: null, query: '', sort: 'elapsed' as const, page: 1 },
+      { kind: 'list' as const, domainId: 'Math', query: 'bounded search', sort: 'title' as const, page: 2, timeState: 'unknown' as const },
+    ]) {
+      const read = { kind: 'read' as const, reference: 'a'.repeat(12), page: 1, revision: 'b'.repeat(12), back: list };
+      for (const view of [list, read]) {
+        const input = { ...draft, view, actions: [{ id: 'a0', target: list }, { id: 'a1', target: read }] };
+        const card = accounts.createFeishuCardDraft(actor,f.auth,input)!;
+        assert.ok(card); assert.deepEqual(card.view,view); assert.deepEqual(card.actions,input.actions);
+        assert.ok(accounts.activateFeishuCard(card.id,actor,f.auth,{messageId:'platform_message',chatId:'private_chat'}));
+        accounts.close(); accounts = new Accounts(f.options);
+        const stored = accounts.getFeishuCardForAction(action(card))!;
+        assert.ok(stored); assert.deepEqual(stored.view,view); assert.deepEqual(stored.actions,input.actions);
+        assert.deepEqual(accounts.claimFeishuCardAction(action(card),f.auth,expected(card))!.target,list);
+      }
+    }
+  } finally { accounts.close(); f.cleanup(); }
+});
+
+test('list timeState accepts only absent or unknown across views, actions and read backs', async () => {
+  const f = await fixture();
+  try {
+    const list = { kind: 'list', domainId: null, query: '', sort: 'elapsed', page: 1 };
+    const read = (back: unknown) => ({ kind: 'read', reference: 'a'.repeat(12), page: 1, revision: 'b'.repeat(12), back });
+    const invalid = [
+      ...[undefined,null,'known','',false,0,{},[]].map(timeState=>({ ...list,timeState })),
+      { ...list,timeState:'unknown',extra:'rejected' },
+      { ...list,extra:'rejected' },
+    ];
+    for (const value of invalid) {
+      for (const input of [
+        { ...draft,view:value },
+        { ...draft,actions:[{ id:'a0',target:value }] },
+        { ...draft,view:read(value) },
+        { ...draft,actions:[{ id:'a0',target:read(value) }] },
+      ]) assert.equal(f.accounts.createFeishuCardDraft(actor,f.auth,input as FeishuCardDraftInput),null);
+    }
+    for(const kind of ['help','domains','due']) {
+      const view = kind === 'help' ? { kind } : kind === 'domains' ? { kind,page:1 } : { kind,domainId:null,limit:3 };
+      assert.equal(f.accounts.createFeishuCardDraft(actor,f.auth,{ ...draft,view:{...view,timeState:'unknown'} } as FeishuCardDraftInput),null);
+    }
+    assert.equal(rows(f.accounts).length,0);
+  } finally { f.cleanup(); }
+});

@@ -435,3 +435,64 @@ test('card activity covers only actual page rows and the valid body page, withou
   assert.equal(render({ kind: 'help' }, context, plan()).activity, undefined);
   assert.equal(render({ ...view, page: 10000 }, context, plan()).activity, undefined);
 });
+
+test('unknown time filter intersects domain and alias search without admitting missing or other time states', () => {
+  const names = ['unknown', 'missing', 'estimated', 'pending', 'retained', 'recent', 'other-domain', 'other-query'];
+  const input = snapshot(names.map(id => node(id, id === 'other-domain' ? 'Elsewhere' : 'Math')));
+  for (const concept of input.concepts) concept.aliases = [concept.id === 'other-query' ? 'different' : 'ＡＧＥＮＴ'];
+  for (const id of ['unknown', 'other-domain', 'other-query']) input.states[id] = { ...input.states[id], status: 'unknown', anchor: null, elapsedDays: null, decay: null };
+  delete input.states.missing;
+  input.states.estimated.anchor!.kind = 'estimated';
+  input.states.pending.status = 'pending'; input.states.retained.status = 'retained'; input.states.recent.status = 'recent';
+  const before = structuredClone(input);
+  const view = { ...listView, domainId: 'Math', query: 'agent', timeState: 'unknown' } as const;
+  const rendered = render(view, readContext(input), plan());
+  const reads = rendered.actions.filter(action => action.target.kind === 'read');
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].target.kind === 'read' && reads[0].target.reference, sha('unknown').slice(0, 12));
+  assert.match(text(rendered), /1 个节点。筛选：尚无时间记录/);
+  assert.ok(!rendered.actions.some(action => action.target.kind === 'due'));
+  assert.deepEqual(rendered.activity?.request, { kind: 'query', resultCount: 1 });
+  assert.deepEqual(input, before);
+  const empty = render({ ...view, query: 'no match' }, readContext(input), plan());
+  assert.match(text(empty), /0 个节点。筛选：尚无时间记录/);
+  assert.match(text(empty), /没有匹配节点/);
+  assert.equal(empty.actions.some(action => action.target.kind === 'read'), false);
+  assert.match(text(render({ kind: 'help' }, readContext(input), plan())), /知识 卡片 未建起点/);
+});
+
+test('unknown filter paging, read body, original back, sorting and toggles preserve the complete selection', () => {
+  const input = snapshot(Array.from({ length: 13 }, (_, index) => {
+    const concept = node(`unknown-${String(index).padStart(2, '0')}`, 'AI models');
+    concept.aliases = ['agent']; concept.body = 'Synthetic full reading body. '.repeat(400); return concept;
+  }));
+  for (const concept of input.concepts) input.states[concept.id] = { ...input.states[concept.id], status: 'unknown', anchor: null, elapsedDays: null, decay: null };
+  const context = readContext(input);
+  const original = { ...listView, domainId: 'AI models', query: 'agent', sort: 'title', page: 2 } as const;
+  const normal = render(original, context, plan());
+  assert.deepEqual(cardButtons(card(normal)).map(button => button.text.content),
+    ['阅读 6', '阅读 7', '阅读 8', '阅读 9', '阅读 10', '上一页', '下一页', '全部节点', '知识领域', '按时间排序', '尚无时间记录', '本范围待复习']);
+  const enable = normal.actions.find(action => action.target.kind === 'list' && action.target.timeState === 'unknown')!;
+  assert.deepEqual(enable.target, { ...original, page: 1, timeState: 'unknown' });
+  const first = render(enable.target as FeishuBrowseView, context, plan());
+  const view = next(first, 'list', 2) as Extract<FeishuBrowseView, { kind: 'list' }>;
+  assert.deepEqual(view, { ...original, timeState: 'unknown' });
+  const second = render(view, context, plan()); checkBudgets(view, second);
+  assert.deepEqual(next(second, 'list', 3), { ...view, page: 3 });
+  const sort = second.actions.find(action => action.target.kind === 'list' && action.target.sort === 'elapsed'
+    && action.target.domainId === view.domainId && action.target.query === view.query
+    && action.target.timeState === view.timeState && action.target.page === 1)!;
+  assert.deepEqual(sort.target, { ...view, page: 1, sort: 'elapsed' });
+  const toggle = second.actions.find(action => action.target.kind === 'list' && action.target.domainId === 'AI models' && !Object.hasOwn(action.target, 'timeState') && action.target.sort === 'title')!;
+  assert.deepEqual(toggle.target, { ...original, page: 1 });
+  assert.equal(Object.hasOwn(toggle.target, 'timeState'), false);
+  const all = second.actions.find(action => JSON.stringify(action.target) === JSON.stringify(listView)); assert.ok(all);
+  assert.ok(!second.actions.some(action => action.target.kind === 'due'));
+  const read = second.actions.find(action => action.target.kind === 'read')!.target as Extract<FeishuBrowseView, { kind: 'read' }>;
+  const body = render(read, context, plan());
+  const bodyNext = next(body, 'read', 2) as Extract<FeishuBrowseView, { kind: 'read' }>;
+  assert.deepEqual(bodyNext.back, view);
+  const nextBody = render(bodyNext, context, plan()); checkBudgets(bodyNext, nextBody);
+  assert.ok(nextBody.actions.some(action => JSON.stringify(action.target) === JSON.stringify(view)));
+  assert.deepEqual(next(nextBody, 'read', 1), read);
+});

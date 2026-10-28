@@ -201,9 +201,29 @@ function collectionControls(view: Extract<FeishuCardView, { kind: 'list' | 'doma
   if (view.kind === 'list') {
     controls.push({ caption: '知识领域', target: { kind: 'domains', page: 1 } },
       { caption: view.sort === 'elapsed' ? '按名称排序' : '按时间排序', target: { ...view, sort: view.sort === 'elapsed' ? 'title' : 'elapsed', page: 1 } },
-      { caption: '本范围待复习', target: { kind: 'due', domainId: view.domainId, limit: 3 } });
+    );
+    if (view.timeState === 'unknown') {
+      const { timeState: _removed, ...unfiltered } = view;
+      controls.push({ caption: '取消时间筛选', target: { ...unfiltered, page: 1 } });
+    } else {
+      controls.push({ caption: '尚无时间记录', target: { ...view, page: 1, timeState: 'unknown' } },
+        { caption: '本范围待复习', target: { kind: 'due', domainId: view.domainId, limit: 3 } });
+    }
   } else controls.push({ caption: '全部待复习', target: { kind: 'due', domainId: null, limit: 3 } });
   return controls;
+}
+
+/** Keep required browsing controls while dropping optional shortcuts to fit trusted metadata. */
+function collectionPlan(view: Extract<FeishuCardView, { kind: 'list' | 'domains' }>, page: number, pages: number,
+  title: string, content: string, rows: CardRow[], subtitle?: string): FeishuCardViewPlan {
+  let controls = collectionControls(view, page, pages);
+  let plan = createPlan(title, content, rows, controls, subtitle);
+  for (const kind of ['due', 'domains'] as const) {
+    if (fitsPlan(view, plan)) break;
+    controls = controls.filter(control => control.target.kind !== kind);
+    plan = createPlan(title, content, rows, controls, subtitle);
+  }
+  return plan;
 }
 
 /** Transient card body plus fixed navigation targets; no body or account claims are persisted. */
@@ -215,7 +235,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
   const toRead = (id: string, revision: string, back: Extract<FeishuCardView, { kind: 'list' | 'due' }>): FeishuCardView => ({
     kind: 'read', reference: references.get(id)!, page: 1, revision: hash(revision).slice(0, 12), back,
   });
-  if (view.kind === 'help') return errorPlan('知识 卡片：全部节点\n知识 卡片 领域 ［页码］\n知识 卡片 搜索 关键词\n知识 卡片 列表 域="目录域" 查="关键词" 序=时间|名称 页=1\n知识 待复习 ［域="目录域"］ ［量=3|5］\n知识 复习：单条脑中回忆\n知识 复习 3 或 知识 复习 5：小批次脑中回忆\n知识 继续复习 / 暂停复习 / 结束复习\n知识 重温状态 / 知识 重试重温\n时间状态仅作管理提示，不代表实测记忆能力。');
+  if (view.kind === 'help') return errorPlan('知识 卡片：全部节点\n知识 卡片 未建起点\n知识 卡片 领域 ［页码］\n知识 卡片 搜索 关键词\n知识 卡片 列表 域="目录域" 查="关键词" 序=时间|名称 页=1\n知识 待复习 ［域="目录域"］ ［量=3|5］\n知识 复习：单条脑中回忆\n知识 复习 3 或 知识 复习 5：小批次脑中回忆\n知识 继续复习 / 暂停复习 / 结束复习\n知识 重温状态 / 知识 重试重温\n时间状态仅作管理提示，不代表实测记忆能力。');
   if (view.kind === 'read') {
     if (!/^[a-f0-9]{12,64}$/.test(view.reference) || !/^[a-f0-9]{12}$/.test(view.revision)) return errorPlan('节点引用或分页标识失效，请重新列表或搜索。');
     const matches = digests.filter((entry) => entry.digest.startsWith(view.reference));
@@ -268,6 +288,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
   const isDomains = view.kind === 'domains';
   const normalizedQuery = isDomains ? '' : view.query.normalize('NFKC').toLocaleLowerCase();
   const concepts = isDomains ? [] : context.concepts.filter((concept) => (view.domainId === null || domainIdOf(concept) === view.domainId)
+    && (view.timeState !== 'unknown' || context.states[concept.id]?.status === 'unknown')
     && (!normalizedQuery || [concept.title, ...concept.aliases].some((value) => value.normalize('NFKC').toLocaleLowerCase().includes(normalizedQuery))));
   if (!isDomains) concepts.sort((a, b) => (view.sort === 'title' ? a.title.localeCompare(b.title, 'zh-Hans-CN') : elapsedValue(context, b.id) - elapsedValue(context, a.id)) || a.id.localeCompare(b.id));
   const domains = isDomains ? listDomains({ concepts: [...context.concepts], links: [], source: { name: '', mode: 'local', conceptCount: context.concepts.length, limit: context.concepts.length, diagnostics: [] } }) : [];
@@ -287,14 +308,18 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
     let current = groups.at(-1)!;
     const probeView = { ...view, page: 100000 };
     const proposed = [...current, index];
-    const probe = createPlan('知识卡片 · 第 100000/100000 页', '时间状态仅作管理提示。', makeRows(proposed, probeView), collectionControls(probeView, 2, 3));
-    if (current.length >= 5 || !fitsPlan(probeView, probe)) { groups.push([]); current = groups.at(-1)!; }
+    const probe = collectionPlan(probeView, 2, 3, '知识卡片 · 第 100000/100000 页', '时间状态仅作管理提示。', makeRows(proposed, probeView));
+    if (current.length && (current.length >= 5 || !fitsPlan(probeView, probe))) {
+      const single = collectionPlan(probeView, 2, 3, '知识卡片 · 第 100000/100000 页', '时间状态仅作管理提示。', makeRows([index], probeView));
+      if (!fitsPlan(probeView, single)) return errorPlan('当前导航参数超过展示限制，请重新列表或搜索。');
+      groups.push([]); current = groups.at(-1)!;
+    } else if (!fitsPlan(probeView, probe)) return errorPlan('当前导航参数超过展示限制，请重新列表或搜索。');
     current.push(index);
   }
   if (view.page < 1 || view.page > groups.length) return errorPlan('页码超出范围，请重新进入知识卡片或领域。');
   const rows = makeRows(groups[view.page - 1], view);
-  const plan = createPlan(`${isDomains ? '知识领域' : '知识列表'} · ${view.page}/${groups.length} 页`,
-    `${count} ${isDomains ? '个领域' : '个节点'}。时间状态仅作管理提示，不代表实测记忆能力。${rows.length ? '' : '\n没有匹配节点。'}`,
-    rows, collectionControls(view, view.page, groups.length), isDomains ? '选择领域，浏览你的知识' : '知识浏览 · 时间状态仅作管理提示');
+  const plan = collectionPlan(view, view.page, groups.length, `${isDomains ? '知识领域' : '知识列表'} · ${view.page}/${groups.length} 页`,
+    `${count} ${isDomains ? '个领域' : '个节点'}。${!isDomains && view.timeState === 'unknown' ? '筛选：尚无时间记录。' : ''}时间状态仅作管理提示，不代表实测记忆能力。${rows.length ? '' : '\n没有匹配节点。'}`,
+    rows, isDomains ? '选择领域，浏览你的知识' : '知识浏览 · 时间状态仅作管理提示');
   return fitsPlan(view, plan) ? { ...plan, ...(!isDomains ? { activity: { coverage: 'results' as const, refs: groups[view.page - 1].map((index) => feishuActivityReference(concepts[index], 'result')), request: { kind: 'query' as const, resultCount: concepts.length } } } : {}) } : errorPlan('当前导航参数超过展示限制，请重新列表或搜索。');
 }
