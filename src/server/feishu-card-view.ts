@@ -9,6 +9,8 @@ import { cardButton, cardButtonRows, cardDivider, cardInfoColumns, cardMarkdown,
 import { buildFeishuReadReferences, type FeishuReadContext } from './feishu-read-view.js';
 import { type FeishuCardActionDefinition, type FeishuCardPayload, type FeishuCardView, type FeishuBrowseView } from '../shared/feishu-cards.js';
 import { bodyChunks, safeMarkdown } from './feishu-body-text.js';
+import { extractFeishuExternalReferences, type FeishuExternalReferences } from './feishu-external-references.js';
+import { withExternalReferenceBudget } from './feishu-reference-cards.js';
 export { bodyChunks, safeMarkdown } from './feishu-body-text.js';
 
 export interface FeishuReviewCandidates {
@@ -60,7 +62,7 @@ export interface FeishuCardViewPlan {
   build: (cardId: string) => FeishuCardPayload;
 }
 
-const READ_ONLY = '浏览不扣复习预算、不更新学习或记忆。明确确认重温仅更新时间，不代表自评。只有最新卡可操作；点击后请看新卡，未收到新卡时重新发送入口命令。';
+const READ_ONLY = '浏览不扣复习预算、不更新学习或记忆。明确确认重温仅更新时间，不代表自评。导航和学习操作仅限最新卡；操作后请看新卡，未收到时重新发送入口命令。外部参考按钮直接打开原站。';
 const DEFAULT_LIST = { kind: 'list', domainId: null, query: '', sort: 'elapsed', page: 1 } as const;
 const STATES = { unknown: '尚无时间锚点', recent: '近期时间记录', revisit: '建议重温', stale: '时间记录较久', pending: '版本或时间待确认', retained: '人工长期保持' };
 function hash(value: string) { return createHash('sha256').update(value).digest('hex'); }
@@ -109,12 +111,13 @@ interface ReadCardPresentation {
   page: number;
   pages: number;
   body: string;
+  references: FeishuExternalReferences;
 }
 
 /** Read layout receives explicit fields; content and navigation remain independent. */
 function createReadPlan(read: ReadCardPresentation, controls: CardControl[]): FeishuCardViewPlan {
   const actions = controls.map((control, index) => ({ id: `a${index}`, target: control.target }));
-  return { actions, build: (cardId) => {
+  return { actions, build: withExternalReferenceBudget(read.references, (cardId, references) => {
     const button = (control: CardControl) => cardButton(cardId, actions[controls.indexOf(control)].id,
       metadata(control.caption, 80), control.target.kind === 'read' ? 'primary' : 'default');
     const pagers = controls.filter(control => control.target.kind === 'read');
@@ -128,12 +131,13 @@ function createReadPlan(read: ReadCardPresentation, controls: CardControl[]): Fe
       cardMarkdown(`最近确认重温：${read.confirmed}`, 'notation'),
       ...cardButtonRows(pagers.map(button)),
       cardMarkdown(read.body || '（正文为空）', 'normal'),
+      ...references,
       ...back.flatMap(control => cardButtonRows([button(control)])),
-      cardMarkdown('公式以可读文字展示；复杂公式保留源码。附件/链接以文字展示，Mermaid 不渲染。', 'notation'),
+      cardMarkdown('公式以可读文字展示；复杂公式保留源码。外部参考可主动打开，附件及其他链接保留文字，Mermaid 不渲染。', 'notation'),
       cardMarkdown(READ_ONLY, 'notation'),
     ];
     return styledFeishuCard({ title: '知识阅读', subtitle: `第 ${read.page}/${read.pages} 页`, elements });
-  } };
+  }) };
 }
 
 function fitsPlan(view: FeishuCardView, plan: FeishuCardViewPlan): boolean {
@@ -248,7 +252,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
     controls.push({ caption: view.back.kind === 'due' ? '返回原待复习' : '返回原列表', target: view.back });
     const plan = createReadPlan({ title: concept.title, domain: domainIdOf(concept),
       time: timeText(context, concept.id), confirmed: confirmed(reviews, concept.id),
-      page: view.page, pages: chunks.length, body: chunks[view.page - 1] }, controls);
+      page: view.page, pages: chunks.length, body: chunks[view.page - 1], references: extractFeishuExternalReferences(concept.body) }, controls);
     return fitsPlan(view, plan) ? { ...plan, ...(concept.body.trim() ? { activity: { coverage: 'body-page' as const, refs: [feishuActivityReference(concept, 'body')], page: view.page, pageCount: chunks.length, request: { kind: 'selected' as const } } } : {}) } : errorPlan('当前正文或导航参数超过展示限制，请重新列表或搜索。');
   }
   if (view.kind === 'due') {

@@ -5,6 +5,8 @@ import type { FeishuReviewOperation, FeishuReviewSession, FeishuReviewTarget } f
 import { feishuReviewCurrentOperations } from '../shared/feishu-review.js';
 import { bodyChunks, metadata } from './feishu-card-view.js';
 import { cardButton, cardButtonRows, cardDivider, cardMarkdown, styledFeishuCard, type FeishuCardTheme } from './feishu-card-style.js';
+import { extractFeishuExternalReferences } from './feishu-external-references.js';
+import { withExternalReferenceBudget } from './feishu-reference-cards.js';
 
 export interface FeishuReviewRenderInput {
   session: FeishuReviewSession | null;
@@ -14,7 +16,7 @@ export interface FeishuReviewRenderInput {
   dailyBudgetPaused?: boolean;
 }
 interface Control { caption: string; target: FeishuCardView }
-const FOOTER = '脑中回忆为自报，不记录原答，不计入独立成功或信心校准。阅读和脑中自报均不会更新记忆时间；只有明确确认重温才更新锚点。仅最新卡可操作，未收到新卡请发送“知识 继续复习”。';
+const FOOTER = '脑中回忆为自报，不记录原答，不计入独立成功或信心校准。阅读和脑中自报均不会更新记忆时间；只有明确确认重温才更新锚点。复习操作仅限最新卡，未收到新卡请发送“知识 继续复习”。外部参考按钮直接打开原站。';
 
 /** Pure transient rendering. Only the local transition handler may change state. */
 export function planFeishuReviewView(input: FeishuReviewRenderInput): {
@@ -132,7 +134,8 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
   const subtitle = batch
     ? session?.state.phase === 'finished' ? `实际 ${batch.items.length} 项 · 本轮已结束` : `第 ${batch.cursor + 1}/${batch.items.length} 项 · 固定队列`
     : '少量脑中回忆 · 自主确认重温';
-  const build = (cardId: string): FeishuCardPayload => {
+  const references = layout === 'revealed' ? extractFeishuExternalReferences(concept!.body) : { items: [], hasMore: false };
+  const build = withExternalReferenceBudget(references, (cardId, referenceElements): FeishuCardPayload => {
     const elements: ReturnType<typeof cardMarkdown>[] = [];
     // Callback IDs stay bound to the original action order, independently of visual grouping.
     const buttons = controls.map((control, index) => ({
@@ -160,9 +163,10 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
       elements.push(cardDivider(), cardMarkdown(content, 'notation'));
       showControls(buttons.filter(entry => hasVerb(entry, ['show'])));
       elements.push(cardMarkdown(body!, 'normal', 'left'));
+      elements.push(...referenceElements);
       elements.push(cardDivider());
       showControls(buttons.filter(entry => !hasVerb(entry, ['show', 'rate-clear', 'rate-partial', 'rate-blank'])));
-      elements.push(cardMarkdown('公式以可读文字展示；复杂公式保留源码。附件/链接以文字展示，Mermaid 不渲染。', 'notation'));
+      elements.push(cardMarkdown('公式以可读文字展示；复杂公式保留源码。外部参考可主动打开，附件及其他链接保留文字，Mermaid 不渲染。', 'notation'));
     } else {
       elements.push(cardMarkdown(content));
       if (buttons.length) elements.push(cardDivider());
@@ -172,7 +176,7 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
     if (recoveryNote) elements.push(cardMarkdown(recoveryNote, 'notation'));
     elements.push(cardDivider(), cardMarkdown(FOOTER, 'notation'));
     return styledFeishuCard({ title: step, subtitle, template, elements });
-  };
+  });
   return { view, actions, build, ...(activity ? { activity } : {}) };
 }
 

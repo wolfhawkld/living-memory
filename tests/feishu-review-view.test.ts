@@ -303,7 +303,8 @@ test('review visual tones identify pending, unavailable, paused and conflict wit
     const card = render(value).build('c'.repeat(64));
     assert.equal((card.header as { template: string }).template, expected);
     assert.doesNotMatch(JSON.stringify(card), /BODY_SECRET|SUMMARY_SECRET/);
-    assert.match(JSON.stringify(card), /仅最新卡可操作/);
+    assert.match(JSON.stringify(card), /复习操作仅限最新卡/);
+    assert.match(JSON.stringify(card), /外部参考按钮直接打开原站/);
   }
 });
 
@@ -456,6 +457,81 @@ test('front, paused, changed, expired, pending and conflict views hide raw and c
     const plan = render(value);
     assert.doesNotMatch(JSON.stringify(plan.build('c'.repeat(64))), /HIDDENNUM|HIDDENDEN|HIDDEN_SUMMARY|\\frac|\\xi|ξ|公式源码/);
     assert.notEqual(plan.activity?.coverage, 'body-page');
+    assert.deepEqual(value, before);
+  }
+});
+
+function externalReferenceButtons(payload: FeishuCardPayload) {
+  return cardButtons(payload).filter(button => button.behaviors?.some((behavior: { type: string }) => behavior.type === 'open_url'));
+}
+
+test('ready revealed reviews and reading expose the same external references after each complete body page', () => {
+  for (const maximum of [false, true]) {
+    const value = input(); value.session!.state.phase = 'revealed';
+    value.session!.state.domainId = maximum ? '\u0001'.repeat(512) : 'Math';
+    const urls = [1, 2, 3].map(index => {
+      const prefix = `https://visible-${index}.example.org/`;
+      return maximum ? prefix + 'a'.repeat(1024 - Buffer.byteLength(prefix)) : prefix + `chapter-${index}`;
+    });
+    const body = urls.map((url, index) => `[EXTERNAL_LABEL_${index + 1}](${url})`).join('\n\n')
+      + `\n\n[重复](${urls[0]})\n\n` + '合成正文😀 "\\\u0001\n'.repeat(400) + '完整结尾。';
+    value.concept = { ...concept, body };
+    const context = { concepts: [value.concept], states: {}, anchors: [], asOf: '2026-10-07T00:00:00Z' };
+    const preferences = { sourceId: 'synthetic', asOf: context.asOf, timeZone: 'UTC', dayKey: '2026-10-07', plan: { revision: 1, dailyBudget: 5, concepts: {} }, completedConceptIds: [] };
+    const back = { kind: 'list', domainId: '中'.repeat(maximum ? 512 : 1), query: '概'.repeat(maximum ? 120 : 1), sort: 'reviewed', timeState: 'unknown', page: 2 } as const;
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 12);
+    let pages = 0; let joined = '';
+    while (true) {
+      const page = value.session!.state.page;
+      const review = render(value); const payload = review.build('c'.repeat(64));
+      const readView = { kind: 'read', reference: hash(concept.id), revision: hash(concept.source.revision), page, back } as const;
+      const reading = renderRead(readView, context, preferences); const readPayload = reading.build('c'.repeat(64));
+      formulaBudgets(payload); formulaBudgets(readPayload);
+      assert.equal(formulaBody(payload), formulaBody(readPayload)); joined += formulaBody(payload); pages++;
+      assert.deepEqual(externalReferenceButtons(payload), externalReferenceButtons(readPayload));
+      assert.deepEqual(externalReferenceButtons(payload), urls.map((href, index) => ({ tag: 'button', text: { tag: 'plain_text', content: `打开外部参考 ${index + 1}` }, type: 'default', size: 'medium', width: 'fill', behaviors: [{ type: 'open_url', default_url: href }] })));
+      const callbacks = cardButtons(payload).filter(button => button.behaviors?.some((behavior: { type: string }) => behavior.type === 'callback'));
+      assert.equal(cardButtons(payload).length, callbacks.length + 3);
+      assert.equal(callbacks.length, review.actions.length);
+      assert.deepEqual(callbacks.map(button => button.behaviors[0].value.actionId).sort(), review.actions.map(action => action.id).sort());
+      assert.ok(Buffer.byteLength(JSON.stringify({ view: review.view, actions: review.actions })) <= 12 * 1024);
+      assert.ok(review.actions.length <= 16);
+      assert.doesNotMatch(JSON.stringify({ view: review.view, actions: review.actions }), /https:|EXTERNAL_LABEL|example\.org/);
+      const elements = cardElements(payload); const bodyIndex = elements.findIndex(element => element.tag === 'markdown' && element.text_size === 'normal' && element.text_align === 'left');
+      for (const button of externalReferenceButtons(payload)) assert.ok(elements.indexOf(button) > bodyIndex);
+      const panel = elements.filter((element, index) => index > bodyIndex && element.tag === 'markdown').map(element => element.content).join('\n');
+      assert.match(panel, /外部参考/); assert.match(panel, /EXTERNAL_LABEL_1/); assert.match(panel, /visible-1\.example\.org/);
+      if (page > 1) assert.ok(review.actions.some(action => action.target.kind === 'review' && action.target.verb === 'show' && action.target.page === page - 1));
+      const forward = review.actions.find(action => action.target.kind === 'review' && action.target.verb === 'show' && action.target.page === page + 1);
+      if (!forward || forward.target.kind !== 'review') break;
+      value.session!.state.page = forward.target.page;
+      assert.ok(pages <= 15, 'reference-bearing revealed traversal terminates');
+    }
+    assert.ok(pages > 2);
+    assert.equal(joined, body.replaceAll('<', '＜').replaceAll('>', '＞').replaceAll('[', '［').replaceAll(']', '］'));
+  }
+});
+
+test('all concealed or unavailable review states omit external reference labels, hosts and URL controls', () => {
+  const cases: FeishuReviewRenderInput[] = [];
+  const front = input(); cases.push(front);
+  const paused = input(); paused.session!.state.phase = 'revealed'; paused.session!.state.paused = true; cases.push(paused);
+  for (const availability of ['source-changed', 'expired', 'ineligible', 'no-candidate', 'no-session'] as const) {
+    const unavailable = input(); unavailable.session!.state.phase = 'revealed'; unavailable.availability = availability; cases.push(unavailable);
+  }
+  for (const status of ['pending', 'conflict'] as const) {
+    const blocked = input(); blocked.session!.state.phase = 'revealed'; blocked.operations = [operation(status)]; cases.push(blocked);
+  }
+  for (const phase of ['saved', 'finished'] as const) {
+    const ended = input(); ended.session!.state.phase = phase; ended.operations = [operation('applied')]; cases.push(ended);
+  }
+  for (const page of [0, 100000]) { const invalid = input(); invalid.session!.state.phase = 'revealed'; invalid.session!.state.page = page; cases.push(invalid); }
+  for (const value of cases) {
+    value.concept = { ...concept, body: '[HIDDEN_EXTERNAL_LABEL](https://hidden-reference.example.org/secret-target)' };
+    const before = structuredClone(value); const plan = render(value); const payload = plan.build('c'.repeat(64));
+    assert.equal(externalReferenceButtons(payload).length, 0);
+    assert.doesNotMatch(JSON.stringify(payload), /HIDDEN_EXTERNAL_LABEL|hidden-reference|secret-target|打开外部参考/);
+    assert.doesNotMatch(JSON.stringify(plan.actions), /HIDDEN_EXTERNAL_LABEL|hidden-reference|secret-target/);
     assert.deepEqual(value, before);
   }
 });

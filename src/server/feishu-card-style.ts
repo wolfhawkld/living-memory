@@ -8,6 +8,12 @@ export interface NativeCardButton extends NativeCardElement {
   text: { tag: 'plain_text'; content: string };
   behaviors: Array<{ type: 'callback'; value: { kind: typeof FEISHU_CARD_NAV_KIND; cardId: string; actionId: string } }>;
 }
+export interface NativeCardUrlButton extends NativeCardElement {
+  tag: 'button';
+  type: 'default';
+  text: { tag: 'plain_text'; content: string };
+  behaviors: Array<{ type: 'open_url'; default_url: string }>;
+}
 export type FeishuCardTheme = 'blue' | 'turquoise' | 'green' | 'orange' | 'red' | 'grey';
 
 export function cardMarkdown(content: string,
@@ -35,6 +41,12 @@ export function cardButton(cardId: string, actionId: string, caption: string,
   type: NativeCardButton['type'] = 'default'): NativeCardButton {
   return { tag: 'button', text: { tag: 'plain_text', content: caption }, type, size: 'medium', width: 'fill',
     behaviors: [{ type: 'callback', value: { kind: FEISHU_CARD_NAV_KIND, cardId, actionId } }] };
+}
+
+/** The caller supplies an already validated external URL; this is not a callback action. */
+export function cardUrlButton(href: string, caption: string): NativeCardUrlButton {
+  return { tag: 'button', text: { tag: 'plain_text', content: caption }, type: 'default', size: 'medium', width: 'fill',
+    behaviors: [{ type: 'open_url', default_url: href }] };
 }
 
 /** Long captions and the primary action get a full row; short actions stay adjacent. */

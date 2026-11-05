@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import { bodyChunks } from '../src/server/feishu-body-text.js';
+import { extractFeishuExternalReferences } from '../src/server/feishu-external-references.js';
+import { withExternalReferenceBudget } from '../src/server/feishu-reference-cards.js';
+import { cardMarkdown, styledFeishuCard } from '../src/server/feishu-card-style.js';
+import { cardButtons } from './helpers/feishu-card-elements.js';
 import { createFeishuSdkDriverFactory, FEISHU_HTTP_TIMEOUT_MS, type FeishuDriverCallbacks, type FeishuSendCard } from '../src/integrations/feishu-sdk-driver.js';
 
 const callbacks: FeishuDriverCallbacks = { onReady() {}, onError() {}, onReconnecting() {}, onReconnected() {},
@@ -85,6 +89,28 @@ test('real SDK preserves readable math and complete source fallback through doub
       assert.equal(JSON.parse(request.data.content).body.elements[0].content, content);
     }
     assert.equal(f.calls.filter(call => call.method === 'request').length, pages.length);
+  } finally { await f.driver.close(); }
+});
+
+test('real SDK sends native URL behaviors unchanged and does not request referenced websites', async () => {
+  const references = extractFeishuExternalReferences('[HTML](https://docs.example.org/topic.html?x=1&amp;y=2#section)');
+  const outgoing = withExternalReferenceBudget(references, (_id, elements) =>
+    styledFeishuCard({ title: 'Synthetic reference', elements: [cardMarkdown('Synthetic body'), ...elements] }))('c'.repeat(64));
+  const f = await fixture();
+  try {
+    assert.equal((await f.driver.sendCard!({ ...input, card: outgoing })).status, 'platform-accepted');
+    const requests = f.calls.filter(call => call.method === 'request');
+    assert.equal(requests.length, 1);
+    const wire = JSON.parse(JSON.stringify(requests[0].args[0].data));
+    const delivered = JSON.parse(wire.content);
+    assert.deepEqual(delivered, outgoing);
+    const buttons = cardButtons(delivered);
+    assert.equal(buttons.length, 1);
+    assert.deepEqual(buttons[0].behaviors, [{ type: 'open_url', default_url: 'https://docs.example.org/topic.html?x=1&y=2#section' }]);
+    assert.deepEqual(f.calls.map(call => call.method), ['post', 'request']);
+    assert.equal(requests[0].args[0].url, 'https://open.feishu.cn/open-apis/im/v1/messages');
+    assert.doesNotMatch(String(f.calls[0].args[0]), /docs\.example/);
+    assert.ok(Buffer.byteLength(JSON.stringify(wire)) <= 24 * 1024);
   } finally { await f.driver.close(); }
 });
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { cardButtons, cardElements } from './helpers/feishu-card-elements.js';
 import { test } from 'node:test';
 import { selectFeishuReviewCandidates as select } from '../src/server/feishu-card-view.js';
-import { planFeishuCardView as render, type FeishuCardViewPlan } from '../src/server/feishu-card-view.js';
+import { bodyChunks, planFeishuCardView as render, type FeishuCardViewPlan } from '../src/server/feishu-card-view.js';
 import { createHash } from 'node:crypto';
 import type { FeishuBrowseView } from '../src/shared/feishu-cards.js';
 import type { FeishuReadContext } from '../src/server/feishu-read-view.js';
@@ -147,7 +147,8 @@ test('V2 cards use callback behaviors with only opaque navigation identifiers an
     assert.deepEqual(Object.keys(rendered.actions[index]).sort(), ['id', 'target']);
   });
   assert.doesNotMatch(JSON.stringify(buttons), /account|userId|openId|tenantKey|sourceRevision|domainId|query/);
-  assert.match(text(rendered), /只有最新卡可操作/);
+  assert.match(text(rendered), /导航和学习操作仅限最新卡/);
+  assert.match(text(rendered), /外部参考按钮直接打开原站/);
   assert.match(text(rendered), /不扣复习预算/);
 });
 
@@ -679,4 +680,84 @@ test('reading keeps fitting formulas atomic and oversized formula source complet
   assert.ok(nonFallback.startsWith(prefix));
   assert.ok(nonFallback.endsWith('\n\n末尾 ＜at id=all＞ ［危险］(javascript:bad) 😀'));
   assert.deepEqual(context, before);
+});
+
+function externalButtons(rendered: FeishuCardViewPlan) {
+  return cardButtons(card(rendered)).filter(button => button.behaviors?.some((behavior: { type: string }) => behavior.type === 'open_url'));
+}
+function assertCallbackActions(rendered: FeishuCardViewPlan) {
+  const callbacks = cardButtons(card(rendered)).filter(button => button.behaviors?.some((behavior: { type: string }) => behavior.type === 'callback'));
+  assert.equal(callbacks.length, rendered.actions.length);
+  assert.deepEqual(callbacks.map(button => button.behaviors[0].value.actionId).sort(), rendered.actions.map(action => action.id).sort());
+  for (const button of callbacks) assert.deepEqual(button.behaviors, [{ type: 'callback', value: { kind: 'lm.nav.v1', cardId: 'synthetic-card-id', actionId: button.behaviors[0].value.actionId } }]);
+}
+
+test('reading exposes only explicit HTTPS references as separate native URL buttons on every body page', () => {
+  const concept = node('external-reading');
+  const urls = ['https://first.example.org/article?q=1#part', 'https://second.example.org/reference', 'https://third.example.org/book'];
+  concept.body = [
+    '`[代码](https://ignored-code.example.org/)`',
+    '```md\n[围栏](https://ignored-fence.example.org/)\n```',
+    '$[数学](https://ignored-math.example.org/)$',
+    '<span>[HTML](https://ignored-html.example.org/)</span>',
+    '![图片](https://ignored-image.example.org/) https://ignored-bare.example.org/',
+    '[本地](../private.md) [HTTP](http://ignored-http.example.org/) [地址](https://127.0.0.1/) [凭据](https://user:pass@ignored-user.example.org/)',
+    `[看起来像 trusted.invalid](${urls[0]})`,
+    `[重复](${urls[0]}) [名称\\[x\\]][定义]`,
+    `[定义]: ${urls[1]}`,
+    `[第三参考](${urls[2]})`,
+    '[第四参考](https://fourth.example.org/)',
+    '合成分页正文😀'.repeat(750),
+  ].join('\n\n');
+  const context = readContext(snapshot([concept])); const before = structuredClone(context);
+  const back = { ...listView, domainId: 'Math', query: 'external', sort: 'reviewed', timeState: 'unknown', page: 2 } as const;
+  const expectedBodies = bodyChunks(concept.body); const bodies: string[] = [];
+  let view: Extract<FeishuBrowseView, { kind: 'read' }> = { kind: 'read', reference: sha(concept.id).slice(0, 12), revision: sha(concept.source.revision).slice(0, 12), page: 1, back };
+  while (true) {
+    const rendered = render(view, context, plan()); const payload = card(rendered);
+    checkBudgets(view, rendered); checkBodyBudgets(readBody(rendered)); assertCallbackActions(rendered);
+    const buttons = externalButtons(rendered);
+    assert.equal(cardButtons(payload).length, rendered.actions.length + 3, 'URL controls stay visible to the full button traversal');
+    assert.deepEqual(buttons, urls.map((href, index) => ({ tag: 'button', text: { tag: 'plain_text', content: `打开外部参考 ${index + 1}` }, type: 'default', size: 'medium', width: 'fill', behaviors: [{ type: 'open_url', default_url: href }] })));
+    const elements = cardElements(payload); const bodyIndex = elements.findIndex(element => element.tag === 'markdown' && element.text_size === 'normal' && element.text_align === 'left');
+    for (const button of buttons) assert.ok(elements.indexOf(button) > bodyIndex);
+    const panel = elements.filter((element, index) => index > bodyIndex && element.tag === 'markdown').map(element => element.content).join('\n');
+    assert.match(panel, /外部参考/); assert.match(panel, /first\.example\.org/); assert.match(panel, /second\.example\.org/); assert.match(panel, /third\.example\.org/);
+    assert.match(panel, /trusted\.invalid/); assert.match(panel, /名称［x］/);
+    assert.match(panel, /(?:最多|仅|前).*3|数量.*有限|上限/);
+    assert.doesNotMatch(panel, /fourth\.example|ignored-|<at/);
+    assert.doesNotMatch(JSON.stringify(rendered.actions), /https:|example\.org|trusted\.invalid/);
+    assert.ok(rendered.actions.some(action => JSON.stringify(action.target) === JSON.stringify(back)));
+    bodies.push(readBody(rendered));
+    if (view.page > 1) assert.deepEqual(next(rendered, 'read', view.page - 1), { ...view, page: view.page - 1 });
+    const forward = rendered.actions.find(action => action.target.kind === 'read' && action.target.page === view.page + 1);
+    if (!forward || forward.target.kind !== 'read') break;
+    assert.deepEqual(forward.target, { ...view, page: view.page + 1 }); view = forward.target;
+    assert.ok(view.page <= 15, 'reference-bearing reading traversal terminates');
+  }
+  assert.deepEqual(bodies, expectedBodies, 'external references do not replace, duplicate or repaginate the original body');
+  assert.ok(bodies.length > 2);
+  for (const changed of [{ page: 100000 }, { page: 0 }, { revision: '0'.repeat(12) }, { reference: '0'.repeat(12) }]) {
+    const invalid = render({ ...view, ...changed }, context, plan());
+    assert.equal(externalButtons(invalid).length, 0);
+    assert.doesNotMatch(text(invalid), /example\.org|trusted\.invalid|第三参考|打开外部参考/);
+  }
+  assert.deepEqual(context, before);
+});
+
+test('three maximum-length reference URLs fit every reading page with maximum domain and search fields', () => {
+  const domain = '中'.repeat(512); const query = '概'.repeat(120);
+  const concept = node('external-budget', domain);
+  const urls = [1, 2, 3].map(index => { const prefix = `https://long-${index}.example.org/`; return prefix + 'a'.repeat(1024 - Buffer.byteLength(prefix)); });
+  concept.body = urls.map((url, index) => `[长参考 ${index + 1}](${url})`).join('\n\n') + '\n\n' + ('"\\\u0001😀正文\n').repeat(420);
+  const context = readContext(snapshot([concept])); const back = { ...listView, domainId: domain, query, sort: 'reviewed', timeState: 'unknown', page: 100000 } as const;
+  const expected = bodyChunks(concept.body); const actual: string[] = [];
+  for (let page = 1; page <= expected.length; page++) {
+    const view = { kind: 'read', reference: sha(concept.id).slice(0, 12), revision: sha(concept.source.revision).slice(0, 12), page, back } as const;
+    const rendered = render(view, context, plan()); checkBudgets(view, rendered); assertCallbackActions(rendered);
+    assert.deepEqual(externalButtons(rendered).map(button => button.behaviors[0].default_url), urls);
+    assert.ok(rendered.actions.some(action => JSON.stringify(action.target) === JSON.stringify(back)));
+    actual.push(readBody(rendered)); checkBodyBudgets(actual.at(-1)!);
+  }
+  assert.ok(actual.length > 2); assert.deepEqual(actual, expected);
 });

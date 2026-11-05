@@ -470,6 +470,43 @@ test('private v3 reading converts formulas across SDK navigation without changin
   } finally { await c?.connector.stop(); await f.close(); }
 });
 
+test('private v3 reading adds existing HTTPS references without storing URL actions or changing learning', async () => {
+  const f = await fixture({ learningSchemaVersion: 3 }); let c: Awaited<ReturnType<typeof channel>> | undefined;
+  try {
+    const users = await f.users();
+    note(f.root, 'Math', 'ExternalReference', 'OwnerReference', '[owner](https://owner-source.example/private)');
+    note(users.memberRoot, 'Math', 'ExternalReference', 'MemberReference',
+      '[[archive/topic.md]] | [🌐 HTML](https://member-source.example/topic.html?lang=zh#part)\n\n[local](http://127.0.0.1:4318/)');
+    const path = join(users.memberRoot, 'Math', 'ExternalReference.md');
+    const original = readFileSync(path, 'utf8');
+    for (const user of [users.owner, users.member]) {
+      assert.equal((await f.send('/api/refresh', { ...user, method: 'POST', body: {} })).status, 200);
+    }
+    const before = (await f.send('/api/export', users.member)).body;
+    c = await channel(f);
+    await c.message(input('知识 卡片 搜索 Reference', 'external-reference-search'));
+    assert.doesNotMatch(JSON.stringify(c.sent.at(-1)!.card), /OwnerReference|owner-source/);
+    await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '阅读 1'));
+    const reading = c.sent.at(-1)!.card;
+    const urls = cardButtons(reading).filter(item => item.behaviors[0].type === 'open_url');
+    assert.equal(urls.length, 1);
+    assert.deepEqual(urls[0].behaviors, [{ type: 'open_url', default_url: 'https://member-source.example/topic.html?lang=zh#part' }]);
+    assert.doesNotMatch(JSON.stringify(reading), /owner-source/);
+    // Navigation metadata remains the old callback contract, even though the
+    // transient outgoing card now includes a client-side external URL button.
+    const db = new DatabaseSync(join(f.dataDir, 'accounts.sqlite'), { readOnly: true });
+    try {
+      const rows = db.prepare('SELECT * FROM feishu_card_views').all();
+      assert.doesNotMatch(JSON.stringify(rows), /member-source|owner-source|open_url/);
+    } finally { db.close(); }
+    await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '返回原列表'));
+    assert.match(JSON.stringify(c.sent.at(-1)!.card), /MemberReference/);
+    assert.equal(readFileSync(path, 'utf8'), original);
+    const after = (await f.send('/api/export', users.member)).body;
+    for (const key of learningKeys) assert.deepEqual(after[key], before[key], `external reference reading ${key}`);
+  } finally { await c?.connector.stop(); await f.close(); }
+});
+
 test('due cards apply persisted focus, defer, retention, accepted progress and explicit daily time zone', async () => {
   const f = await fixture(); let c: Awaited<ReturnType<typeof channel>> | undefined;
   try {
