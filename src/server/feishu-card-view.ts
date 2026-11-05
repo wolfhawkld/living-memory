@@ -8,6 +8,8 @@ import { domainIdOf } from '../core/domain-view.js';
 import { cardButton, cardButtonRows, cardDivider, cardInfoColumns, cardMarkdown, cardSurface, styledFeishuCard, type NativeCardElement } from './feishu-card-style.js';
 import { buildFeishuReadReferences, type FeishuReadContext } from './feishu-read-view.js';
 import { type FeishuCardActionDefinition, type FeishuCardPayload, type FeishuCardView, type FeishuBrowseView } from '../shared/feishu-cards.js';
+import { bodyChunks, safeMarkdown } from './feishu-body-text.js';
+export { bodyChunks, safeMarkdown } from './feishu-body-text.js';
 
 export interface FeishuReviewCandidates {
   candidates: BriefReviewCandidate[];
@@ -63,18 +65,6 @@ const DEFAULT_LIST = { kind: 'list', domainId: null, query: '', sort: 'elapsed',
 const STATES = { unknown: '尚无时间锚点', recent: '近期时间记录', revisit: '建议重温', stale: '时间记录较久', pending: '版本或时间待确认', retained: '人工长期保持' };
 function hash(value: string) { return createHash('sha256').update(value).digest('hex'); }
 
-/** Deliberately conservative: bracket links/images and XML become inert visible text. */
-export function safeMarkdown(value: string): string {
-  return [...value].map((character) => {
-    if (character === '<') return '＜';
-    if (character === '>') return '＞';
-    if (character === '[') return '［';
-    if (character === ']') return '］';
-    const code = character.codePointAt(0)!;
-    return code >= 0xd800 && code <= 0xdfff ? '\ufffd' : character;
-  }).join('');
-}
-
 export function metadata(value: string, maxBytes = 180): string {
   const safe = safeMarkdown(value).replace(/[\r\n\t]/g, ' ');
   if (Buffer.byteLength(safe) <= maxBytes) return safe;
@@ -85,21 +75,6 @@ export function metadata(value: string, maxBytes = 180): string {
     result += character; size += bytes;
   }
   return `${result}…`;
-}
-
-export function bodyChunks(body: string): string[] {
-  const chunks: string[] = []; let current = ''; let bytes = 0; let wireBytes = 0;
-  const base = Buffer.byteLength(JSON.stringify({ content: JSON.stringify({ text: '' }) }));
-  for (const character of safeMarkdown(body)) {
-    const size = Buffer.byteLength(character);
-    const wireSize = Buffer.byteLength(JSON.stringify({ content: JSON.stringify({ text: character }) })) - base;
-    if (bytes + size > 3000 || wireBytes + wireSize > 7000) {
-      chunks.push(current); current = ''; bytes = 0; wireBytes = 0;
-    }
-    current += character; bytes += size; wireBytes += wireSize;
-  }
-  chunks.push(current);
-  return chunks;
 }
 
 function createPlan(title: string, content: string, rows: CardRow[], controls: CardControl[], subtitle = 'Living Memory · 个人知识'): FeishuCardViewPlan {
@@ -154,7 +129,7 @@ function createReadPlan(read: ReadCardPresentation, controls: CardControl[]): Fe
       ...cardButtonRows(pagers.map(button)),
       cardMarkdown(read.body || '（正文为空）', 'normal'),
       ...back.flatMap(control => cardButtonRows([button(control)])),
-      cardMarkdown('附件/链接以文字展示，Mermaid、公式不保证渲染。', 'notation'),
+      cardMarkdown('公式以可读文字展示；复杂公式保留源码。附件/链接以文字展示，Mermaid 不渲染。', 'notation'),
       cardMarkdown(READ_ONLY, 'notation'),
     ];
     return styledFeishuCard({ title: '知识阅读', subtitle: `第 ${read.page}/${read.pages} 页`, elements });

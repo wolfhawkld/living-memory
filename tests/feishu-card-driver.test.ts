@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setImmediate } from 'node:timers/promises';
+import { bodyChunks } from '../src/server/feishu-body-text.js';
 import { createFeishuSdkDriverFactory, FEISHU_HTTP_TIMEOUT_MS, type FeishuDriverCallbacks, type FeishuSendCard } from '../src/integrations/feishu-sdk-driver.js';
 
 const callbacks: FeishuDriverCallbacks = { onReady() {}, onError() {}, onReconnecting() {}, onReconnected() {},
@@ -61,6 +62,29 @@ test('pinned real SDK creates interactive V2 JSON to open_id with UUID, bounded 
     assert.equal(JSON.parse(request.data.content).schema, '2.0');
     const toast = await f.dispatcher.invoke({ schema: '2.0', header: { event_type: 'card.action.trigger', event_id: 'synthetic-action' }, event: {} }, { needCheck: false });
     assert.deepEqual(toast, { toast: { type: 'info', content: 'Synthetic acknowledgment' } });
+  } finally { await f.driver.close(); }
+});
+
+test('real SDK preserves readable math and complete source fallback through double JSON at fake HTTP', async () => {
+  const source = 'synthetic-before\n\n' + String.raw`$\frac{x_i^2}{\alpha}\in[0,1]$`
+    + '\n\n' + '$\\unknown{' + '😀\\"'.repeat(1100) + '}$' + '\nsynthetic-after';
+  const pages = bodyChunks(source);
+  assert.ok(pages.length > 2);
+  assert.ok(pages[0].includes('(((x)_(i)^(2))/(α))∈[0,1]'));
+  assert.ok(pages.some(page => page.includes('公式源码（续）')));
+  const f = await fixture();
+  try {
+    for (const [index, content] of pages.entries()) {
+      const pageCard = { ...card, body: { elements: [{ tag: 'markdown', content }] } };
+      const delivery = await f.driver.sendCard!({ ...input, card: pageCard, uuid: (index + 1).toString(16).padStart(32, '0') });
+      assert.equal(delivery.status, 'platform-accepted');
+      const request = f.calls.filter(call => call.method === 'request').at(-1)!.args[0];
+      const wire = JSON.stringify(request.data);
+      assert.ok(Buffer.byteLength(wire) <= 24 * 1024);
+      assert.deepEqual(JSON.parse(JSON.parse(wire).content), pageCard);
+      assert.equal(JSON.parse(request.data.content).body.elements[0].content, content);
+    }
+    assert.equal(f.calls.filter(call => call.method === 'request').length, pages.length);
   } finally { await f.driver.close(); }
 });
 

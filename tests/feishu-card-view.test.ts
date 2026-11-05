@@ -608,3 +608,75 @@ test('one sort control cycles elapsed reviewed title while preserving filters an
   }
   assert.deepEqual(context, before);
 });
+
+function readBody(rendered: FeishuCardViewPlan): string {
+  return cardElements(card(rendered)).find(element => element.tag === 'markdown' && element.text_size === 'normal' && element.text_align === 'left')!.content as string;
+}
+function checkBodyBudgets(body: string) {
+  assert.ok(Buffer.byteLength(body) <= 3000);
+  const empty = Buffer.byteLength(JSON.stringify({ content: JSON.stringify({ text: '' }) }));
+  assert.ok(Buffer.byteLength(JSON.stringify({ content: JSON.stringify({ text: body }) })) - empty <= 7000);
+}
+
+test('reading renders synthetic theorem formulas as readable text while preserving literal code', () => {
+  const concept = node('synthetic-theorem');
+  concept.body = String.raw`合成条件：在 $[a,b]$ 连续，在 $(a,b)$ 可导，且 $\xi\in(a,b)$。
+$$\frac{f(b)-f(a)}{b-a}=f'(\xi)$$
+代码示例：\`$\frac{1}{2}$\`
+` .replaceAll('\\`', '`') + '\n```tex\n$\\frac{3}{4}$\n```\n末尾。';
+  const context = readContext(snapshot([concept]));
+  const before = structuredClone(context);
+  const view = { kind: 'read', reference: sha(concept.id).slice(0, 12), revision: sha(concept.source.revision).slice(0, 12), page: 1, back: listView } as const;
+  const rendered = render(view, context, plan()); const body = readBody(rendered);
+  assert.ok(body.includes('[a,b]')); assert.ok(body.includes('(a,b)')); assert.ok(body.includes('ξ∈(a,b)'));
+  assert.ok(body.includes('((f(b)−f(a))/(b−a))')); assert.ok(body.includes('ξ'));
+  assert.ok(body.includes('`$\\frac{1}{2}$`'));
+  assert.ok(body.includes('```tex\n$\\frac{3}{4}$\n```'));
+  assert.doesNotMatch(body, /\$\[a,b\]\$|\$\$|公式源码|<img|<svg/);
+  assert.ok(body.endsWith('末尾。'));
+  checkBudgets(view, rendered); checkBodyBudgets(body);
+  assert.deepEqual(context, before);
+});
+
+test('reading keeps fitting formulas atomic and oversized formula source complete across safe pages with original back filters', () => {
+  const concept = node('synthetic-formula-pages', 'Math');
+  const formula = String.raw`$\frac{f(b)-f(a)}{b-a}$`;
+  const oversized = '$\\unknown{' + 'q'.repeat(4300) + '}$';
+  const prefix = 'P'.repeat(2990);
+  const suffix = '\n\n末尾 <at id=all> [危险](javascript:bad) 😀';
+  concept.body = prefix + formula + '\n' + oversized + suffix;
+  const context = readContext(snapshot([concept])); const before = structuredClone(context);
+  const back = { ...listView, domainId: 'Math', query: 'synthetic', sort: 'reviewed', timeState: 'unknown', page: 2 } as const;
+  let view = { kind: 'read', reference: sha(concept.id).slice(0, 12), revision: sha(concept.source.revision).slice(0, 12), page: 1, back } as Extract<FeishuBrowseView, { kind: 'read' }>;
+  const pages: string[] = []; const sourceFragments: string[] = [];
+  while (true) {
+    const rendered = render(view, context, plan()); checkBudgets(view, rendered);
+    const body = readBody(rendered); checkBodyBudgets(body); pages.push(body);
+    assert.doesNotMatch(body, /<at|\[危险\]|\uFFFD/);
+    assert.ok(rendered.actions.some(action => JSON.stringify(action.target) === JSON.stringify(back)));
+    if (view.page > 1) {
+      const previous = next(rendered, 'read', view.page - 1) as Extract<FeishuBrowseView, { kind: 'read' }>;
+      assert.deepEqual(previous, { ...view, page: view.page - 1 });
+      assert.equal(readBody(render(previous, context, plan())), pages[view.page - 2]);
+    }
+    if (body.includes('公式源码')) {
+      const fragment = body.match(/^\n公式源码(?:（续）)?：\n(`{3,})\n([\s\S]*?)\n\1\n$/);
+      assert.ok(fragment, 'every oversized source page has its own closed code block');
+      sourceFragments.push(fragment[2]);
+    }
+    const forward = rendered.actions.find(action => action.target.kind === 'read' && action.target.page === view.page + 1);
+    if (!forward || forward.target.kind !== 'read') break;
+    assert.deepEqual(forward.target, { ...view, page: view.page + 1 });
+    view = forward.target;
+    assert.ok(view.page <= 10, 'reading must terminate');
+  }
+  assert.ok(pages.length >= 4);
+  assert.equal(pages[0], prefix, 'a fitting formula moves whole to the next page');
+  assert.equal(pages.filter(body => body.includes('((f(b)−f(a))/(b−a))')).length, 1);
+  assert.ok(sourceFragments.length >= 2);
+  assert.equal(sourceFragments.join(''), oversized, 'fallback preserves all original formula source');
+  const nonFallback = pages.filter(body => !body.includes('公式源码')).join('');
+  assert.ok(nonFallback.startsWith(prefix));
+  assert.ok(nonFallback.endsWith('\n\n末尾 ＜at id=all＞ ［危险］(javascript:bad) 😀'));
+  assert.deepEqual(context, before);
+});

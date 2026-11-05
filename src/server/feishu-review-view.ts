@@ -162,7 +162,7 @@ export function planFeishuReviewView(input: FeishuReviewRenderInput): {
       elements.push(cardMarkdown(body!, 'normal', 'left'));
       elements.push(cardDivider());
       showControls(buttons.filter(entry => !hasVerb(entry, ['show', 'rate-clear', 'rate-partial', 'rate-blank'])));
-      elements.push(cardMarkdown('附件、链接以文字展示；公式与 Mermaid 不保证渲染。', 'notation'));
+      elements.push(cardMarkdown('公式以可读文字展示；复杂公式保留源码。附件/链接以文字展示，Mermaid 不渲染。', 'notation'));
     } else {
       elements.push(cardMarkdown(content));
       if (buttons.length) elements.push(cardDivider());

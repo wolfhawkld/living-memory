@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
+import { planFeishuCardView as renderRead } from '../src/server/feishu-card-view.js';
+import type { FeishuBrowseView, FeishuCardPayload } from '../src/shared/feishu-cards.js';
 import { planFeishuReviewView as render, type FeishuReviewRenderInput } from '../src/server/feishu-review-view.js';
 import type { FeishuReviewOperation, FeishuReviewSession } from '../src/shared/feishu-review.js';
 import type { Concept } from '../src/shared/types.js';
@@ -382,4 +385,77 @@ test('review activity distinguishes a prompt from the actually revealed page and
   assert.equal(render(value).activity, undefined);
   value.availability = 'source-changed';
   assert.equal(render(value).activity, undefined);
+});
+
+function formulaBody(card: FeishuCardPayload): string {
+  return cardElements(card).find(element => element.tag === 'markdown' && element.text_size === 'normal' && element.text_align === 'left')!.content as string;
+}
+function formulaBudgets(card: FeishuCardPayload) {
+  const body = formulaBody(card);
+  assert.ok(Buffer.byteLength(body) <= 3000);
+  const empty = Buffer.byteLength(JSON.stringify({ content: JSON.stringify({ text: '' }) }));
+  assert.ok(Buffer.byteLength(JSON.stringify({ content: JSON.stringify({ text: body }) })) - empty <= 7000);
+  assert.ok(Buffer.byteLength(JSON.stringify(card)) <= 20 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify({ content: JSON.stringify(card) })) <= 23 * 1024);
+}
+
+test('revealed review and reading share readable theorem text, protected code and complete safe pagination', () => {
+  const value = input(); value.session!.state.phase = 'revealed';
+  const theorem = String.raw`合成条件：在 $[a,b]$ 连续，在 $(a,b)$ 可导，且 $\xi\in(a,b)$。
+$$\frac{f(b)-f(a)}{b-a}=f'(\xi)$$`;
+  const code = '\n代码：`$\\frac{1}{2}$`\n```tex\n$\\frac{3}{4}$\n```\n';
+  value.concept = { ...concept, body: theorem + code + '分页中文😀'.repeat(300) + '\n结尾标记。' };
+  const before = structuredClone(value);
+  const back = { kind: 'list', domainId: 'Math', query: '合成', sort: 'reviewed', page: 2, timeState: 'unknown' } as const;
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 12);
+  const context = { concepts: [value.concept], states: {}, anchors: [], asOf: '2026-10-07T00:00:00Z' };
+  const preferences = { sourceId: 'synthetic', asOf: context.asOf, timeZone: 'UTC', dayKey: '2026-10-07', plan: { revision: 1, dailyBudget: 5, concepts: {} }, completedConceptIds: [] };
+  let read: Extract<FeishuBrowseView, { kind: 'read' }> = { kind: 'read', reference: hash(concept.id), revision: hash(concept.source.revision), page: 1, back };
+  let joined = ''; let pages = 0;
+  while (true) {
+    const review = render(value); const reading = renderRead(read, context, preferences);
+    const reviewCard = review.build('c'.repeat(64)); const readCard = reading.build('c'.repeat(64));
+    formulaBudgets(reviewCard); formulaBudgets(readCard);
+    const body = formulaBody(reviewCard);
+    assert.equal(body, formulaBody(readCard), 'both real views use identical body transformation and page boundaries');
+    assert.equal(review.activity?.page, read.page);
+    assert.equal(review.activity?.pageCount, reading.activity?.pageCount);
+    assert.ok(reading.actions.some(action => JSON.stringify(action.target) === JSON.stringify(back)));
+    joined += body; pages++;
+    const forward = review.actions.find(action => action.target.kind === 'review' && action.target.verb === 'show' && action.target.page === read.page + 1);
+    const readForward = reading.actions.find(action => action.target.kind === 'read' && action.target.page === read.page + 1);
+    assert.equal(!!forward, !!readForward);
+    if (!forward || forward.target.kind !== 'review' || !readForward || readForward.target.kind !== 'read') break;
+    assert.deepEqual(readForward.target, { ...read, page: read.page + 1 });
+    value.session!.state.page = forward.target.page; read = readForward.target;
+    assert.ok(pages <= 10, 'revealed pagination terminates');
+  }
+  assert.ok(pages > 1);
+  assert.ok(joined.includes('[a,b]')); assert.ok(joined.includes('ξ∈(a,b)'));
+  assert.ok(joined.includes('((f(b)−f(a))/(b−a))'));
+  assert.ok(joined.includes(code));
+  assert.ok(joined.endsWith('分页中文😀'.repeat(300) + '\n结尾标记。'));
+  assert.doesNotMatch(joined, /\$\$|公式源码|<img|<svg/);
+  value.session!.state.page = 1;
+  assert.deepEqual(value, before);
+});
+
+test('front, paused, changed, expired, pending and conflict views hide raw and converted math equally', () => {
+  const cases: FeishuReviewRenderInput[] = [];
+  const front = input(); cases.push(front);
+  const paused = input(); paused.session!.state.phase = 'revealed'; paused.session!.state.paused = true; cases.push(paused);
+  for (const availability of ['source-changed', 'expired'] as const) {
+    const unavailable = input(); unavailable.session!.state.phase = 'revealed'; unavailable.availability = availability; cases.push(unavailable);
+  }
+  for (const status of ['pending', 'conflict'] as const) {
+    const blocked = input(); blocked.session!.state.phase = 'revealed'; blocked.operations = [operation(status)]; cases.push(blocked);
+  }
+  for (const value of cases) {
+    value.concept = { ...concept, body: String.raw`$$\frac{HIDDENNUM}{HIDDENDEN}$$ $\xi\in(a,b)$`, summary: 'HIDDEN_SUMMARY' };
+    const before = structuredClone(value);
+    const plan = render(value);
+    assert.doesNotMatch(JSON.stringify(plan.build('c'.repeat(64))), /HIDDENNUM|HIDDENDEN|HIDDEN_SUMMARY|\\frac|\\xi|ξ|公式源码/);
+    assert.notEqual(plan.activity?.coverage, 'body-page');
+    assert.deepEqual(value, before);
+  }
 });

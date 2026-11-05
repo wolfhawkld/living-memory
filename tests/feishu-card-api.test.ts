@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { cardButtons, cardElements } from './helpers/feishu-card-elements.js';
 import { test } from 'node:test';
 import { createServer, request } from 'node:http';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -428,6 +428,45 @@ test('SDK card browsing uses each private full index, restores filters and never
       const after = (await f.send('/api/export', credentials)).body;
       for (const key of learningKeys) assert.deepEqual(after[key], before[name as 'owner' | 'member'][key], `${name} read-only ${key}`);
     }
+  } finally { await c?.connector.stop(); await f.close(); }
+});
+
+test('private v3 reading converts formulas across SDK navigation without changing source or learning', async () => {
+  const f = await fixture({ learningSchemaVersion: 3 }); let c: Awaited<ReturnType<typeof channel>> | undefined;
+  try {
+    const users = await f.users();
+    const source = 'Synthetic continuous $[a,b]$, differentiable $(a,b)$, $c\\in(a,b)$.\n\n'
+      + String.raw`$$f'(c)=\frac{f(b)-f(a)}{b-a}$$` + '\n\n'
+      + String.raw`$\begin{matrix}a&b\\c&d\end{matrix}$` + '\n\n'
+      + 'Synthetic details '.repeat(220) + '\nSynthetic formula document tail';
+    note(users.memberRoot, 'Math', 'MathNotation', 'SyntheticMathNotation', source);
+    const path = join(users.memberRoot, 'Math', 'MathNotation.md');
+    const originalFile = readFileSync(path, 'utf8');
+    assert.equal((await f.send('/api/refresh', { ...users.member, method: 'POST', body: {} })).status, 200);
+    const before = (await f.send('/api/export', users.member)).body;
+    c = await channel(f);
+    await c.message(input('知识 卡片 搜索 SyntheticMathNotation', 'math-reading-search'));
+    await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '阅读 1'));
+    const pages: string[] = [];
+    for (let page = 0; page < 10; page++) {
+      const sent = c.sent.at(-1)!;
+      pages.push(cardElements(sent.card).find(element => element.tag === 'markdown' && element.text_size === 'normal')!.content);
+      if (!cardButtons(sent.card).some(item => item.text.content === '下一页')) break;
+      await c.click(action(sent, `platform-${c.sent.length}`, '下一页'));
+    }
+    assert.ok(pages.length > 1 && pages.length < 10);
+    const displayed = pages.join('');
+    assert.ok(displayed.includes('` [a,b] `'));
+    assert.ok(displayed.includes('((f(b)−f(a))/(b−a))'));
+    assert.ok(displayed.includes('c∈(a,b)'));
+    assert.ok(displayed.includes('公式源码：'));
+    assert.ok(displayed.includes(String.raw`\begin{matrix}a&b\\c&d\end{matrix}`));
+    assert.ok(displayed.endsWith('Synthetic formula document tail'));
+    await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '返回原列表'));
+    assert.match(JSON.stringify(c.sent.at(-1)!.card), /SyntheticMathNotation/);
+    assert.equal(readFileSync(path, 'utf8'), originalFile);
+    const after = (await f.send('/api/export', users.member)).body;
+    for (const key of learningKeys) assert.deepEqual(after[key], before[key], `formula reading ${key}`);
   } finally { await c?.connector.stop(); await f.close(); }
 });
 
