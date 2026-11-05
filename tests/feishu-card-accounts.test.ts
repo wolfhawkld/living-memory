@@ -168,16 +168,16 @@ test('two stores claim one active card once even when callback event IDs differ'
   } finally { second.close(); f.cleanup(); }
 });
 
-test('legacy and unknown list views, action targets and read backs roundtrip across reopening', async () => {
+test('legacy and reviewed sorts, normal and unknown views, actions and read backs roundtrip across reopening', async () => {
   const f = await fixture();
   let accounts = f.accounts;
   try {
-    for (const list of [
-      { kind: 'list' as const, domainId: null, query: '', sort: 'elapsed' as const, page: 1 },
-      { kind: 'list' as const, domainId: 'Math', query: 'bounded search', sort: 'title' as const, page: 2, timeState: 'unknown' as const },
-    ]) {
+    for (const sort of ['elapsed', 'reviewed', 'title'] as const) {
+    for (const timeState of [null, 'unknown'] as const) {
+      const list = { kind: 'list' as const, domainId: 'Math', query: 'bounded search', sort, page: 2, ...(timeState ? { timeState } : {}) };
       const read = { kind: 'read' as const, reference: 'a'.repeat(12), page: 1, revision: 'b'.repeat(12), back: list };
       for (const view of [list, read]) {
+      for (const actionId of ['a0', 'a1']) {
         const input = { ...draft, view, actions: [{ id: 'a0', target: list }, { id: 'a1', target: read }] };
         const card = accounts.createFeishuCardDraft(actor,f.auth,input)!;
         assert.ok(card); assert.deepEqual(card.view,view); assert.deepEqual(card.actions,input.actions);
@@ -185,8 +185,10 @@ test('legacy and unknown list views, action targets and read backs roundtrip acr
         accounts.close(); accounts = new Accounts(f.options);
         const stored = accounts.getFeishuCardForAction(action(card))!;
         assert.ok(stored); assert.deepEqual(stored.view,view); assert.deepEqual(stored.actions,input.actions);
-        assert.deepEqual(accounts.claimFeishuCardAction(action(card),f.auth,expected(card))!.target,list);
+        assert.deepEqual(accounts.claimFeishuCardAction({ ...action(card), actionId },f.auth,expected(card))!.target,actionId === 'a0' ? list : read);
       }
+      }
+    }
     }
   } finally { accounts.close(); f.cleanup(); }
 });
@@ -212,6 +214,22 @@ test('list timeState accepts only absent or unknown across views, actions and re
     for(const kind of ['help','domains','due']) {
       const view = kind === 'help' ? { kind } : kind === 'domains' ? { kind,page:1 } : { kind,domainId:null,limit:3 };
       assert.equal(f.accounts.createFeishuCardDraft(actor,f.auth,{ ...draft,view:{...view,timeState:'unknown'} } as FeishuCardDraftInput),null);
+    }
+    assert.equal(rows(f.accounts).length,0);
+  } finally { f.cleanup(); }
+});
+
+
+test('unsupported sort values are rejected in stored views, action targets and read backs', async () => {
+  const f = await fixture();
+  try {
+    for (const sort of [undefined, null, '', 'recent', 'REVIEWED', false, 0, {}, []]) {
+      const list = { kind: 'list', domainId: null, query: '', sort, page: 1 };
+      const read = { kind: 'read', reference: 'a'.repeat(12), page: 1, revision: 'b'.repeat(12), back: list };
+      for (const view of [list, read]) {
+        assert.equal(f.accounts.createFeishuCardDraft(actor,f.auth,{ ...draft, view } as FeishuCardDraftInput),null);
+        assert.equal(f.accounts.createFeishuCardDraft(actor,f.auth,{ ...draft, actions: [{ id: 'a0', target: view }] } as FeishuCardDraftInput),null);
+      }
     }
     assert.equal(rows(f.accounts).length,0);
   } finally { f.cleanup(); }

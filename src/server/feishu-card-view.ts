@@ -2,7 +2,7 @@ import { feishuActivityReference, type FeishuActivityCoverage } from './feishu-a
 import { selectBriefReviewCandidates, type BriefReviewCandidate } from '../core/brief-review.js';
 import { listDomains } from '../core/domain-view.js';
 import type { ReviewPlanResponse } from '../shared/review-plan.js';
-import type { Snapshot } from '../shared/types.js';
+import type { AnchorEvent, Snapshot } from '../shared/types.js';
 import { createHash } from 'node:crypto';
 import { domainIdOf } from '../core/domain-view.js';
 import { cardButton, cardButtonRows, cardDivider, cardInfoColumns, cardMarkdown, cardSurface, styledFeishuCard, type NativeCardElement } from './feishu-card-style.js';
@@ -185,12 +185,31 @@ function timeText(context: FeishuReadContext, id: string): string {
   return `${STATES[state?.status ?? 'unknown']} · ${elapsed < 0 ? '无有效时间记录' : `${state?.anchor?.kind === 'estimated' ? '距估算锚点' : '距时间锚点'} ${elapsed.toFixed(1)} 天`}`;
 }
 
-function confirmed(context: FeishuReadContext, id: string, revision: string): string {
+interface ConfirmedReview { anchor: AnchorEvent; occurredTime: number; recordedTime: number }
+
+/** One current-version projection shared by ordering and the displayed confirmation time. */
+function confirmedReviews(context: FeishuReadContext): Map<string, ConfirmedReview> {
+  const selected = new Map<string, ConfirmedReview>();
   const asOf = Date.parse(context.asOf);
-  const anchors = context.anchors.filter((anchor) => anchor.kind === 'review' && anchor.conceptId === id && anchor.sourceRevision === revision
-    && Date.parse(anchor.occurredAt) <= asOf && Date.parse(anchor.recordedAt) <= asOf);
-  anchors.sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || Date.parse(b.recordedAt) - Date.parse(a.recordedAt));
-  return anchors[0] ? metadata(anchors[0].occurredAt, 100) : '无确认重温记录';
+  if (!Number.isFinite(asOf)) return selected;
+  const revisions = new Map(context.concepts.map(concept => [concept.id, concept.source.revision]));
+  for (const anchor of context.anchors) {
+    if (anchor.kind !== 'review' || revisions.get(anchor.conceptId) !== anchor.sourceRevision) continue;
+    const occurredTime = Date.parse(anchor.occurredAt), recordedTime = Date.parse(anchor.recordedAt);
+    if (!Number.isFinite(occurredTime) || !Number.isFinite(recordedTime) || occurredTime > asOf || recordedTime > asOf) continue;
+    const previous = selected.get(anchor.conceptId);
+    if (!previous || occurredTime > previous.occurredTime
+      || (occurredTime === previous.occurredTime && (recordedTime > previous.recordedTime
+        || (recordedTime === previous.recordedTime && anchor.eventId < previous.anchor.eventId)))) {
+      selected.set(anchor.conceptId, { anchor, occurredTime, recordedTime });
+    }
+  }
+  return selected;
+}
+
+function confirmed(reviews: ReadonlyMap<string, ConfirmedReview>, id: string): string {
+  const review = reviews.get(id);
+  return review ? metadata(review.anchor.occurredAt, 100) : '无确认重温记录';
 }
 
 function collectionControls(view: Extract<FeishuCardView, { kind: 'list' | 'domains' }>, page: number, pages: number): CardControl[] {
@@ -199,8 +218,10 @@ function collectionControls(view: Extract<FeishuCardView, { kind: 'list' | 'doma
   if (page < pages) controls.push({ caption: '下一页', target: { ...view, page: page + 1 } });
   controls.push({ caption: '全部节点', target: DEFAULT_LIST });
   if (view.kind === 'list') {
+    const sort = view.sort === 'elapsed' ? 'reviewed' : view.sort === 'reviewed' ? 'title' : 'elapsed';
+    const caption = sort === 'reviewed' ? '按最近重温排序' : sort === 'title' ? '按名称排序' : '按时间排序';
     controls.push({ caption: '知识领域', target: { kind: 'domains', page: 1 } },
-      { caption: view.sort === 'elapsed' ? '按名称排序' : '按时间排序', target: { ...view, sort: view.sort === 'elapsed' ? 'title' : 'elapsed', page: 1 } },
+      { caption, target: { ...view, sort, page: 1 } },
     );
     if (view.timeState === 'unknown') {
       const { timeState: _removed, ...unfiltered } = view;
@@ -232,10 +253,11 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
     && (!Number.isSafeInteger(view.page) || view.page < 1 || view.page > 100000)) return errorPlan('页码超出范围，请重新进入知识卡片。');
   const digests = context.concepts.map((concept) => ({ id: concept.id, digest: hash(concept.id) }));
   const references = buildFeishuReadReferences(digests);
+  const reviews = view.kind === 'list' || view.kind === 'read' ? confirmedReviews(context) : new Map<string, ConfirmedReview>();
   const toRead = (id: string, revision: string, back: Extract<FeishuCardView, { kind: 'list' | 'due' }>): FeishuCardView => ({
     kind: 'read', reference: references.get(id)!, page: 1, revision: hash(revision).slice(0, 12), back,
   });
-  if (view.kind === 'help') return errorPlan('知识 卡片：全部节点\n知识 卡片 未建起点\n知识 卡片 领域 ［页码］\n知识 卡片 搜索 关键词\n知识 卡片 列表 域="目录域" 查="关键词" 序=时间|名称 页=1\n知识 待复习 ［域="目录域"］ ［量=3|5］\n知识 复习：单条脑中回忆\n知识 复习 3 或 知识 复习 5：小批次脑中回忆\n知识 继续复习 / 暂停复习 / 结束复习\n知识 重温状态 / 知识 重试重温\n时间状态仅作管理提示，不代表实测记忆能力。');
+  if (view.kind === 'help') return errorPlan('知识 卡片：全部节点\n知识 卡片 未建起点\n知识 卡片 领域 ［页码］\n知识 卡片 搜索 关键词\n知识 卡片 列表 域="目录域" 查="关键词" 序=时间|名称 页=1\n知识 待复习 ［域="目录域"］ ［量=3|5］\n知识 复习：单条脑中回忆\n知识 复习 3 或 知识 复习 5：小批次脑中回忆\n知识 继续复习 / 暂停复习 / 结束复习\n知识 重温状态 / 知识 重试重温\n列表排序按钮：时间 → 最近重温 → 名称 → 时间。\n时间状态仅作管理提示，不代表实测记忆能力。');
   if (view.kind === 'read') {
     if (!/^[a-f0-9]{12,64}$/.test(view.reference) || !/^[a-f0-9]{12}$/.test(view.revision)) return errorPlan('节点引用或分页标识失效，请重新列表或搜索。');
     const matches = digests.filter((entry) => entry.digest.startsWith(view.reference));
@@ -250,7 +272,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
     controls.push({ caption: '确认已重温', target: { kind: 'rewarm-confirm', conceptId: concept.id, sourceRevision: concept.source.revision } });
     controls.push({ caption: view.back.kind === 'due' ? '返回原待复习' : '返回原列表', target: view.back });
     const plan = createReadPlan({ title: concept.title, domain: domainIdOf(concept),
-      time: timeText(context, concept.id), confirmed: confirmed(context, concept.id, concept.source.revision),
+      time: timeText(context, concept.id), confirmed: confirmed(reviews, concept.id),
       page: view.page, pages: chunks.length, body: chunks[view.page - 1] }, controls);
     return fitsPlan(view, plan) ? { ...plan, ...(concept.body.trim() ? { activity: { coverage: 'body-page' as const, refs: [feishuActivityReference(concept, 'body')], page: view.page, pageCount: chunks.length, request: { kind: 'selected' as const } } } : {}) } : errorPlan('当前正文或导航参数超过展示限制，请重新列表或搜索。');
   }
@@ -290,7 +312,15 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
   const concepts = isDomains ? [] : context.concepts.filter((concept) => (view.domainId === null || domainIdOf(concept) === view.domainId)
     && (view.timeState !== 'unknown' || context.states[concept.id]?.status === 'unknown')
     && (!normalizedQuery || [concept.title, ...concept.aliases].some((value) => value.normalize('NFKC').toLocaleLowerCase().includes(normalizedQuery))));
-  if (!isDomains) concepts.sort((a, b) => (view.sort === 'title' ? a.title.localeCompare(b.title, 'zh-Hans-CN') : elapsedValue(context, b.id) - elapsedValue(context, a.id)) || a.id.localeCompare(b.id));
+  if (!isDomains) concepts.sort((a, b) => {
+    if (view.sort === 'reviewed') {
+      const left = reviews.get(a.id), right = reviews.get(b.id);
+      if (left && right && left.occurredTime !== right.occurredTime) return right.occurredTime - left.occurredTime;
+      if (Boolean(left) !== Boolean(right)) return left ? -1 : 1;
+      return a.id === b.id ? 0 : a.id < b.id ? -1 : 1;
+    }
+    return (view.sort === 'title' ? a.title.localeCompare(b.title, 'zh-Hans-CN') : elapsedValue(context, b.id) - elapsedValue(context, a.id)) || a.id.localeCompare(b.id);
+  });
   const domains = isDomains ? listDomains({ concepts: [...context.concepts], links: [], source: { name: '', mode: 'local', conceptCount: context.concepts.length, limit: context.concepts.length, diagnostics: [] } }) : [];
   const count = isDomains ? domains.length : concepts.length;
   const groups: number[][] = [[]];
@@ -301,7 +331,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
         ...(domain.id.length <= 512 ? { caption: `查看领域 ${index + 1}`, target: { ...DEFAULT_LIST, domainId: domain.id } } : {}) };
     }
     const concept = concepts[index];
-    return { title: metadata(concept.title), content: `目录域：${metadata(domainIdOf(concept), 300)}\n${timeText(context, concept.id)}\n最近确认重温：${confirmed(context, concept.id, concept.source.revision)}`,
+    return { title: metadata(concept.title), content: `目录域：${metadata(domainIdOf(concept), 300)}\n${timeText(context, concept.id)}\n最近确认重温：${confirmed(reviews, concept.id)}`,
       caption: `阅读 ${index + 1}`, target: toRead(concept.id, concept.source.revision, back as Extract<FeishuCardView, { kind: 'list' }>) };
   });
   for (let index = 0; index < count; index++) {
@@ -319,7 +349,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
   if (view.page < 1 || view.page > groups.length) return errorPlan('页码超出范围，请重新进入知识卡片或领域。');
   const rows = makeRows(groups[view.page - 1], view);
   const plan = collectionPlan(view, view.page, groups.length, `${isDomains ? '知识领域' : '知识列表'} · ${view.page}/${groups.length} 页`,
-    `${count} ${isDomains ? '个领域' : '个节点'}。${!isDomains && view.timeState === 'unknown' ? '筛选：尚无时间记录。' : ''}时间状态仅作管理提示，不代表实测记忆能力。${rows.length ? '' : '\n没有匹配节点。'}`,
+    `${count} ${isDomains ? '个领域' : '个节点'}。${!isDomains && view.timeState === 'unknown' ? '筛选：尚无时间记录。' : ''}${!isDomains && view.sort === 'reviewed' ? '最近确认重温在前；无确认记录在后。' : ''}时间状态仅作管理提示，不代表实测记忆能力。${rows.length ? '' : '\n没有匹配节点。'}`,
     rows, isDomains ? '选择领域，浏览你的知识' : '知识浏览 · 时间状态仅作管理提示');
   return fitsPlan(view, plan) ? { ...plan, ...(!isDomains ? { activity: { coverage: 'results' as const, refs: groups[view.page - 1].map((index) => feishuActivityReference(concepts[index], 'result')), request: { kind: 'query' as const, resultCount: concepts.length } } } : {}) } : errorPlan('当前导航参数超过展示限制，请重新列表或搜索。');
 }

@@ -134,6 +134,74 @@ async function channel(f: Awaited<ReturnType<typeof fixture>>) {
 const learningKeys = ['anchors', 'observations', 'retentions', 'applications', 'corrections', 'practice', 'config', 'configHistory', 'reviewPlan', 'layout', 'restoreMetadata'];
 
 for (const learningSchemaVersion of [2, 3] as const) {
+  test(`recent-confirmation sorting crosses SDK and private Store without changing learning in v${learningSchemaVersion}`, async () => {
+    const f = await fixture({ learningSchemaVersion }); let c: Awaited<ReturnType<typeof channel>> | undefined;
+    try {
+      const users = await f.users();
+      note(users.memberRoot, 'Math', 'Member2', 'MemberOnly2', 'Unrecorded synthetic concept.');
+      assert.equal((await f.send('/api/refresh', { ...users.member, method: 'POST', body: {} })).status, 200);
+      const snapshot = (await f.send('/api/snapshot?scope=all', users.member)).body;
+      const byTitle = (title: string) => snapshot.concepts.find((concept: Concept) => concept.title === title) as Concept;
+      for (const [title, kind, occurredAt] of [
+        ['MemberOnly0', 'review', '2026-09-20T00:00:00Z'],
+        ['MemberOnly0', 'estimated', '2026-10-01T00:00:00Z'],
+        ['MemberOnly1', 'review', '2026-09-01T00:00:00Z'],
+      ] as const) {
+        const concept = byTitle(title);
+        assert.equal((await f.send('/api/reviews', { ...users.member, method: 'POST', body: {
+          eventId: `sort-${title}-${kind}`, conceptId: concept.id, sourceRevision: concept.source.revision, kind, occurredAt,
+        } })).status, 201);
+      }
+      const before = (await f.send('/api/export', users.member)).body;
+      const ownerBefore = (await f.send('/api/export', users.owner)).body;
+      const planBefore = (await f.send('/api/review-plan', users.member)).body;
+      c = await channel(f);
+      await c.message(input('知识 复习 3', 'reviewed-sort-batch'));
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /第 1\/1 项/);
+      const batchRows = () => {
+        const db = new DatabaseSync(join(f.dataDir, 'accounts.sqlite'), { readOnly: true });
+        try { return db.prepare('SELECT * FROM feishu_review_sessions ORDER BY id').all(); }
+        finally { db.close(); }
+      };
+      const batchBefore = batchRows(); assert.equal(batchBefore.length, 1);
+      const titles = () => cardElements(c!.sent.at(-1)!.card)
+        .filter(element => element.tag === 'markdown' && element.text_size === 'heading-2')
+        .map(element => element.content);
+      await c.message(input('知识 卡片 列表 域="Math" 查="MemberOnly" 序=时间', 'reviewed-sort-list'));
+      assert.deepEqual(titles(), ['MemberOnly1', 'MemberOnly0', 'MemberOnly2']);
+      const sortClick = action(c.sent.at(-1)!, `platform-${c.sent.length}`, '按最近重温排序');
+      const count = c.sent.length;
+      await c.click({ ...sortClick, ...ownerActor, eventId: 'wrong-review-sort-actor' });
+      assert.equal(c.sent.length, count);
+      await c.click(sortClick);
+      assert.deepEqual(titles(), ['MemberOnly0', 'MemberOnly1', 'MemberOnly2']);
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /最近确认重温在前；无确认记录在后/);
+      assert.doesNotMatch(JSON.stringify(c.sent.at(-1)!.card), /OwnerOnly|Owner-private/);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '阅读 1'));
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /2026-09-20T00:00:00.000Z/);
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /Member-private-first/);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '下一页'));
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '返回原列表'));
+      assert.deepEqual(titles(), ['MemberOnly0', 'MemberOnly1', 'MemberOnly2']);
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /最近确认重温在前/);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '尚无时间记录'));
+      assert.deepEqual(titles(), ['MemberOnly2']);
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /筛选：尚无时间记录/);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '取消时间筛选'));
+      assert.deepEqual(titles(), ['MemberOnly0', 'MemberOnly1', 'MemberOnly2']);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '按名称排序'));
+      assert.deepEqual(titles(), ['MemberOnly0', 'MemberOnly1', 'MemberOnly2']);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '按时间排序'));
+      assert.deepEqual(titles(), ['MemberOnly1', 'MemberOnly0', 'MemberOnly2']);
+      const after = (await f.send('/api/export', users.member)).body;
+      for (const key of learningKeys) assert.deepEqual(after[key], before[key], `read-only sorting ${key}`);
+      assert.deepEqual((await f.send('/api/review-plan', users.member)).body, planBefore);
+      assert.deepEqual(batchRows(), batchBefore);
+      const ownerAfter = (await f.send('/api/export', users.owner)).body;
+      for (const key of learningKeys) assert.deepEqual(ownerAfter[key], ownerBefore[key], `owner ${key}`);
+    } finally { await c?.connector.stop(); await f.close(); }
+  });
+
   test(`unknown-time cards browse the full private index and establish one first anchor in v${learningSchemaVersion}`, async () => {
     const f = await fixture({ learningSchemaVersion }); let c: Awaited<ReturnType<typeof channel>> | undefined;
     try {
@@ -174,6 +242,8 @@ for (const learningSchemaVersion of [2, 3] as const) {
       await c.click(reading);
       await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '下一页'));
       await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '返回原列表'));
+      assert.match(JSON.stringify(c.sent.at(-1)!.card), /筛选：尚无时间记录/);
+      await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '按最近重温排序'));
       assert.match(JSON.stringify(c.sent.at(-1)!.card), /筛选：尚无时间记录/);
       await c.click(action(c.sent.at(-1)!, `platform-${c.sent.length}`, '按名称排序'));
       assert.match(JSON.stringify(c.sent.at(-1)!.card), /筛选：尚无时间记录/);

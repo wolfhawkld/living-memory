@@ -496,3 +496,115 @@ test('unknown filter paging, read body, original back, sorting and toggles prese
   assert.ok(nextBody.actions.some(action => JSON.stringify(action.target) === JSON.stringify(view)));
   assert.deepEqual(next(nextBody, 'read', 1), read);
 });
+
+function collectionIds(view: Extract<FeishuBrowseView, { kind: 'list' }>, context: FeishuReadContext): string[] {
+  const ids: string[] = [];
+  for (let page = 1; page <= context.concepts.length + 1; page++) {
+    const current = { ...view, page };
+    const rendered = render(current, context, plan());
+    ids.push(...(rendered.activity?.refs.map(ref => ref.conceptId) ?? []));
+    const forward = rendered.actions.find(action => action.target.kind === 'list' && action.target.page === page + 1
+      && action.target.sort === current.sort && action.target.domainId === current.domainId && action.target.query === current.query
+      && action.target.timeState === current.timeState);
+    if (!forward) return ids;
+  }
+  assert.fail('collection traversal must terminate');
+}
+
+test('reviewed ordering uses current confirmed reviews instead of elapsed estimates and excludes invalid evidence', () => {
+  const names = ['recent-review', 'older-review', 'estimated', 'old-revision', 'future-occurred', 'future-recorded', 'invalid-occurred', 'invalid-recorded', 'missing', 'pending', 'retained'];
+  const input = snapshot(names.map(id => node(id)));
+  const context = readContext(input);
+  const anchor = (id: string, occurredAt: string, changes: Partial<FeishuReadContext['anchors'][number]> = {}) => ({
+    eventId: `event-${id}`, conceptId: id, sourceRevision: `rev-${id}`, kind: 'review' as const,
+    occurredAt, recordedAt: '2026-10-01T00:00:00.000Z', ...changes,
+  });
+  context.anchors = [
+    anchor('recent-review', '2026-10-02T08:00:00.000Z'),
+    anchor('older-review', '2026-09-29T00:00:00.000Z'),
+    anchor('estimated', '2026-10-02T09:00:00.000Z', { kind: 'estimated' }),
+    anchor('old-revision', '2026-10-02T09:00:00.000Z', { sourceRevision: 'previous-revision' }),
+    anchor('future-occurred', '2026-10-02T10:00:00.001Z'),
+    anchor('future-recorded', '2026-10-02T09:00:00.000Z', { recordedAt: '2026-10-02T10:00:00.001Z' }),
+    anchor('invalid-occurred', 'invalid'),
+    anchor('invalid-recorded', '2026-10-02T09:00:00.000Z', { recordedAt: 'invalid' }),
+    anchor('pending', '2026-10-02T07:00:00.000Z'),
+    anchor('retained', asOf, { recordedAt: asOf }),
+    // A later-recorded older occurrence must not replace the latest actual review.
+    anchor('recent-review', '2026-09-01T00:00:00.000Z', { recordedAt: asOf }),
+  ];
+  context.states['recent-review'].elapsedDays = 1;
+  context.states['older-review'].elapsedDays = 10;
+  context.states.estimated.anchor!.kind = 'estimated'; context.states.estimated.elapsedDays = 999;
+  context.states.pending.status = 'pending'; context.states.retained.status = 'retained';
+  delete input.states.missing;
+  const before = structuredClone(context);
+  const reviewed = { ...listView, sort: 'reviewed' } as const;
+  const expected = ['retained', 'recent-review', 'pending', 'older-review', 'estimated', 'future-occurred', 'future-recorded', 'invalid-occurred', 'invalid-recorded', 'missing', 'old-revision'];
+  assert.deepEqual(collectionIds(reviewed, context), expected);
+  assert.equal(collectionIds(listView, context)[0], 'estimated');
+  const rendered = render(reviewed, context, plan());
+  assert.match(text(rendered), /最近确认重温在前；无确认记录在后/);
+  const surfaces = (card(rendered).body as { elements: Record<string, any>[] }).elements.filter(element => element.tag === 'column_set' && element.columns.length === 1 && element.columns[0].background_style === 'grey-50');
+  for (const id of ['pending', 'retained']) {
+    const row = surfaces.find(surface => JSON.stringify(surface).includes(id));
+    assert.ok(row);
+    assert.match(JSON.stringify(row), new RegExp(`最近确认重温：${id === 'retained' ? asOf : '2026-10-02T07:00:00.000Z'}`));
+  }
+  for (const id of names.slice(2, 9)) {
+    const one = render({ ...reviewed, query: id }, context, plan());
+    assert.match(text(one), /最近确认重温：无确认重温记录/);
+  }
+  assert.deepEqual(context, before);
+});
+
+test('review timestamps compare instants and tie ordering is stable by binary concept ID with deterministic display', () => {
+  const context = readContext(snapshot(['z', 'a', 'Z', 'A', 'none-z', 'none-A'].map(id => node(id))));
+  context.anchors = ['z', 'a', 'Z', 'A'].map((id, index) => ({
+    eventId: `event-${id}`, conceptId: id, sourceRevision: `rev-${id}`, kind: 'review',
+    occurredAt: index % 2 ? '2026-10-02T08:00:00.000Z' : '2026-10-02T16:00:00.000+08:00', recordedAt: asOf,
+  }));
+  context.anchors = [...context.anchors,
+    { ...context.anchors[0], eventId: 'a-winner', occurredAt: '2026-10-02T17:00:00.000+09:00', recordedAt: asOf },
+    { ...context.anchors[0], eventId: '0-older-recording', occurredAt: '2026-10-02T03:00:00.000-05:00', recordedAt: '2026-10-02T09:00:00.000Z' },
+  ];
+  const before = structuredClone(context);
+  const reviewed = { ...listView, sort: 'reviewed' } as const;
+  assert.deepEqual(collectionIds(reviewed, context), ['A', 'Z', 'a', 'z', 'none-A', 'none-z']);
+  assert.match(text(render({ ...reviewed, query: 'z', domainId: 'Math' }, context, plan())), /最近确认重温：2026-10-02T17:00:00.000\+09:00/);
+  assert.deepEqual(collectionIds(reviewed, { ...context, concepts: [...context.concepts].reverse(), anchors: [...context.anchors].reverse() }), ['A', 'Z', 'a', 'z', 'none-A', 'none-z']);
+  assert.deepEqual(context, before);
+});
+
+test('one sort control cycles elapsed reviewed title while preserving filters and resetting only page', () => {
+  const input = snapshot(Array.from({ length: 13 }, (_, index) => {
+    const concept = node(`node-${String(index).padStart(2, '0')}`, 'AI models');
+    concept.aliases = ['ＡＧＥＮＴ']; concept.body = 'Synthetic read body. '.repeat(400); return concept;
+  }));
+  input.concepts.push(node('outside', 'Elsewhere'), node('different-search', 'AI models'));
+  for (const concept of input.concepts) input.states[concept.id] = { ...state(concept), status: 'unknown', anchor: null, elapsedDays: null, decay: null };
+  const context = readContext(input);
+  const before = structuredClone(context);
+  for (const scope of [{ domainId: null, query: '' }, { domainId: null, query: 'agent' }, { domainId: 'AI models', query: '' }, { domainId: 'AI models', query: 'agent' }]) {
+    for (const timeState of [null, 'unknown'] as const) {
+      for (const [sort, successor, caption] of [['elapsed', 'reviewed', '按最近重温排序'], ['reviewed', 'title', '按名称排序'], ['title', 'elapsed', '按时间排序']] as const) {
+        const view = { ...listView, ...scope, sort, page: 2, ...(timeState ? { timeState } : {}) };
+        const rendered = render(view, context, plan()); checkBudgets(view, rendered);
+        const buttons = cardButtons(card(rendered));
+        const controls = buttons.filter(button => /^(按最近重温排序|按名称排序|按时间排序)$/.test(button.text.content));
+        assert.equal(controls.length, 1); assert.equal(controls[0].text.content, caption);
+        const actionId = controls[0].behaviors[0].value.actionId;
+        assert.deepEqual(rendered.actions.find(action => action.id === actionId)!.target, { ...view, sort: successor, page: 1 });
+        const read = rendered.actions.find(action => action.target.kind === 'read')!.target as Extract<FeishuBrowseView, { kind: 'read' }>;
+        assert.deepEqual(read.back, view);
+        const body = render(read, context, plan());
+        assert.ok(body.actions.some(action => JSON.stringify(action.target) === JSON.stringify(view)));
+        assert.deepEqual(next(rendered, 'list', 3), { ...view, page: 3 });
+        assert.deepEqual(next(rendered, 'list', 1), { ...view, page: 1 });
+        assert.equal(rendered.activity?.request?.kind === 'query' && rendered.activity.request.resultCount,
+          scope.query ? 13 : scope.domainId ? 14 : 15);
+      }
+    }
+  }
+  assert.deepEqual(context, before);
+});
