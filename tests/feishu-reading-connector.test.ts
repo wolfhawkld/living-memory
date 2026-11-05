@@ -20,6 +20,29 @@ function prepared(input: FeishuReadMessage, options: Partial<PreparedFeishuReadR
     stillAuthorized: () => true, settle() {}, ...options };
 }
 
+test('review status uses only the text capability and never falls back to cards', async () => {
+  for (const readingAvailable of [true, false]) {
+    let hooks!: FeishuDriverCallbacks;
+    let reads = 0;
+    let cards = 0;
+    let sends = 0;
+    const connector = createFeishuConnector({ env,
+      ...(readingAvailable ? { prepareReading: (input: FeishuReadMessage) => { reads++; return prepared(input); } } : {}),
+      prepareCardMessage: () => { cards++; return null; },
+      driverFactory: async (_config, callbacks) => { hooks = callbacks; return { start() {}, close() {},
+        async sendText() { sends++; return 'platform-accepted'; } }; },
+    });
+    try {
+      await connector.start(); hooks.onReady();
+      hooks.onMessage!(event('actor', 'status', '知识 复习状态'));
+      await setImmediate();
+      assert.equal(cards, 0);
+      assert.equal(reads, readingAvailable ? 1 : 0);
+      assert.equal(sends, readingAvailable ? 1 : 0);
+    } finally { await connector.stop(); }
+  }
+});
+
 test('reading message projection rejects group, bot, wrong scope and raw envelopes and retains only bounded command data', () => {
   const valid = event();
   assert.deepEqual(normalizeFeishuReadMessage({ ...valid, accountId: 'ignored-owner', permissions: ['admin'] }, scope),

@@ -236,7 +236,7 @@ export function planFeishuCardView(view: FeishuBrowseView, context: FeishuReadCo
   const toRead = (id: string, revision: string, back: Extract<FeishuCardView, { kind: 'list' | 'due' }>): FeishuCardView => ({
     kind: 'read', reference: references.get(id)!, page: 1, revision: hash(revision).slice(0, 12), back,
   });
-  if (view.kind === 'help') return errorPlan('知识 卡片：全部节点\n知识 卡片 未建起点\n知识 卡片 领域 ［页码］\n知识 卡片 搜索 关键词\n知识 卡片 列表 域="目录域" 查="关键词" 序=时间|名称 页=1\n知识 待复习 ［域="目录域"］ ［量=3|5］\n知识 复习：单条脑中回忆\n知识 复习 3 或 知识 复习 5：小批次脑中回忆\n知识 继续复习 / 暂停复习 / 结束复习\n知识 重温状态 / 知识 重试重温\n列表排序按钮：时间 → 最近重温 → 名称 → 时间。\n时间状态仅作管理提示，不代表实测记忆能力。');
+  if (view.kind === 'help') return errorPlan('知识 卡片：全部节点\n知识 卡片 未建起点\n知识 卡片 领域 ［页码］\n知识 卡片 搜索 关键词\n知识 卡片 列表 域="目录域" 查="关键词" 序=时间|名称 页=1\n知识 待复习 ［域="目录域"］ ［量=3|5］\n知识 复习：单条脑中回忆\n知识 复习 3 或 知识 复习 5：小批次脑中回忆\n知识 复习状态：只查看进度，不恢复或重试\n知识 继续复习 / 暂停复习 / 结束复习\n知识 重温状态 / 知识 重试重温\n列表排序按钮：时间 → 最近重温 → 名称 → 时间。\n时间状态仅作管理提示，不代表实测记忆能力。');
   if (view.kind === 'read') {
     if (!/^[a-f0-9]{12,64}$/.test(view.reference) || !/^[a-f0-9]{12}$/.test(view.revision)) return errorPlan('节点引用或分页标识失效，请重新列表或搜索。');
     const matches = digests.filter((entry) => entry.digest.startsWith(view.reference));

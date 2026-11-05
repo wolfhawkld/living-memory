@@ -9,7 +9,7 @@ import type { KnowledgeSource } from './kg.js';
 import type { Store } from './store.js';
 import { reviewDayKey } from '../shared/review-plan.js';
 import { parseFeishuCardCommand } from '../integrations/feishu-card-commands.js';
-import { parseFeishuReviewCommand } from '../integrations/feishu-review-commands.js';
+import { isFeishuReviewStatusCommand, parseFeishuReviewCommand } from '../integrations/feishu-review-commands.js';
 import { planFeishuCardView, type FeishuCardViewPlan } from './feishu-card-view.js';
 import { createFeishuReviewController, type FeishuReviewStore } from './feishu-review.js';
 import { parseFeishuRewarmCommand } from '../integrations/feishu-rewarm-commands.js';
@@ -136,6 +136,7 @@ export function createFeishuCardCapabilities(options: CardCapabilitiesOptions) {
     prepareMessage(message: FeishuReadMessage): PreparedFeishuCardReply | null {
       if (!message || ![message.eventId, message.messageId, message.chatId].every(validId)
         || typeof message.text !== 'string' || message.text.length > 4096) return null;
+      if (isFeishuReviewStatusCommand(message.text)) return null;
       try {
         const rewarmCommand = parseFeishuRewarmCommand(message.text);
         const command = parseFeishuReviewCommand(message.text);

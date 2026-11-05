@@ -3,7 +3,7 @@ import { parseFeishuConfig, type FeishuConfigErrorCode } from './feishu-config.j
 import { normalizeFeishuSdkCardAction } from './feishu-events.js';
 import { normalizeFeishuCardNavigation } from './feishu-card-actions.js';
 import { parseFeishuCardCommand } from './feishu-card-commands.js';
-import { parseFeishuReviewCommand } from './feishu-review-commands.js';
+import { isFeishuReviewStatusCommand, parseFeishuReviewCommand } from './feishu-review-commands.js';
 import { parseFeishuRewarmCommand } from './feishu-rewarm-commands.js';
 import { normalizeFeishuBindingMessage, normalizeFeishuReadMessage } from './feishu-messages.js';
 import type { FeishuActor, FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuChannelState } from '../shared/feishu-binding.js';
@@ -182,7 +182,7 @@ export function createFeishuConnector(options: FeishuConnectorOptions): FeishuCo
       }
       const input = normalizeFeishuReadMessage(event, configuration.value);
       if (!input) return;
-      const isCard = options.prepareCardMessage
+      const isCard = !isFeishuReviewStatusCommand(input.text) && options.prepareCardMessage
         && (parseFeishuCardCommand(input.text) !== null || parseFeishuReviewCommand(input.text) !== null
           || parseFeishuRewarmCommand(input.text) !== null);
       if (!isCard && !options.prepareReading) return;

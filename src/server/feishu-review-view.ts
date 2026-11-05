@@ -16,7 +16,7 @@ export interface FeishuReviewRenderInput {
   dailyBudgetPaused?: boolean;
 }
 interface Control { caption: string; target: FeishuCardView }
-const FOOTER = '脑中回忆为自报，不记录原答，不计入独立成功或信心校准。阅读和脑中自报均不会更新记忆时间；只有明确确认重温才更新锚点。复习操作仅限最新卡，未收到新卡请发送“知识 继续复习”。外部参考按钮直接打开原站。';
+const FOOTER = '脑中回忆为自报，不记录原答，不计入独立成功或信心校准。阅读和脑中自报均不会更新记忆时间；只有明确确认重温才更新锚点。复习操作仅限最新卡，未收到新卡可发“知识 复习状态”只查看；“知识 继续复习”会恢复并重试待保存记录。外部参考按钮直接打开原站。';
 
 /** Pure transient rendering. Only the local transition handler may change state. */
 export function planFeishuReviewView(input: FeishuReviewRenderInput): {

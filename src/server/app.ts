@@ -7,6 +7,7 @@ import { assertLearningDatabaseV3Ready, ensureLearningNamespaceV3 } from './lear
 import { ObservationRevisionStoreError } from './observation-revision-store.js';
 import { parseObservationRevisionRequest, ObservationRevisionError } from '../shared/observation-revisions.js';
 import { randomBytes } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
@@ -27,10 +28,13 @@ import { Accounts, type AccountSession } from './accounts.js';
 import type { FeishuBindingConfirmation, FeishuBindingConfirmationResult, FeishuBindingStatus, FeishuChannelState, FeishuScope } from '../shared/feishu-binding.js';
 import type { FeishuReadMessage } from '../shared/feishu-reading.js';
 import { parseFeishuReadCommand } from '../integrations/feishu-read-commands.js';
+import { isFeishuReviewStatusCommand } from '../integrations/feishu-review-commands.js';
 import { planFeishuReadReply } from './feishu-read-view.js';
+import { renderFeishuReviewStatus } from './feishu-review-status.js';
+import { LearningSnapshotRepository } from './learning-snapshot-repository.js';
 import { prepareFeishuActivity } from './feishu-activity.js';
 import { feishuReadOperationId, type PreparedFeishuReadReply } from './feishu-reading.js';
-import { createFeishuCardCapabilities } from './feishu-cards.js';
+import { createFeishuCardCapabilities, feishuCardSourceFingerprint } from './feishu-cards.js';
 import { requestSessionToken, renewOwnerDevice, setSessionCookie, SESSION_COOKIE } from './account-session.js';
 import { validateStoragePaths } from './storage-paths.js';
 import { getKnowledgeReferences } from './knowledge-references.js';
@@ -421,6 +425,22 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp<2 | 3> {
     const context = preparePrivateContext(userId);
     userContexts.set(userId, context);
     return context;
+  };
+  // Status must not warm a member context: that initializes defaults and writes the identity catalog.
+  const sourceForReviewStatus = (userId: string): { source: KnowledgeSource; stillCurrent: () => boolean } => {
+    const owner = !accounts || userId === accounts.ownerId();
+    const context = owner ? initialContext : userContexts.get(userId);
+    if (context) {
+      const source = context.source;
+      return { source, stillCurrent: () => context.source === source && (owner || userContexts.get(userId) === context) };
+    }
+    const rawSource = loadSource(join(dataDir, 'users', userId, 'knowledge'));
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const snapshot = new LearningSnapshotRepository({ db, namespace: rawSource.namespace, schemaVersion: learningSchemaVersion });
+      const source = applyIdentityBindings(rawSource, snapshot.getIdentityBindings());
+      return { source, stillCurrent: () => !userContexts.has(userId) };
+    } finally { db.close(); }
   };
   const refreshContext = (context: KnowledgeContext) => {
     const rawSource = loadSource(context.root, context.includePrefix);
@@ -1103,36 +1123,53 @@ export function createApp(options: AppOptions = {}): LivingMemoryApp<2 | 3> {
           if (!user) return null;
           const binding = accounts.getFeishuBindingState(user.id).binding;
           if (!binding) return null;
-          const command = parseFeishuReadCommand(input.text);
-          if (!command) return null;
+          const statusRequest = isFeishuReviewStatusCommand(input.text);
+          const command = statusRequest ? null : parseFeishuReadCommand(input.text);
+          if (!statusRequest && !command) return null;
           const authorization = { userId: user.id, accessRevision: user.accessRevision, bindingId: binding.id };
           operationId = feishuReadOperationId(actor, input.messageId);
           userId = user.id;
           if (!accounts.claimFeishuRead(operationId, actor, authorization)) return null;
           claimed = true;
           // Resolve before obtaining any knowledge context; there is no owner fallback.
-          const context = contextForUser(user.id);
-          const source = context.source;
+          const context = statusRequest ? undefined : contextForUser(user.id);
+          const statusSource = statusRequest ? sourceForReviewStatus(user.id) : undefined;
+          const source = statusSource?.source ?? context!.source;
           const asOf = now().toISOString();
-          const plan = planFeishuReadReply(command, {
+          const reviewSession = statusRequest ? accounts.getFeishuReviewSession(actor, authorization, source.namespace) : null;
+          const concept = reviewSession ? source.index.concepts.find((item) => item.id === reviewSession.state.conceptId) : undefined;
+          const plan = statusRequest ? { text: renderFeishuReviewStatus({
+            session: reviewSession,
+            operations: reviewSession ? accounts.getFeishuReviewOperations(reviewSession.id, actor, authorization)
+              .map((operation) => ({ kind: operation.intent.kind, status: operation.status })) : [],
+            sourceMatches: !!reviewSession && reviewSession.namespace === source.namespace
+              && reviewSession.sourceFingerprint === feishuCardSourceFingerprint(source)
+              && concept?.source.revision === reviewSession.state.sourceRevision,
+            asOf, conceptTitle: concept?.title,
+          }), activity: undefined } : planFeishuReadReply(command!, {
             concepts: source.index.concepts,
-            states: context.store.getStates(source.index.concepts, asOf),
-            anchors: context.store.getAnchors(), asOf,
+            states: context!.store.getStates(source.index.concepts, asOf),
+            anchors: context!.store.getAnchors(), asOf,
           });
           const receiptId = operationId;
           const stillAuthorized = () => {
             try {
               const current = accounts.resolveFeishuAccount(actor);
-              return current?.id === authorization.userId && current.accessRevision === authorization.accessRevision
+              if (!(current?.id === authorization.userId && current.accessRevision === authorization.accessRevision
                 && accounts.getFeishuBindingState(current.id).binding?.id === authorization.bindingId
-                && context.source === source && context.source.namespace === source.namespace;
+                && (statusSource ? statusSource.stillCurrent() : context!.source === source)
+                && (statusSource?.source ?? context!.source).namespace === source.namespace)) return false;
+              if (!statusRequest) return true;
+              const currentSession = accounts.getFeishuReviewSession(actor, authorization, source.namespace);
+              return reviewSession ? currentSession?.id === reviewSession.id && currentSession.version === reviewSession.version
+                : currentSession === null;
             } catch { return false; }
           };
           let activity: ReturnType<typeof prepareFeishuActivity> | null = null;
-          try {
-            activity = prepareFeishuActivity({ operationId: receiptId, occurredAt: asOf, now, settings: context.store.activity.getSettings(),
+          if (!statusRequest) try {
+            activity = prepareFeishuActivity({ operationId: receiptId, occurredAt: asOf, now, settings: context!.store.activity.getSettings(),
               medium: 'feishu-text', coverage: plan.activity, stillAuthorized,
-              append: (request) => context.store.activity.append({ principalId: authorization.userId, sessionKind: 'feishu-binding',
+              append: (request) => context!.store.activity.append({ principalId: authorization.userId, sessionKind: 'feishu-binding',
                 deliveryChannel: 'feishu', allowedOriginChannels: ['feishu'], inspectReference: (reference) => inspectActivityReference(source, reference) }, request) });
           } catch { /* Tracking cannot block knowledge delivery. */ }
           return {

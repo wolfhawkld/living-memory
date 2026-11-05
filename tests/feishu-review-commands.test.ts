@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseFeishuReviewCommand as parse } from '../src/integrations/feishu-review-commands.js';
+import { isFeishuReviewStatusCommand, parseFeishuReviewCommand as parse } from '../src/integrations/feishu-review-commands.js';
+
+test('status is an exact read-only command outside the review transition parser', () => {
+  for (const text of ['知识 复习状态', '  知识\t复习状态  ', '知识\n复习状态']) {
+    assert.equal(isFeishuReviewStatusCommand(text), true);
+    assert.equal(parse(text), null);
+  }
+  for (const text of [null, undefined, 1, {}, '知识复习状态', '知识 复习状态 3', '知识 复习状态 域=Math',
+    '知识 继续复习', '知识 待复习', '知识 复习状态'.repeat(1000)]) assert.equal(isFeishuReviewStatusCommand(text), false);
+  assert.deepEqual(parse('知识 复习状态 extra'), { kind: 'help' });
+});
 
 test('recall commands accept only exact bounded entry points with no concept identifiers', () => {
   for (const [command, kind] of [['复习', 'start'], ['继续复习', 'continue'], ['暂停复习', 'pause'], ['结束复习', 'finish']]) {
